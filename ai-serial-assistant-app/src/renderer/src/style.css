@@ -1,0 +1,357 @@
+/* ================================================================
+   AI Serial Assistant - Design System
+   Light theme (default) + Dark theme (.dark on <html>)
+   ================================================================ */
+
+/* === Shared Tokens (theme-independent) === */
+:root {
+  --font-family-display: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+  --font-family-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Cascadia Code', Consolas, monospace;
+
+  --text-xs: 11px;
+  --text-sm: 13px;
+  --text-base: 14px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  --sidebar-width: 260px;
+  --right-panel-width: 220px;
+  --header-height: 40px;
+  --statusbar-height: 28px;
+
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+}
+
+/* === Light Theme (default) === */
+:root {
+  --color-bg-primary: #ffffff;
+  --color-bg-secondary: #f5f7fa;
+  --color-bg-tertiary: #ebeef5;
+  --color-bg-elevated: #e4e7ed;
+  --color-bg-surface: #d9dce0;
+
+  --color-border-default: #dcdfe6;
+  --color-border-subtle: #e4e7ed;
+  --color-border-active: #0969da;
+
+  --color-text-primary: #1f2328;
+  --color-text-secondary: #656d76;
+  --color-text-tertiary: #8b949e;
+  --color-text-inverse: #ffffff;
+
+  --color-primary: #0969da;
+  --color-primary-hover: #218bff;
+  --color-primary-muted: rgba(9, 105, 218, 0.10);
+  --color-primary-subtle: rgba(9, 105, 218, 0.05);
+
+  --color-ai: #1a7f37;
+  --color-ai-hover: #2da44e;
+  --color-ai-muted: rgba(26, 127, 55, 0.10);
+  --color-ai-subtle: rgba(26, 127, 55, 0.05);
+  --color-ai-glow: rgba(26, 127, 55, 0.20);
+
+  --state-success: #1a7f37;
+  --state-warning: #9a6700;
+  --state-error: #cf222e;
+  --state-info: #0969da;
+
+  --color-channel-0: #e6007e;
+  --color-channel-1: #0969da;
+  --color-channel-2: #218bff;
+  --color-channel-3: #9a6700;
+  --color-channel-4: #8250df;
+  --color-channel-5: #1a7f37;
+  --color-channel-6: #d94f00;
+  --color-channel-7: #cf222e;
+
+  --message-alt-bg: rgba(0, 0, 0, 0.02);
+}
+
+/* === Dark Theme === */
+:root.dark {
+  --color-bg-primary: #0d1117;
+  --color-bg-secondary: #161b22;
+  --color-bg-tertiary: #1c2333;
+  --color-bg-elevated: #21293a;
+  --color-bg-surface: #28324a;
+
+  --color-border-default: #30363d;
+  --color-border-subtle: #21262d;
+  --color-border-active: #58a6ff;
+
+  --color-text-primary: #e6edf3;
+  --color-text-secondary: #8b949e;
+  --color-text-tertiary: #6e7681;
+  --color-text-inverse: #0d1117;
+
+  --color-primary: #58a6ff;
+  --color-primary-hover: #79c0ff;
+  --color-primary-muted: rgba(88, 166, 255, 0.12);
+  --color-primary-subtle: rgba(88, 166, 255, 0.06);
+
+  --color-ai: #3fb950;
+  --color-ai-hover: #56d364;
+  --color-ai-muted: rgba(63, 185, 80, 0.15);
+  --color-ai-subtle: rgba(63, 185, 80, 0.06);
+  --color-ai-glow: rgba(63, 185, 80, 0.25);
+
+  --state-success: #3fb950;
+  --state-warning: #d29922;
+  --state-error: #f85149;
+  --state-info: #58a6ff;
+
+  --color-channel-0: #f778ba;
+  --color-channel-1: #58a6ff;
+  --color-channel-2: #79c0ff;
+  --color-channel-3: #d29922;
+  --color-channel-4: #bc8cff;
+  --color-channel-5: #3fb950;
+  --color-channel-6: #f0883e;
+  --color-channel-7: #f85149;
+
+  --message-alt-bg: rgba(255, 255, 255, 0.02);
+}
+
+/* === Element Plus Theme Variables === */
+
+/* Light (default) - close to Element Plus defaults */
+:root {
+  --el-color-primary: var(--color-primary);
+  --el-color-primary-light-3: var(--color-primary-hover);
+  --el-color-primary-dark-2: #0550ae;
+  --el-color-success: var(--state-success);
+  --el-color-warning: var(--state-warning);
+  --el-color-danger: var(--state-error);
+  --el-color-info: var(--color-text-tertiary);
+
+  --el-bg-color: var(--color-bg-primary);
+  --el-bg-color-page: var(--color-bg-primary);
+  --el-bg-color-overlay: var(--color-bg-secondary);
+  --el-bg-color-container: var(--color-bg-tertiary);
+
+  --el-text-color-primary: var(--color-text-primary);
+  --el-text-color-regular: var(--color-text-primary);
+  --el-text-color-secondary: var(--color-text-secondary);
+  --el-text-color-placeholder: var(--color-text-tertiary);
+  --el-text-color-disabled: var(--color-text-tertiary);
+
+  --el-border-color: var(--color-border-default);
+  --el-border-color-light: var(--color-border-subtle);
+  --el-border-color-lighter: var(--color-border-default);
+  --el-border-color-extra-light: var(--color-border-subtle);
+  --el-border-color-dark: var(--color-border-active);
+
+  --el-fill-color: var(--color-bg-tertiary);
+  --el-fill-color-light: var(--color-bg-elevated);
+  --el-fill-color-lighter: var(--color-bg-secondary);
+  --el-fill-color-blank: var(--color-bg-primary);
+}
+
+/* Dark overrides */
+:root.dark {
+  --el-color-primary: var(--color-primary);
+  --el-color-primary-light-3: var(--color-primary-hover);
+  --el-color-primary-light-5: rgba(88, 166, 255, 0.25);
+  --el-color-primary-light-7: rgba(88, 166, 255, 0.12);
+  --el-color-primary-light-9: rgba(88, 166, 255, 0.04);
+  --el-color-primary-dark-2: #4090e0;
+
+  --el-color-success: var(--state-success);
+  --el-color-warning: var(--state-warning);
+  --el-color-danger: var(--state-error);
+  --el-color-info: var(--color-text-tertiary);
+
+  --el-bg-color: var(--color-bg-primary);
+  --el-bg-color-page: var(--color-bg-primary);
+  --el-bg-color-overlay: var(--color-bg-secondary);
+  --el-bg-color-container: var(--color-bg-tertiary);
+
+  --el-text-color-primary: var(--color-text-primary);
+  --el-text-color-regular: var(--color-text-primary);
+  --el-text-color-secondary: var(--color-text-secondary);
+  --el-text-color-placeholder: var(--color-text-tertiary);
+  --el-text-color-disabled: var(--color-text-tertiary);
+
+  --el-border-color: var(--color-border-default);
+  --el-border-color-light: var(--color-border-subtle);
+  --el-border-color-lighter: var(--color-border-default);
+  --el-border-color-extra-light: var(--color-border-subtle);
+  --el-border-color-dark: var(--color-border-active);
+
+  --el-fill-color: var(--color-bg-tertiary);
+  --el-fill-color-light: var(--color-bg-elevated);
+  --el-fill-color-lighter: var(--color-bg-secondary);
+  --el-fill-color-blank: var(--color-bg-primary);
+
+  --el-disabled-bg-color: var(--color-bg-tertiary);
+  --el-disabled-text-color: var(--color-text-tertiary);
+  --el-disabled-border-color: var(--color-border-subtle);
+
+  --el-mask-color: rgba(0, 0, 0, 0.6);
+  --el-mask-color-extra-light: rgba(0, 0, 0, 0.3);
+
+  --el-box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
+  --el-box-shadow-light: 0 2px 12px rgba(0, 0, 0, 0.2);
+}
+
+/* === Base Reset === */
+* {
+  box-sizing: border-box;
+}
+
+html, body, #app {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  font-family: var(--font-family-display);
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font-size: var(--text-base);
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+/* === Element Plus Component Overrides (uses theme variables) === */
+
+.el-button--primary {
+  --el-button-bg-color: var(--color-primary);
+  --el-button-border-color: var(--color-primary);
+  --el-button-text-color: var(--color-text-inverse);
+  --el-button-hover-bg-color: var(--color-primary-hover);
+  --el-button-hover-border-color: var(--color-primary-hover);
+  --el-button-active-bg-color: var(--color-primary-dark-2, #0550ae);
+  --el-button-active-border-color: var(--color-primary-dark-2, #0550ae);
+}
+
+.el-button--success {
+  --el-button-bg-color: var(--state-success);
+  --el-button-border-color: var(--state-success);
+  --el-button-text-color: #ffffff;
+  --el-button-hover-bg-color: var(--color-ai-hover);
+  --el-button-hover-border-color: var(--color-ai-hover);
+}
+
+.el-button--danger {
+  --el-button-bg-color: var(--state-error);
+  --el-button-border-color: var(--state-error);
+  --el-button-text-color: #ffffff;
+}
+
+.el-input__wrapper,
+.el-textarea__inner,
+.el-select .el-input__wrapper {
+  background-color: var(--color-bg-primary) !important;
+  box-shadow: 0 0 0 1px var(--color-border-default) inset !important;
+}
+
+.el-input__wrapper:hover {
+  box-shadow: 0 0 0 1px var(--color-border-active) inset !important;
+}
+
+.el-input__wrapper.is-focus {
+  box-shadow: 0 0 0 1px var(--color-primary) inset !important;
+}
+
+.is-disabled .el-input__wrapper {
+  background-color: var(--color-bg-tertiary) !important;
+  box-shadow: 0 0 0 1px var(--color-border-subtle) inset !important;
+}
+
+.el-input__inner {
+  color: var(--color-text-primary) !important;
+  font-family: var(--font-family-mono);
+  font-size: var(--text-sm);
+}
+
+.is-disabled .el-input__inner {
+  color: var(--color-text-tertiary) !important;
+  -webkit-text-fill-color: var(--color-text-tertiary) !important;
+}
+
+.el-popper.is-light {
+  background: var(--color-bg-secondary) !important;
+  border: 1px solid var(--color-border-default) !important;
+  color: var(--color-text-primary) !important;
+}
+
+.el-select-dropdown {
+  background: var(--color-bg-secondary) !important;
+  border: 1px solid var(--color-border-default) !important;
+}
+
+.el-select-dropdown__item {
+  color: var(--color-text-primary) !important;
+  font-size: var(--text-sm);
+}
+
+.el-select-dropdown__item.hover,
+.el-select-dropdown__item:hover {
+  background: var(--color-bg-tertiary) !important;
+}
+
+.el-select-dropdown__item.selected {
+  color: var(--color-primary) !important;
+  font-weight: var(--weight-semibold);
+}
+
+.el-select-dropdown__empty {
+  color: var(--color-text-tertiary) !important;
+}
+
+.el-scrollbar__bar.is-vertical .el-scrollbar__thumb {
+  background: var(--color-border-default);
+}
+
+.el-select .el-select__caret,
+.el-select .el-icon {
+  color: var(--color-text-secondary);
+}
+
+.el-tag {
+  border: none;
+}
+
+.el-tag--info {
+  --el-tag-bg-color: var(--color-bg-tertiary);
+  --el-tag-text-color: var(--color-text-secondary);
+}
+
+.el-tag--success {
+  --el-tag-bg-color: var(--color-ai-muted);
+  --el-tag-text-color: var(--color-ai);
+}
+
+.el-switch.is-disabled .el-switch__core {
+  background-color: var(--color-bg-tertiary);
+  border-color: var(--color-border-default);
+}
+
+.el-switch.is-checked .el-switch__core {
+  background-color: var(--color-ai);
+  border-color: var(--color-ai);
+}
+
+/* ================================================================
+   Fix: ensure teleported=false el-select dropdowns are visible
+   The dropdown is rendered inside the component tree.
+   MUST be outside sidebar/card overflow-hidden containers.
+   ================================================================ */
+.el-select__popper.el-select__popper {
+  z-index: 3000 !important;
+}
+
+.el-select__popper.el-select__popper .el-select-dropdown {
+  min-width: 120px;
+}

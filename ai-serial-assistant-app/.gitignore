@@ -1,0 +1,20 @@
+# Dependencies
+node_modules
+out
+release
+*.log
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+release-builds
+*.exe
+*.dmg
+*.AppImage

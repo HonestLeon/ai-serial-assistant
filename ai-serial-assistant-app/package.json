@@ -1,0 +1,30 @@
+{
+  "name": "ai-serial-assistant-app",
+  "version": "1.0.0",
+  "description": "AI 串口调试助手 - 基于 Electron + Vue 3 的智能串口调试工具",
+  "main": "./out/main/index.js",
+  "author": "AI Serial Assistant Team",
+  "license": "MIT",
+  "scripts": {
+    "dev": "node scripts/dev.js",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "postinstall": "electron-builder install-app-deps",
+    "dist": "electron-vite build && electron-builder"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.2",
+    "echarts": "^6.1.0",
+    "element-plus": "^2.14.2",
+    "serialport": "^13.0.0",
+    "vue": "^3.5.39",
+    "vue-router": "^4.6.4"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.7",
+    "electron": "^42.5.1",
+    "electron-builder": "^26.1.0",
+    "electron-vite": "^5.0.0",
+    "vite": "^7.3.6"
+  }
+}
