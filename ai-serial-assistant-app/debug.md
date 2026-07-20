@@ -3,8 +3,6 @@
 #### 一、问题背景
 用户反馈项目执行 `npm run dev` 后，无法检测到连接的串口、也无法打开串口。项目为 Electron + Vue + electron-vite 架构，串口功能基于 `serialport` v13 实现。
 
----
-
 #### 二、根因总结（共 3 个问题，已全部修复）
 
 ##### 问题 1：`package.json` 中 `"type": "module"` 导致 ESM/CJS 冲突
