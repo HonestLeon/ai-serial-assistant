@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, reactive } from 'vue'
-import { Cpu, Monitor, TrendCharts, ChatDotRound, Operation } from '@element-plus/icons-vue'
+import { Cpu, Monitor, TrendCharts, ChatDotRound, Operation, DataAnalysis } from '@element-plus/icons-vue'
 import SerialPanel from './components/SerialPanel.vue'
 import DataMonitor from './components/DataMonitor.vue'
 import ChartPanel from './components/ChartPanel.vue'
@@ -8,6 +8,7 @@ import AiPanel from './components/AiPanel.vue'
 import ChannelPanel from './components/ChannelPanel.vue'
 import StatusBar from './components/StatusBar.vue'
 import PidPanel from './components/PidPanel.vue'
+import AnalysisPanel from './components/AnalysisPanel.vue'
 
 const activeTab = ref('monitor')
 const connected = ref(false)
@@ -20,9 +21,9 @@ const latestPayload = ref(null)
 
 // 全局 AI 配置（SerialPanel 和 AiPanel 共享）
 const aiConfig = reactive({
-  apiKey: localStorage.getItem('ai_api_key') || '',
-  baseUrl: localStorage.getItem('ai_base_url') || 'https://api.openai.com/v1',
-  model: localStorage.getItem('ai_model') || 'gpt-4o-mini'
+  apiKey: sessionStorage.getItem('ai_api_key') || '',
+  baseUrl: localStorage.getItem('ai_base_url') || 'https://api.deepseek.com',
+  model: localStorage.getItem('ai_model') || 'deepseek-chat'
 })
 
 const aiSwitches = reactive({
@@ -31,7 +32,8 @@ const aiSwitches = reactive({
 })
 
 function saveAiConfig() {
-  localStorage.setItem('ai_api_key', aiConfig.apiKey)
+  // Key 仅保留在当前会话，避免长期写入浏览器存储。
+  sessionStorage.setItem('ai_api_key', aiConfig.apiKey)
   localStorage.setItem('ai_base_url', aiConfig.baseUrl)
   localStorage.setItem('ai_model', aiConfig.model)
 }
@@ -69,7 +71,8 @@ function clearRecording() {
 }
 
 const MAX_CONTEXT_LINES = 100
-const MAX_CONTEXT_SAMPLES = 200
+// 50 ms 采样下保留约 60 秒，避免阶跃起点过早被滚动窗口淘汰。
+const MAX_CONTEXT_SAMPLES = 1200
 
 const serialContext = reactive({
   connected: false,
@@ -115,6 +118,7 @@ function pushSerialContext(payload) {
 const tabs = [
   { key: 'monitor', label: '工作区', icon: Monitor },
   { key: 'waveform', label: '波形图', icon: TrendCharts },
+  { key: 'analysis', label: '响应分析', icon: DataAnalysis },
   { key: 'ai', label: 'AI 助手', icon: ChatDotRound },
   { key: 'pid', label: 'PID 调参', icon: Operation }
 ]
@@ -234,6 +238,11 @@ function toggleHex() {
           :serial-context="serialContext"
           :latest-payload="latestPayload"
           :visible="activeTab === 'waveform'"
+        />
+        <AnalysisPanel
+          v-show="activeTab === 'analysis'"
+          :serial-context="serialContext"
+          :ai-config="aiConfig"
         />
         <AiPanel
           v-show="activeTab === 'ai'"
