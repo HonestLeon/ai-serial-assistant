@@ -53,23 +53,38 @@ let replayTimers = []
 const simulating = ref(false)
 let simulateTimer = null
 let simulateTick = 0
+const SIMULATION_INTERVAL_MS = 50
+const simulationState = { feedback: 0, velocity: 0, integral: 0, previousError: 0 }
 
-const SIMULATE_TEMPLATES = [
-  () => {
-    const t = simulateTick * 0.1
-    return [
-      (50 + 30 * Math.sin(t)).toFixed(2),
-      (100 + 20 * Math.cos(t * 0.5)).toFixed(2),
-      (25 + 10 * Math.sin(t * 1.5)).toFixed(2),
-      (75 + 15 * Math.cos(t * 0.8)).toFixed(2)
-    ].join(' ')
-  },
-  () => `temp=${(25 + Math.random() * 5).toFixed(2)} humidity=${(50 + Math.random() * 10).toFixed(1)}% pressure=${(1013 + Math.random() * 5).toFixed(0)}hPa`,
-  () => `{"ch0":${(100 + Math.random() * 50).toFixed(0)},"ch1":${(200 + Math.random() * 30).toFixed(0)},"ch2":${(50 + Math.random() * 20).toFixed(0)}}`,
-  () => `AT+STATUS=${(Math.random() * 100).toFixed(0)},RSSI=-${(40 + Math.random() * 30).toFixed(0)}dBm,BAT=${(3.3 + Math.random() * 0.3).toFixed(2)}V`,
-  () => `[${new Date().toISOString()}] motor_speed=${(3000 + Math.random() * 500).toFixed(0)}rpm current=${(2.5 + Math.random()).toFixed(2)}A`,
-  () => `ACCX(g),ACCY(g),ACCZ(g),GYROX(°/s),GYROY(°/s),GYROZ(°/s): ${(Math.random() - 0.5).toFixed(2)}, ${(Math.random() - 0.5).toFixed(2)}, ${(1 + Math.random() * 0.1).toFixed(2)}, ${(Math.random() * 10 - 5).toFixed(2)}, ${(Math.random() * 10 - 5).toFixed(2)}, ${(Math.random() * 10 - 5).toFixed(2)}`
-]
+function resetSimulation() {
+  simulateTick = 0
+  simulationState.feedback = 0
+  simulationState.velocity = 0
+  simulationState.integral = 0
+  simulationState.previousError = 0
+}
+
+// 可重复的欠阻尼阶跃响应：I0=目标，I1=反馈，I2=控制量，I3=误差。
+function createControlSimulationLine() {
+  const dt = SIMULATION_INTERVAL_MS / 1000
+  const time = simulateTick * dt
+  const target = time < 1 ? 0 : 100
+  const naturalFrequency = 3.2
+  const dampingRatio = 0.42
+  const acceleration = naturalFrequency ** 2 * (target - simulationState.feedback)
+    - 2 * dampingRatio * naturalFrequency * simulationState.velocity
+  simulationState.velocity += acceleration * dt
+  simulationState.feedback += simulationState.velocity * dt
+
+  const error = target - simulationState.feedback
+  simulationState.integral += error * dt
+  const derivative = (error - simulationState.previousError) / dt
+  simulationState.previousError = error
+  const control = Math.max(-100, Math.min(100, 1.8 * error + 0.22 * simulationState.integral + 0.12 * derivative))
+  const deterministicNoise = 0.15 * Math.sin(simulateTick * 0.37)
+
+  return `CTRL: ${target.toFixed(3)} ${(simulationState.feedback + deterministicNoise).toFixed(3)} ${control.toFixed(3)} ${error.toFixed(3)}`
+}
 
 function toggleSimulate() {
   if (simulating.value) {
@@ -82,10 +97,9 @@ function toggleSimulate() {
   }
 
   simulating.value = true
-  simulateTick = 0
+  resetSimulation()
   const doPush = () => {
-    const template = SIMULATE_TEMPLATES[simulateTick % SIMULATE_TEMPLATES.length]
-    const text = template()
+    const text = createControlSimulationLine()
     const now = Date.now()
     const payload = {
       raw: text,
@@ -100,7 +114,7 @@ function toggleSimulate() {
   simulateTimer = setInterval(() => {
     simulateTick++
     doPush()
-  }, 500)
+  }, SIMULATION_INTERVAL_MS)
 }
 
 const placeholder = computed(() => encoding.value === 'hex' ? '输入十六进制，如: 01 02 0A' : '输入发送数据...')
@@ -276,10 +290,10 @@ onUnmounted(() => {
           class="rec-btn sim"
           :class="{ active: simulating }"
           @click="toggleSimulate"
-          title="无需硬件串口，定时推送示例数据用于离线演示"
+          title="无需硬件串口，生成可重复的控制阶跃响应"
         >
           <el-icon size="12"><Cpu /></el-icon>
-          <span>{{ simulating ? '停止模拟' : '模拟数据' }}</span>
+          <span>{{ simulating ? '停止模拟' : '控制响应模拟' }}</span>
         </button>
         <button
           class="rec-btn"

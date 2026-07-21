@@ -1,6 +1,12 @@
 <script setup>
-import { ref, reactive, onMounted, onUnmounted, watch } from 'vue'
+import { ref, reactive, onUnmounted, watch } from 'vue'
+import { ElMessageBox } from 'element-plus'
 import { Promotion, DataAnalysis } from '@element-plus/icons-vue'
+import {
+  analyzeControlSamples,
+  buildPidSuggestion,
+  buildStructuredAiContext
+} from '../services/controlAnalysis.mjs'
 
 const props = defineProps({
   connected: Boolean,
@@ -14,22 +20,25 @@ const stepConfig = reactive({
   command: 'SET_POINT',
   amplitude: '100',
   duration: 2000,
-  channel: 0
+  channel: 1
 })
 
 const outputParams = reactive({
-  kp: '',
-  ki: '',
-  kd: ''
+  kp: '1.8',
+  ki: '0.22',
+  kd: '0.12'
 })
 
 const collecting = ref(false)
 const analyzing = ref(false)
 const response = ref([])
 const aiResult = ref('')
+const deterministicMetrics = ref(null)
+const localReasons = ref([])
 const error = ref('')
 
 let collectTimer = null
+let firstResponseTime = null
 
 function startStepTest() {
   if (!props.connected) {
@@ -38,6 +47,9 @@ function startStepTest() {
   }
   error.value = ''
   response.value = []
+  deterministicMetrics.value = null
+  localReasons.value = []
+  firstResponseTime = null
   collecting.value = true
 
   // 发送阶跃信号
@@ -69,9 +81,17 @@ function onSerialData(payload) {
   const dataPart = colonIdx >= 0 ? rawText.slice(colonIdx + 1) : rawText
   const nums = dataPart.match(/[-+]?\d*\.?\d+/g)
   if (nums && nums.length > stepConfig.channel) {
+    const feedback = parseFloat(nums[stepConfig.channel])
+    const timestamp = Number(payload.time) || Date.now()
+    if (firstResponseTime === null) {
+      firstResponseTime = timestamp
+      response.value.push({ t: 0, target: 0, feedback, output: 0 })
+    }
     response.value.push({
-      t: response.value.length,
-      v: parseFloat(nums[stepConfig.channel])
+      t: Math.max(0.001, (timestamp - firstResponseTime) / 1000),
+      target: Number(stepConfig.amplitude),
+      feedback,
+      output: 0
     })
   }
 }
@@ -85,20 +105,36 @@ async function analyzeResponse() {
   error.value = ''
   analyzing.value = true
   aiResult.value = ''
+  deterministicMetrics.value = analyzeControlSamples(response.value, {
+    overshootLimit: 20,
+    oscillationLimit: 10,
+    settlingBand: 0.05
+  })
+  if (!deterministicMetrics.value.valid) {
+    error.value = deterministicMetrics.value.reason
+    analyzing.value = false
+    return
+  }
 
-  const data = response.value.map(p => `t=${p.t}, y=${p.v.toFixed(4)}`).join('\n')
-  const systemPrompt = `你是 PID 控制专家。根据以下阶跃响应数据，分析系统特性（超调量、上升时间、调节时间、稳态误差），并给出推荐的 PID 参数。请按以下格式输出：
-分析：...
-推荐参数：
-Kp=xxx
-Ki=xxx
-Kd=xxx
-理由：...`
+  const candidate = buildPidSuggestion(deterministicMetrics.value, outputParams)
+  outputParams.kp = String(candidate.kp)
+  outputParams.ki = String(candidate.ki)
+  outputParams.kd = String(candidate.kd)
+  localReasons.value = candidate.reasons
 
-  const userPrompt = `阶跃响应数据（共 ${response.value.length} 点，阶跃幅值 ${stepConfig.amplitude}）：\n${data}\n\n请分析并推荐 PID 参数。`
+  if (!props.aiConfig.apiKey) {
+    aiResult.value = '已完成本地确定性分析。未配置 DeepSeek API Key，因此跳过在线解释；候选参数仍可由人工审查。'
+    analyzing.value = false
+    return
+  }
+
+  const structuredContext = buildStructuredAiContext(deterministicMetrics.value, candidate, {
+    system: '串口阶跃测试对象',
+    scenario: `阶跃幅值 ${stepConfig.amplitude}`
+  })
 
   try {
-    const res = await fetch(`${props.aiConfig.baseUrl}/chat/completions`, {
+    const res = await fetch(`${props.aiConfig.baseUrl.replace(/\/$/, '')}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -106,9 +142,10 @@ Kd=xxx
       },
       body: JSON.stringify({
         model: props.aiConfig.model,
+        temperature: 0.2,
         messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt }
+          { role: 'system', content: '你是控制工程解释助手。固定算法已经给出指标和有界候选参数。请解释证据、风险和下一步实验；不得修改边界，不得声称已控制硬件。' },
+          { role: 'user', content: JSON.stringify(structuredContext, null, 2) }
         ],
         stream: false
       })
@@ -118,13 +155,7 @@ Kd=xxx
     const data2 = await res.json()
     aiResult.value = data2.choices?.[0]?.message?.content || '（无返回内容）'
 
-    // 尝试解析推荐参数
-    const kpMatch = aiResult.value.match(/Kp\s*[=:]\s*([-\d.]+)/i)
-    const kiMatch = aiResult.value.match(/Ki\s*[=:]\s*([-\d.]+)/i)
-    const kdMatch = aiResult.value.match(/Kd\s*[=:]\s*([-\d.]+)/i)
-    if (kpMatch) outputParams.kp = kpMatch[1]
-    if (kiMatch) outputParams.ki = kiMatch[1]
-    if (kdMatch) outputParams.kd = kdMatch[1]
+    // AI 只解释，禁止覆盖确定性算法生成的有界候选参数。
   } catch (e) {
     error.value = `AI 分析失败: ${e.message}`
   } finally {
@@ -138,7 +169,30 @@ async function sendParams() {
     return
   }
   error.value = ''
-  const cmd = `PID ${outputParams.kp} ${outputParams.ki} ${outputParams.kd}`
+  const values = {
+    kp: Number(outputParams.kp),
+    ki: Number(outputParams.ki),
+    kd: Number(outputParams.kd)
+  }
+  if (!Number.isFinite(values.kp) || !Number.isFinite(values.ki) || !Number.isFinite(values.kd)) {
+    error.value = 'PID 参数必须是有效数字'
+    return
+  }
+  if (values.kp < 0 || values.kp > 20 || values.ki < 0 || values.ki > 10 || values.kd < 0 || values.kd > 10) {
+    error.value = '参数超出 MVP 安全边界：Kp 0~20，Ki 0~10，Kd 0~10'
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `即将下发 PID ${values.kp} ${values.ki} ${values.kd}。请确认设备已处于安全工况，并已记录原参数以便回退。`,
+      '人工确认后下发',
+      { confirmButtonText: '确认下发', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    error.value = '已取消下发，设备参数未改变'
+    return
+  }
+  const cmd = `PID ${values.kp} ${values.ki} ${values.kd}`
   try {
     await window.electronAPI.serial.send(cmd, 'utf8')
     emit('send', cmd.length)
@@ -151,10 +205,12 @@ async function sendParams() {
 function clearAll() {
   response.value = []
   aiResult.value = ''
+  deterministicMetrics.value = null
+  localReasons.value = []
   error.value = ''
-  outputParams.kp = ''
-  outputParams.ki = ''
-  outputParams.kd = ''
+  outputParams.kp = '1.8'
+  outputParams.ki = '0.22'
+  outputParams.kd = '0.12'
 }
 
 // 监听父组件传来的数据（兼容真实串口和模拟数据）
@@ -209,23 +265,32 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- 步骤 2: AI 分析 -->
+      <!-- 步骤 2: 确定性分析 + 可选 AI 解释 -->
       <div class="step-card">
         <div class="step-header">
           <div class="step-number">2</div>
-          <div class="step-title">AI 参数分析</div>
+          <div class="step-title">确定性分析 + AI 解释</div>
         </div>
         <div class="step-body">
           <div class="action-row">
             <button class="btn-ai" :disabled="analyzing || response.length < 5" @click="analyzeResponse">
               <el-icon size="13"><DataAnalysis /></el-icon>
-              <span>{{ analyzing ? '分析中...' : 'AI 分析响应' }}</span>
+              <span>{{ analyzing ? '分析中...' : '分析响应并生成候选' }}</span>
             </button>
             <button class="btn-secondary" @click="clearAll">清空</button>
           </div>
           <div v-if="error" class="error-msg">{{ error }}</div>
+          <div v-if="deterministicMetrics?.valid" class="metric-strip">
+            <div><span>超调率</span><strong>{{ deterministicMetrics.overshoot }}%</strong></div>
+            <div><span>上升时间</span><strong>{{ deterministicMetrics.riseTime ?? '--' }}s</strong></div>
+            <div><span>稳定时间</span><strong>{{ deterministicMetrics.settlingTime ?? '未收敛' }}</strong></div>
+            <div><span>RMSE</span><strong>{{ deterministicMetrics.rmse }}</strong></div>
+          </div>
+          <ul v-if="localReasons.length" class="reason-list">
+            <li v-for="reason in localReasons" :key="reason">{{ reason }}</li>
+          </ul>
           <div v-if="aiResult" class="ai-result">
-            <div class="result-label">AI 分析结果：</div>
+            <div class="result-label">DeepSeek 解释（不参与参数下发）：</div>
             <pre>{{ aiResult }}</pre>
           </div>
         </div>
@@ -257,6 +322,7 @@ onUnmounted(() => {
               <el-icon size="13"><Promotion /></el-icon>
               <span>下发 PID 参数</span>
             </button>
+            <span class="safety-note">边界：Kp 0~20，Ki/Kd 0~10；点击后仍需二次确认。</span>
           </div>
         </div>
       </div>
@@ -385,6 +451,45 @@ onUnmounted(() => {
   line-height: 1.6;
   color: var(--color-text-primary);
   font-family: var(--font-family-mono);
+}
+
+.metric-strip {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.metric-strip div {
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-tertiary);
+}
+
+.metric-strip span {
+  display: block;
+  color: var(--color-text-tertiary);
+  font-size: 10px;
+}
+
+.metric-strip strong {
+  display: block;
+  margin-top: 3px;
+  color: var(--color-text-primary);
+  font-family: var(--font-family-mono);
+}
+
+.reason-list {
+  margin: var(--space-2) 0 0;
+  padding-left: 18px;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.7;
+}
+
+.safety-note {
+  color: var(--color-text-tertiary);
+  font-size: 10px;
 }
 
 .btn-primary {
