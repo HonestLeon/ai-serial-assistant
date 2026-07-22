@@ -9,6 +9,7 @@
     "dev": "node scripts/dev.js",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
+    "test:analysis": "node tests/control-analysis.mjs",
     "postinstall": "electron-builder install-app-deps",
     "dist": "electron-vite build && electron-builder"
   },
