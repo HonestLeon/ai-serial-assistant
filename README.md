@@ -10,7 +10,7 @@ AI 串口调试助手致力于打造一款现代化的串口通信工具，在�
 
 - 自动识别通信协议与数据异常
 - 分析波形特征并给出优化建议
-- 辅助 PID 参数整定（发送阶跃 → 采集响应 → AI 分析 → 下发参数）
+- 辅助 PID 参数整定（发送阶跃 → 采集响应 → 本地确定性分析 → AI 解释 → 人工确认下发）
 
 项目采用 Electron 构建跨平台桌面应用，渲染进程使用 Vue 3 + Element Plus 进行界面开发，主进程通过 `serialport` 库实现底层串口通信。
 
@@ -53,6 +53,8 @@ ai-serial-assistant-app/
             ├── DataMonitor.vue    # 数据收发/数据流/数据表
             ├── ChartPanel.vue     # 实时波形图
             ├── AiPanel.vue        # AI 对话与快捷操作
+            ├── AnalysisPanel.vue  # 确定性响应分析（指标计算 + 有界候选 + 报告导出）
+            ├── PidPanel.vue       # PID 阶跃采集 → 本地分析 → 人工确认下发
             ├── ChannelPanel.vue   # 数据通道列表
             └── StatusBar.vue      # 底部状态栏
 ```
@@ -75,7 +77,7 @@ ai-serial-assistant-app/
 
 - Vue 3 组合式 API 开发组件
 - 各页面通过 `v-show` 切换，避免频繁挂载/卸载
-- 数据流、波形图、AI 助手、PID 调参分别对应独立组件
+- 数据流、波形图、AI 助手、确定性分析、PID 调参分别对应独立组件
 - 通过 `window.electronAPI.serial` 与主进程通信
 
 ---
@@ -214,31 +216,34 @@ npm run dist
 - [x] IPC 安全桥接（Preload 脚本）
 - [x] 深色主题设计系统落地（颜色、字体、间距、布局变量）
 - [x] 应用主布局（标题栏 + 三栏布局 + 状态栏）
-- [x] 串口配置面板（SerialPanel）
-- [x] 数据收发区（DataMonitor）
-- [x] 实时波形图（ChartPanel + ECharts）
-- [x] AI 对话面板（AiPanel）
+- [x] 串口配置面板（SerialPanel，含 Raw / JustFloat 协议引擎）
+- [x] 数据收发区（DataMonitor，含数据表视图 / 录制回放 / 控制响应模拟）
+- [x] 实时波形图（ChartPanel + ECharts，CSV/JSON 导出）
+- [x] AI 对话面板（AiPanel，OpenAI / DeepSeek 接入 + 异常检测 + 协议识别）
+- [x] 确定性响应分析（AnalysisPanel：上升时间 / 稳定时间 / 超调率 / 稳态误差 / RMSE / 稳态波动，可导出报告）
+- [x] 辅助 PID 调参（PidPanel：本地确定性分析生成有界候选 → AI 解释 → 人工二次确认下发）
 - [x] 数据通道面板（ChannelPanel）
 - [x] 状态栏组件（StatusBar）
 - [x] Element Plus 图标兼容性修复
 - [x] UI 示例 Demo（ui-demo.html）
 - [x] 生产构建通过验证
+- [x] MVP 自测（`npm run test:analysis` 覆盖指标计算 / 通道对齐 / 候选边界 / 数据不足分支）
 
 ### 进行中 🚧
 
-- [ ] AI 后端服务接入（OpenAI / DeepSeek API 调用）
-- [ ] 实时异常检测算法
-- [ ] PID 调参完整流程实现
-- [ ] 数据表视图（Grid）
-- [ ] 数据导出与日志保存
+- [ ] 自动调参增强：策略注册表（多系统 / 多控制结构差异化调参）
+- [ ] 参数安全限制与异常自动回退（防机械损伤）
+- [ ] 嵌入式集成（生成 `.c/.h`，函数指针注入式）
+- [ ] 离线信号处理降级（Z-N / 继电自整定，无网可用）
 
 ### 待完成 📋
 
-- [ ] 单元测试与 E2E 测试
+- [ ] 单元测试扩展与 E2E 测试
 - [ ] 应用打包与自动更新
 - [ ] 多语言支持
 - [ ] 用户配置持久化
-- [ ] 协议插件机制（Raw / JustFloat / 自定义）
+- [ ] 协议插件机制（FireWater / 自定义二进制等）
+- [ ] 系统辨识与多通信方式（J-Link / Ozone）
 
 ---
 
