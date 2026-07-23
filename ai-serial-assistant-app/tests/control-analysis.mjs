@@ -36,4 +36,17 @@ assert.deepEqual(channels[2], { t: 0.1, target: 2, feedback: 5, output: 8 })
 const invalid = analyzeControlSamples([{ t: 0, target: 0, feedback: 0 }])
 assert.equal(invalid.valid, false)
 
+const stricterMinimum = analyzeControlSamples(createResponse({ count: 40 }), { minimumSamples: 50 })
+assert.equal(stricterMinimum.valid, false)
+assert.match(stricterMinimum.reason, /50/)
+
+const customStandards = analyzeControlSamples(createResponse(), {
+  settlingBand: 0.03,
+  steadyErrorLimitRatio: 0.02,
+  overshootLimit: 10,
+  oscillationLimit: 5
+})
+assert.equal(customStandards.limits.settlingBand, 0.03)
+assert.equal(customStandards.limits.steadyErrorRatio, 0.02)
+
 console.log('control-analysis: all assertions passed')

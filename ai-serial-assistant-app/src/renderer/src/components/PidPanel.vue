@@ -296,11 +296,11 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- 步骤 3: 参数下发 -->
+      <!-- 步骤 3: PID 候选与参数下发 -->
       <div class="step-card">
         <div class="step-header">
           <div class="step-number">3</div>
-          <div class="step-title">参数下发</div>
+          <div class="step-title">PID 候选与参数下发</div>
         </div>
         <div class="step-body">
           <div class="param-grid">
