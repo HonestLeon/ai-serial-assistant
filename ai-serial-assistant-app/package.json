@@ -9,7 +9,7 @@
     "dev": "node scripts/dev.js",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "test:analysis": "node tests/control-analysis.mjs",
+    "test:analysis": "node tests/control-analysis.mjs && node tests/ai-data-context.mjs && node tests/pid-simulation.mjs && node tests/vue-sfc-compile.cjs",
     "postinstall": "electron-builder install-app-deps",
     "dist": "electron-vite build && electron-builder"
   },

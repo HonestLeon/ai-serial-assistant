@@ -62,11 +62,11 @@ function plottedData(data) {
   if (!normalizeDrawing.value || valid.length < 2) {
     return data.map((raw) => Number.isFinite(raw) ? { value: raw, raw } : null)
   }
-  const average = valid.reduce((sum, value) => sum + value, 0) / valid.length
-  const variance = valid.reduce((sum, value) => sum + (value - average) ** 2, 0) / valid.length
-  const deviation = Math.sqrt(variance) || 1
+  const min = Math.min(...valid)
+  const max = Math.max(...valid)
+  const range = max - min
   return data.map((raw) => Number.isFinite(raw)
-    ? { value: (raw - average) / deviation, raw }
+    ? { value: range > 0 ? ((raw - min) / range) * 200 - 100 : 0, raw }
     : null)
 }
 
@@ -94,14 +94,14 @@ function tooltipFormatter(params) {
     </div>`
   }).join('')
   return `<div style="font-size:12px"><div style="margin-bottom:5px">采样点 ${params[0].axisValue}</div>${rows}
-    ${normalizeDrawing.value ? '<div style="margin-top:5px;color:#8b949e">曲线已标准化，以上为原始值</div>' : ''}
+    ${normalizeDrawing.value ? '<div style="margin-top:5px;color:#8b949e">曲线已归一化至 -100~100，以上为原始值</div>' : ''}
   </div>`
 }
 
 function chartOption() {
   const yAxis = {
     type: 'value',
-    name: normalizeDrawing.value ? '标准分' : '',
+    name: normalizeDrawing.value ? '归一化值' : '',
     splitLine: { show: true, lineStyle: { color: isDark.value ? '#21262d' : '#e4e7ed' } },
     axisLine: { lineStyle: { color: isDark.value ? '#30363d' : '#dcdfe6' } },
     axisLabel: { color: isDark.value ? '#6e7681' : '#8b949e', fontSize: 10 }
@@ -264,10 +264,10 @@ onUnmounted(() => {
 
       <div class="setting-divider" />
       <label class="switch-row">
-        <span>标准化绘图</span>
+        <span>归一化绘图</span>
         <el-switch v-model="normalizeDrawing" size="small" />
       </label>
-      <p class="hint">仅改变曲线尺度，悬停与导出仍显示原始值。</p>
+      <p class="hint">各通道缩放至 -100~100；悬停与导出仍显示原始值。</p>
 
       <label class="switch-row">
         <span>Y轴范围</span>

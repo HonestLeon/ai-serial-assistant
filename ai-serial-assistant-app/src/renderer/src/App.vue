@@ -69,7 +69,7 @@ function clearRecording() {
   recording.data = []
 }
 
-const MAX_CONTEXT_LINES = 100
+const MAX_CONTEXT_LINES = 1000
 // 50 ms 采样下保留约 60 秒，避免阶跃起点过早被滚动窗口淘汰。
 const MAX_CONTEXT_SAMPLES = 1200
 
