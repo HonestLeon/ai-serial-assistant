@@ -222,8 +222,28 @@ function clearRecording() {
   emit('clear-recording')
 }
 
-function replayRecording() {
+async function replayRecording() {
   if (props.recording.data.length === 0 || replaying.value) return
+  if (props.connected) {
+    stopAutoSend()
+    try {
+      await window.electronAPI.serial.close()
+      messages.value.unshift({
+        type: 'system',
+        text: '开始回放前已自动关闭串口，避免实时数据与回放数据混合',
+        time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+        ms: new Date().getMilliseconds().toString().padStart(3, '0')
+      })
+    } catch (error) {
+      messages.value.unshift({
+        type: 'error',
+        text: `关闭串口失败，已取消回放：${error.message || error}`,
+        time: '--:--:--',
+        ms: '000'
+      })
+      return
+    }
+  }
   replaying.value = true
   replayTimers = []
   const data = [...props.recording.data]

@@ -1,14 +1,13 @@
 <script setup>
 import { ref, computed, reactive } from 'vue'
-import { Cpu, Monitor, TrendCharts, ChatDotRound, Operation, DataAnalysis } from '@element-plus/icons-vue'
+import { Cpu, Monitor, ChatDotRound, Operation } from '@element-plus/icons-vue'
 import SerialPanel from './components/SerialPanel.vue'
 import DataMonitor from './components/DataMonitor.vue'
-import ChartPanel from './components/ChartPanel.vue'
 import AiPanel from './components/AiPanel.vue'
-import ChannelPanel from './components/ChannelPanel.vue'
 import StatusBar from './components/StatusBar.vue'
 import PidPanel from './components/PidPanel.vue'
-import AnalysisPanel from './components/AnalysisPanel.vue'
+import WorkspaceChart from './components/WorkspaceChart.vue'
+import WorkspaceAnalysis from './components/WorkspaceAnalysis.vue'
 
 const activeTab = ref('monitor')
 const connected = ref(false)
@@ -16,8 +15,8 @@ const status = ref({ connected: false, path: null, baudRate: null })
 const rxCount = ref(0)
 const txCount = ref(0)
 const showHex = ref(false)
-const latestValues = ref(Array(8).fill(0))
 const latestPayload = ref(null)
+const detectedChannelCount = ref(0)
 
 // 全局 AI 配置（SerialPanel 和 AiPanel 共享）
 const aiConfig = reactive({
@@ -116,9 +115,7 @@ function pushSerialContext(payload) {
 }
 
 const tabs = [
-  { key: 'monitor', label: '工作区', icon: Monitor },
-  { key: 'waveform', label: '波形图', icon: TrendCharts },
-  { key: 'analysis', label: '响应分析', icon: DataAnalysis },
+  { key: 'monitor', label: '工作台', icon: Monitor },
   { key: 'ai', label: 'AI 助手', icon: ChatDotRound },
   { key: 'pid', label: 'PID 调参', icon: Operation }
 ]
@@ -150,9 +147,7 @@ function onData(payload) {
   const dataPart = colonIdx >= 0 ? rawText.slice(colonIdx + 1) : rawText
   const nums = dataPart.match(/[-+]?\d*\.?\d+/g)
   if (nums) {
-    nums.slice(0, 8).forEach((n, i) => {
-      latestValues.value[i] = parseFloat(n)
-    })
+    detectedChannelCount.value = Math.min(nums.length, 8)
   }
   pushSerialContext(payload)
 
@@ -220,30 +215,37 @@ function toggleHex() {
 
       <!-- Content -->
       <section class="content-area">
-        <DataMonitor
-          v-show="activeTab === 'monitor'"
-          :connected="connected"
-          :show-hex="showHex"
-          :recording="recording"
-          @data="onData"
-          @send="onSend"
-          @start-recording="startRecording"
-          @stop-recording="stopRecording"
-          @clear-recording="clearRecording"
-        />
-        <ChartPanel
-          v-show="activeTab === 'waveform'"
-          ref="chartPanelRef"
-          :connected="connected"
-          :serial-context="serialContext"
-          :latest-payload="latestPayload"
-          :visible="activeTab === 'waveform'"
-        />
-        <AnalysisPanel
-          v-show="activeTab === 'analysis'"
-          :serial-context="serialContext"
-          :ai-config="aiConfig"
-        />
+        <div v-show="activeTab === 'monitor'" class="workspace-dashboard">
+          <div class="workspace-center">
+            <section class="workspace-wave">
+              <WorkspaceChart
+                :connected="connected"
+                :latest-payload="latestPayload"
+                :channel-count="detectedChannelCount"
+                :visible="activeTab === 'monitor'"
+              />
+            </section>
+            <section class="workspace-data">
+              <DataMonitor
+                :connected="connected"
+                :show-hex="showHex"
+                :recording="recording"
+                @data="onData"
+                @send="onSend"
+                @start-recording="startRecording"
+                @stop-recording="stopRecording"
+                @clear-recording="clearRecording"
+              />
+            </section>
+          </div>
+          <aside class="workspace-analysis">
+            <WorkspaceAnalysis
+              :serial-context="serialContext"
+              :ai-config="aiConfig"
+              :channel-count="detectedChannelCount"
+            />
+          </aside>
+        </div>
         <AiPanel
           v-show="activeTab === 'ai'"
           :connected="connected"
@@ -265,10 +267,6 @@ function toggleHex() {
         />
       </section>
 
-      <!-- Right Panel (only on monitor tab) -->
-      <aside v-show="activeTab === 'monitor'" class="right-panel">
-        <ChannelPanel :values="latestValues" />
-      </aside>
     </div>
 
     <!-- Status Bar -->
@@ -410,13 +408,41 @@ function toggleHex() {
   flex-direction: column;
 }
 
-.right-panel {
-  width: var(--right-panel-width);
-  min-width: var(--right-panel-width);
-  background: var(--color-bg-secondary);
+.workspace-dashboard {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 370px;
+  height: 100%;
+  min-height: 0;
+}
+
+.workspace-center {
+  display: grid;
+  grid-template-rows: minmax(280px, 56%) minmax(220px, 44%);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.workspace-wave,
+.workspace-data {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.workspace-wave {
+  border-bottom: 1px solid var(--color-border-default);
+}
+
+.workspace-analysis {
+  min-width: 0;
+  overflow: hidden;
   border-left: 1px solid var(--color-border-default);
-  overflow-y: auto;
-  overflow-x: hidden;
-  flex-shrink: 0;
+  background: var(--color-bg-secondary);
+}
+
+@media (max-width: 1250px) {
+  .workspace-dashboard {
+    grid-template-columns: minmax(0, 1fr) 320px;
+  }
 }
 </style>

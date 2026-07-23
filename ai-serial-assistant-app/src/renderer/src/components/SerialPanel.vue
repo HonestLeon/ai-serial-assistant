@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted, reactive, watch } from 'vue'
-import { Refresh, Link, SetUp, MagicStick } from '@element-plus/icons-vue'
+import { Refresh, Link, SetUp, MagicStick, QuestionFilled } from '@element-plus/icons-vue'
 
 const props = defineProps({
   aiConfig: { type: Object, required: true },
@@ -142,8 +142,30 @@ onMounted(() => {
           @change="onProtocolChange"
         >
           <el-option label="Raw（文本行）" value="raw" />
-          <el-option label="JustFloat（浮点帧）" value="justfloat" />
-          <el-option label="FireWater（标签:值）" value="firewater" />
+          <el-option label="JustFloat（浮点帧）" value="justfloat">
+            <div class="protocol-option">
+              <span>JustFloat（浮点帧）</span>
+              <el-tooltip
+                content="每个通道为4字节小端Float32，帧尾为 00 00 80 7F。例如两个通道：float1 + float2 + 帧尾。"
+                placement="right"
+                :show-after="250"
+              >
+                <el-icon class="protocol-info" @click.stop><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </div>
+          </el-option>
+          <el-option label="FireWater（标签:值）" value="firewater">
+            <div class="protocol-option">
+              <span>FireWater（标签:值）</span>
+              <el-tooltip
+                content="文本行中冒号前为标签、冒号后为数值。例如：speed,pwm,error: 1200,35.5,-2.1"
+                placement="right"
+                :show-after="250"
+              >
+                <el-icon class="protocol-info" @click.stop><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </div>
+          </el-option>
         </el-select>
       </div>
       <div class="field">
@@ -271,6 +293,20 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.protocol-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 8px;
+}
+
+.protocol-info {
+  flex-shrink: 0;
+  color: var(--color-primary);
+  cursor: help;
+}
+
 .serial-panel {
   overflow: visible;
   padding-bottom: var(--space-4);

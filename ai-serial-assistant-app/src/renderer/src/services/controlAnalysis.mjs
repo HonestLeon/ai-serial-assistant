@@ -70,6 +70,8 @@ function oscillationAmplitude(values) {
 export function analyzeControlSamples(inputSamples, options = {}) {
   const overshootLimit = finite(options.overshootLimit, 20)
   const oscillationLimit = finite(options.oscillationLimit, 10)
+  const steadyErrorLimitRatio = clamp(finite(options.steadyErrorLimitRatio, 0.05), 0.001, 1)
+  const minimumSamples = Math.round(clamp(finite(options.minimumSamples, 8), 8, 1000))
   const bandRatio = clamp(finite(options.settlingBand, 0.05), 0.01, 0.2)
   const samples = inputSamples
     .map((sample, index) => ({
@@ -81,10 +83,10 @@ export function analyzeControlSamples(inputSamples, options = {}) {
     .filter((sample) => Number.isFinite(sample.t))
     .sort((a, b) => a.t - b.t)
 
-  if (samples.length < 8) {
+  if (samples.length < minimumSamples) {
     return {
       valid: false,
-      reason: '至少需要 8 个有效采样点',
+      reason: `至少需要 ${minimumSamples} 个有效采样点`,
       sampleCount: samples.length
     }
   }
@@ -128,7 +130,9 @@ export function analyzeControlSamples(inputSamples, options = {}) {
   const risks = []
   if (overshoot > overshootLimit) risks.push(`超调 ${fmt(overshoot, 1)}% 超过 ${overshootLimit}% 安全线`)
   if (oscillation > oscillationLimit) risks.push(`稳态波动 ${fmt(oscillation, 1)}% 超过 ${oscillationLimit}% 安全线`)
-  if (Math.abs(steadyError) > amplitude * 0.05) risks.push('稳态误差超过阶跃幅值的 5%')
+  if (Math.abs(steadyError) > amplitude * steadyErrorLimitRatio) {
+    risks.push(`稳态误差超过阶跃幅值的 ${fmt(steadyErrorLimitRatio * 100, 1)}%`)
+  }
   if (settling === null) risks.push('采样窗口内未进入稳定带')
 
   return {
@@ -149,7 +153,13 @@ export function analyzeControlSamples(inputSamples, options = {}) {
     rmse: fmt(rmse),
     oscillation: fmt(oscillation, 2),
     outputPeak: fmt(outputPeak),
-    limits: { overshoot: overshootLimit, oscillation: oscillationLimit },
+    limits: {
+      overshoot: overshootLimit,
+      oscillation: oscillationLimit,
+      settlingBand: bandRatio,
+      steadyErrorRatio: steadyErrorLimitRatio,
+      minimumSamples
+    },
     risks,
     health: risks.length === 0 ? '良好' : risks.length === 1 ? '需关注' : '高风险'
   }
