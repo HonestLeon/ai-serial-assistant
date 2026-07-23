@@ -142,31 +142,29 @@ onMounted(() => {
           @change="onProtocolChange"
         >
           <el-option label="Raw（文本行）" value="raw" />
-          <el-option label="JustFloat（浮点帧）" value="justfloat">
-            <div class="protocol-option">
-              <span>JustFloat（浮点帧）</span>
-              <el-tooltip
-                content="每个通道为4字节小端Float32，帧尾为 00 00 80 7F。例如两个通道：float1 + float2 + 帧尾。"
-                placement="right"
-                :show-after="250"
-              >
-                <el-icon class="protocol-info" @click.stop><QuestionFilled /></el-icon>
-              </el-tooltip>
-            </div>
-          </el-option>
-          <el-option label="FireWater（标签:值）" value="firewater">
-            <div class="protocol-option">
-              <span>FireWater（标签:值）</span>
-              <el-tooltip
-                content="文本行中冒号前为标签、冒号后为数值。例如：speed,pwm,error: 1200,35.5,-2.1"
-                placement="right"
-                :show-after="250"
-              >
-                <el-icon class="protocol-info" @click.stop><QuestionFilled /></el-icon>
-              </el-tooltip>
-            </div>
-          </el-option>
+          <el-option label="JustFloat（浮点帧）" value="justfloat" />
+          <el-option label="FireWater（标签:值）" value="firewater" />
         </el-select>
+        <div class="protocol-help-row">
+          <el-tooltip
+            content="JustFloat：每个通道为 4 字节小端 Float32，帧尾为 00 00 80 7F。例如两个通道：float1 + float2 + 帧尾。"
+            placement="right-start"
+            :show-after="200"
+            :teleported="true"
+            popper-class="serial-protocol-tooltip"
+          >
+            <span class="protocol-help"><el-icon><QuestionFilled /></el-icon>JustFloat</span>
+          </el-tooltip>
+          <el-tooltip
+            content="FireWater：冒号前为标签，冒号后为数值。例如：speed,pwm,error: 1200,35.5,-2.1"
+            placement="right-start"
+            :show-after="200"
+            :teleported="true"
+            popper-class="serial-protocol-tooltip"
+          >
+            <span class="protocol-help"><el-icon><QuestionFilled /></el-icon>FireWater</span>
+          </el-tooltip>
+        </div>
       </div>
       <div class="field">
         <label>数据接口</label>
@@ -293,16 +291,19 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.protocol-option {
+.protocol-help-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  gap: 8px;
+  gap: 12px;
+  margin-top: 6px;
+  flex-wrap: wrap;
 }
 
-.protocol-info {
-  flex-shrink: 0;
+.protocol-help {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
   color: var(--color-primary);
   cursor: help;
 }

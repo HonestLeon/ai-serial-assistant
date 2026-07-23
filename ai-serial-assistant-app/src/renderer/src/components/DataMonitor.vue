@@ -14,7 +14,7 @@ const encoding = ref('utf8')
 const activeSubTab = ref('stream')
 const messages = ref([])
 const tableRows = ref([])
-const MAX_TABLE_ROWS = 500
+const MAX_TABLE_ROWS = 1000
 
 // 滚动容器引用
 const messageListRef = ref(null)

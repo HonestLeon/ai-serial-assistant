@@ -1,6 +1,11 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
 import { Avatar, Histogram, Warning, Document, Promotion } from '@element-plus/icons-vue'
+import {
+  computeChannelStatistics,
+  formatStatistics,
+  preprocessSerialLines
+} from '../services/aiDataContext.mjs'
 
 const props = defineProps({
   connected: Boolean,
@@ -42,6 +47,12 @@ const loading = ref(false)
 const commandInput = ref('')
 const detectedProtocol = ref(null)
 const detectedAnomaly = ref(null)
+const backgroundKnowledge = ref(localStorage.getItem('ai_serial_background') || '')
+
+const preprocessingSummary = computed(() => {
+  const result = preprocessSerialLines(props.serialContext.recentLines)
+  return `${result.inputCount} → ${result.outputCount} 行`
+})
 
 const connectionDisplay = computed(() => {
   return props.connected ? props.statusText : '未连接'
@@ -55,43 +66,60 @@ function saveSwitches() {
   emit('update-ai-switches')
 }
 
+function saveBackgroundKnowledge() {
+  localStorage.setItem('ai_serial_background', backgroundKnowledge.value)
+}
+
 function formatContext() {
   const ctx = props.serialContext
-  const lines = []
+  const processed = preprocessSerialLines(ctx.recentLines)
+  const statistics = computeChannelStatistics(ctx.recentLines)
+  const latest = statistics.map((item) => `${item.channel}=${item.last}`).join(', ') || '无'
+  const processedText = processed.lines.length
+    ? processed.lines.map((item) => `[${item.index}] ${item.text}`).join('\n')
+    : '无'
 
-  lines.push(`连接状态：${ctx.connected ? `${ctx.path} @ ${ctx.baudRate}` : '未连接'}`)
-  lines.push(`最近接收行数：${ctx.recentLines.length}`)
-
-  if (ctx.latestValues.some(v => v !== 0)) {
-    const values = ctx.latestValues.map((v, i) => `I${i}=${v.toFixed(3)}`).join(', ')
-    lines.push(`当前通道数值：${values}`)
-  }
-
-  if (ctx.recentLines.length > 0) {
-    const sample = ctx.recentLines.slice(-10).map(l => l.text).join('\n')
-    lines.push(`最近 10 条原始数据：\n${sample}`)
-  }
-
-  if (detectedProtocol.value) {
-    lines.push(`协议识别结果：${detectedProtocol.value.name}（置信度：${detectedProtocol.value.confidence}）`)
-  }
-
-  if (detectedAnomaly.value) {
-    lines.push(`异常检测结果：${detectedAnomaly.value.summary}`)
-  }
-
-  return lines.join('\n')
+  return [
+    '[任务约束]',
+    '只依据以下数据作答；不得臆测单位、通道含义或硬件型号。背景知识与数据冲突时应明确指出。',
+    '',
+    '[用户提供的数据说明/背景知识]',
+    backgroundKnowledge.value.trim() || '未提供',
+    '',
+    '[连接与协议]',
+    `连接状态：${ctx.connected ? `${ctx.path} @ ${ctx.baudRate}` : '未连接'}`,
+    `协议识别：${detectedProtocol.value ? `${detectedProtocol.value.name}（${detectedProtocol.value.confidence}）` : '未识别'}`,
+    `最新值：${latest}`,
+    '',
+    '[每通道统计量]',
+    formatStatistics(statistics),
+    '',
+    '[预处理说明]',
+    `原始 ${processed.inputCount} 行，变化感知压缩后 ${processed.outputCount} 行，保留比例 ${processed.compressionRatio}，变化阈值 ${processed.changeThreshold}。`,
+    '变化区段及相邻采样优先保留，平稳区段下采样。以下是预处理后的全部数据，并非仅截取末尾。',
+    '',
+    '[预处理后的原始数据（全部）]',
+    processedText,
+    '',
+    '[本地异常检测]',
+    detectedAnomaly.value?.summary || '未启用或暂无结果'
+  ].join('\n')
 }
 
 function buildSystemPrompt() {
-  return `你是 AI 串口调试助手，熟悉嵌入式开发、硬件调试与串口协议分析。请基于下面提供的串口上下文回答问题，保持回答简洁、专业、可操作。当前上下文如下：\n\n${formatContext()}`
+  return `你是 AI 串口调试助手，熟悉嵌入式开发、控制系统、硬件调试与串口协议分析。
+回答必须引用具体通道、统计量或采样序号作为依据；区分“数据事实”“推测”和“建议”。不得虚构单位、字段语义或设备状态。
+若证据不足，请明确需要用户补充什么信息。当前上下文如下：
+
+${formatContext()}`
 }
 
 async function callAi(customMessages) {
   saveConfig()
   loading.value = true
   try {
-    const response = await fetch(`${props.aiConfig.baseUrl}/chat/completions`, {
+    const baseUrl = String(props.aiConfig.baseUrl || '').replace(/\/+$/, '')
+    const response = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -307,6 +335,22 @@ async function handleQuickAction(action) {
           <div class="detected-title">异常检测</div>
           <div class="detected-value">{{ detectedAnomaly.summary }}</div>
         </div>
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="panel-section">
+        <div class="section-header">数据说明 / 背景知识</div>
+        <el-input
+          v-model="backgroundKnowledge"
+          type="textarea"
+          :rows="4"
+          resize="vertical"
+          placeholder="例如：I0 是目标转速，I1 是实际转速，采样周期 10 ms，单位 rpm。"
+          @change="saveBackgroundKnowledge"
+          @blur="saveBackgroundKnowledge"
+        />
+        <div class="preprocess-summary">AI 上下文预处理：{{ preprocessingSummary }}</div>
       </div>
 
       <div class="divider"></div>
@@ -544,6 +588,13 @@ async function handleQuickAction(action) {
 
 .command-box {
   margin-top: var(--space-2);
+}
+
+.preprocess-summary {
+  margin-top: 6px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--color-text-tertiary);
 }
 
 .chat-area {
