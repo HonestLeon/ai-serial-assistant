@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, reactive } from 'vue'
+import { ref, computed, reactive, onUnmounted } from 'vue'
 import { Cpu, Monitor, ChatDotRound, Operation } from '@element-plus/icons-vue'
 import SerialPanel from './components/SerialPanel.vue'
 import DataMonitor from './components/DataMonitor.vue'
@@ -9,7 +9,10 @@ import PidPanel from './components/PidPanel.vue'
 import WorkspaceChart from './components/WorkspaceChart.vue'
 import WorkspaceAnalysis from './components/WorkspaceAnalysis.vue'
 
-const activeTab = ref('monitor')
+const activeTab = ref('stream')
+const topPanePercent = ref(Number(localStorage.getItem('workspace_top_percent')) || 52)
+const pidSimulationSamples = ref([])
+let resizing = false
 const connected = ref(false)
 const status = ref({ connected: false, path: null, baudRate: null })
 const rxCount = ref(0)
@@ -115,10 +118,42 @@ function pushSerialContext(payload) {
 }
 
 const tabs = [
-  { key: 'monitor', label: '工作台', icon: Monitor },
+  { key: 'stream', label: '数据流', icon: Monitor },
+  { key: 'table', label: '数据表', icon: Monitor },
+  { key: 'analysis', label: '数据分析', icon: Operation },
   { key: 'ai', label: 'AI 助手', icon: ChatDotRound },
   { key: 'pid', label: 'PID 调参', icon: Operation }
 ]
+
+function beginResize(event) {
+  resizing = true
+  event.currentTarget?.setPointerCapture?.(event.pointerId)
+  window.addEventListener('pointermove', resizeWorkspace)
+  window.addEventListener('pointerup', stopResize, { once: true })
+}
+
+function resizeWorkspace(event) {
+  if (!resizing) return
+  const area = document.querySelector('.content-area')
+  if (!area) return
+  const bounds = area.getBoundingClientRect()
+  const percent = ((event.clientY - bounds.top) / bounds.height) * 100
+  topPanePercent.value = Math.max(28, Math.min(72, percent))
+}
+
+function stopResize() {
+  resizing = false
+  localStorage.setItem('workspace_top_percent', String(topPanePercent.value))
+  window.removeEventListener('pointermove', resizeWorkspace)
+}
+
+function onPidSimulationData(samples) {
+  pidSimulationSamples.value = [...samples]
+}
+
+onUnmounted(() => {
+  window.removeEventListener('pointermove', resizeWorkspace)
+})
 
 const statusText = computed(() => {
   if (!status.value.connected) return '未连接'
@@ -177,18 +212,7 @@ function toggleHex() {
         <span class="app-version">v1.1.0</span>
       </div>
 
-      <nav class="header-tabs">
-        <div
-          v-for="tab in tabs"
-          :key="tab.key"
-          class="tab-item"
-          :class="{ active: activeTab === tab.key, ai: tab.key === 'ai' }"
-          @click="activeTab = tab.key"
-        >
-          <el-icon size="14"><component :is="tab.icon" /></el-icon>
-          <span>{{ tab.label }}</span>
-        </div>
-      </nav>
+      <div class="header-context">实时波形持续可见 · 拖动分隔条调整上下区域</div>
 
       <div class="header-right">
         <div class="window-dot" style="background: var(--state-error);"></div>
@@ -215,18 +239,45 @@ function toggleHex() {
 
       <!-- Content -->
       <section class="content-area">
-        <div v-show="activeTab === 'monitor'" class="workspace-dashboard">
-          <div class="workspace-center">
-            <section class="workspace-wave">
-              <WorkspaceChart
-                :connected="connected"
-                :latest-payload="latestPayload"
-                :channel-count="detectedChannelCount"
-                :visible="activeTab === 'monitor'"
-              />
-            </section>
-            <section class="workspace-data">
+        <div
+          class="resizable-workspace"
+          :style="{ gridTemplateRows: `${topPanePercent}% 8px minmax(0, 1fr)` }"
+        >
+          <section class="workspace-wave">
+            <WorkspaceChart
+              :connected="connected"
+              :latest-payload="latestPayload"
+              :channel-count="detectedChannelCount"
+              :simulation-samples="pidSimulationSamples"
+              :visible="true"
+            />
+          </section>
+
+          <div
+            class="workspace-resizer"
+            title="上下拖动调整波形区与工作区高度"
+            @pointerdown="beginResize"
+          >
+            <span />
+          </div>
+
+          <section class="lower-workspace">
+            <nav class="lower-tabs">
+              <button
+                v-for="tab in tabs"
+                :key="tab.key"
+                :class="{ active: activeTab === tab.key, ai: tab.key === 'ai' }"
+                @click="activeTab = tab.key"
+              >
+                <el-icon size="13"><component :is="tab.icon" /></el-icon>
+                {{ tab.label }}
+              </button>
+            </nav>
+            <div class="lower-panel">
               <DataMonitor
+                v-show="activeTab === 'stream' || activeTab === 'table'"
+                :active-view="activeTab"
+                :show-view-tabs="false"
                 :connected="connected"
                 :show-hex="showHex"
                 :recording="recording"
@@ -236,35 +287,35 @@ function toggleHex() {
                 @stop-recording="stopRecording"
                 @clear-recording="clearRecording"
               />
-            </section>
-          </div>
-          <aside class="workspace-analysis">
-            <WorkspaceAnalysis
-              :serial-context="serialContext"
-              :ai-config="aiConfig"
-              :channel-count="detectedChannelCount"
-            />
-          </aside>
+              <WorkspaceAnalysis
+                v-show="activeTab === 'analysis'"
+                :serial-context="serialContext"
+                :ai-config="aiConfig"
+                :channel-count="detectedChannelCount"
+              />
+              <AiPanel
+                v-show="activeTab === 'ai'"
+                :connected="connected"
+                :status-text="statusText"
+                :serial-context="serialContext"
+                :ai-config="aiConfig"
+                :ai-switches="aiSwitches"
+                @send="onSend"
+                @update-ai-config="saveAiConfig"
+                @update-ai-switches="saveAiSwitches"
+              />
+              <PidPanel
+                v-show="activeTab === 'pid'"
+                :connected="connected"
+                :ai-config="aiConfig"
+                :serial-context="serialContext"
+                :latest-payload="latestPayload"
+                @send="onSend"
+                @simulation-data="onPidSimulationData"
+              />
+            </div>
+          </section>
         </div>
-        <AiPanel
-          v-show="activeTab === 'ai'"
-          :connected="connected"
-          :status-text="statusText"
-          :serial-context="serialContext"
-          :ai-config="aiConfig"
-          :ai-switches="aiSwitches"
-          @send="onSend"
-          @update-ai-config="saveAiConfig"
-          @update-ai-switches="saveAiSwitches"
-        />
-        <PidPanel
-          v-show="activeTab === 'pid'"
-          :connected="connected"
-          :ai-config="aiConfig"
-          :serial-context="serialContext"
-          :latest-payload="latestPayload"
-          @send="onSend"
-        />
       </section>
 
     </div>
@@ -341,6 +392,11 @@ function toggleHex() {
   height: 100%;
 }
 
+.header-context {
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+}
+
 .tab-item {
   display: flex;
   align-items: center;
@@ -408,41 +464,96 @@ function toggleHex() {
   flex-direction: column;
 }
 
-.workspace-dashboard {
+.resizable-workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 370px;
   height: 100%;
-  min-height: 0;
-}
-
-.workspace-center {
-  display: grid;
-  grid-template-rows: minmax(280px, 56%) minmax(220px, 44%);
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.workspace-wave,
-.workspace-data {
   min-height: 0;
   overflow: hidden;
 }
 
 .workspace-wave {
-  border-bottom: 1px solid var(--color-border-default);
+  min-height: 0;
+  overflow: hidden;
+  background: var(--color-bg-primary);
 }
 
-.workspace-analysis {
-  min-width: 0;
+.workspace-resizer {
+  position: relative;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: row-resize;
+  background: var(--color-bg-tertiary);
+  border-top: 1px solid var(--color-border-default);
+  border-bottom: 1px solid var(--color-border-default);
+  user-select: none;
+  touch-action: none;
+}
+
+.workspace-resizer span {
+  width: 56px;
+  height: 3px;
+  border-radius: 3px;
+  background: var(--color-border-active);
+}
+
+.workspace-resizer:hover span {
+  background: var(--color-primary);
+}
+
+.lower-workspace {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   overflow: hidden;
-  border-left: 1px solid var(--color-border-default);
   background: var(--color-bg-secondary);
 }
 
-@media (max-width: 1250px) {
-  .workspace-dashboard {
-    grid-template-columns: minmax(0, 1fr) 320px;
-  }
+.lower-tabs {
+  display: flex;
+  flex-shrink: 0;
+  height: 36px;
+  padding: 0 12px;
+  gap: 4px;
+  align-items: stretch;
+  border-bottom: 1px solid var(--color-border-default);
+  background: var(--color-bg-secondary);
+}
+
+.lower-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 13px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.lower-tabs button:hover,
+.lower-tabs button.active {
+  color: var(--color-primary);
+  border-bottom-color: var(--color-primary);
+}
+
+.lower-tabs button.active.ai {
+  color: var(--color-ai);
+  border-bottom-color: var(--color-ai);
+}
+
+.lower-panel {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.lower-panel > * {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
 }
 </style>

@@ -21,7 +21,7 @@ const props = defineProps({
   serialContext: { type: Object, default: null },
   latestPayload: { type: Object, default: null }
 })
-const emit = defineEmits(['send'])
+const emit = defineEmits(['send', 'simulation-data'])
 
 const testMode = ref('simulation')
 const strategyId = ref('motor_speed')
@@ -116,6 +116,7 @@ function runSimulation() {
   }
   const result = simulatePidStrategy(strategyId.value, overrides)
   response.value = result.samples
+  emit('simulation-data', result.samples)
   simulationStatus.value = `仿真完成：${result.samples.length} 点；反馈已叠加可复现的小幅噪声`
   deterministicMetrics.value = null
   localReasons.value = []
