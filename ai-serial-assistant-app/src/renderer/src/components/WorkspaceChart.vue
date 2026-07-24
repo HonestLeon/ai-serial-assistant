@@ -7,6 +7,7 @@ const props = defineProps({
   connected: Boolean,
   latestPayload: { type: Object, default: null },
   channelCount: { type: Number, default: 0 },
+  simulationSamples: { type: Array, default: () => [] },
   visible: { type: Boolean, default: true }
 })
 
@@ -14,17 +15,21 @@ const chartRef = ref(null)
 const seriesData = ref([])
 const sampleLabels = ref([])
 const visibleChannels = ref([])
+const seriesNames = ref([])
 const normalizeDrawing = ref(false)
 const yAuto = ref(true)
 const yMin = ref('')
 const yMax = ref('')
+const simulationMode = ref(false)
 const isDark = ref(document.documentElement.classList.contains('dark'))
 const MAX_POINTS = 2000
 let sampleIndex = 0
 let chart = null
 
 const channelCount = computed(() =>
-  Math.min(8, Math.max(props.channelCount || 0, seriesData.value.length))
+  Math.min(8, simulationMode.value
+    ? seriesData.value.length
+    : Math.max(props.channelCount || 0, seriesData.value.length))
 )
 
 const themeChannelColors = [
@@ -54,6 +59,7 @@ function ensureChannels(count) {
   while (seriesData.value.length < count) {
     seriesData.value.push([])
     visibleChannels.value.push(true)
+    seriesNames.value.push(`I${seriesNames.value.length}`)
   }
 }
 
@@ -72,7 +78,7 @@ function plottedData(data) {
 
 function buildSeries() {
   return Array.from({ length: channelCount.value }, (_, index) => ({
-    name: `I${index}`,
+    name: seriesNames.value[index] || `I${index}`,
     type: 'line',
     smooth: true,
     showSymbol: false,
@@ -151,7 +157,9 @@ function refreshChart(resetOption = false) {
 function appendData(payload) {
   const values = extractNumbers(payload.raw)
   if (!values.length) return
+  simulationMode.value = false
   ensureChannels(values.length)
+  seriesNames.value = seriesData.value.map((_, index) => `I${index}`)
   sampleLabels.value.push(sampleIndex++)
   for (let index = 0; index < seriesData.value.length; index += 1) {
     seriesData.value[index].push(Number.isFinite(values[index]) ? values[index] : null)
@@ -163,6 +171,24 @@ function appendData(payload) {
   refreshChart()
 }
 
+function loadSimulationSamples(samples) {
+  if (!samples?.length) return
+  simulationMode.value = true
+  seriesData.value = [[], [], []]
+  sampleLabels.value = []
+  visibleChannels.value = [true, true, true]
+  seriesNames.value = ['目标值', '反馈值', '控制输出']
+  sampleIndex = 0
+  samples.slice(-MAX_POINTS).forEach((sample) => {
+    sampleLabels.value.push(Number(sample.t).toFixed(3))
+    seriesData.value[0].push(Number.isFinite(Number(sample.target)) ? Number(sample.target) : null)
+    seriesData.value[1].push(Number.isFinite(Number(sample.feedback)) ? Number(sample.feedback) : null)
+    seriesData.value[2].push(Number.isFinite(Number(sample.output)) ? Number(sample.output) : null)
+    sampleIndex += 1
+  })
+  refreshChart(true)
+}
+
 function toggleChannel(index) {
   visibleChannels.value[index] = !visibleChannels.value[index]
   refreshChart()
@@ -172,7 +198,9 @@ function clear() {
   seriesData.value = []
   sampleLabels.value = []
   visibleChannels.value = []
+  seriesNames.value = []
   sampleIndex = 0
+  simulationMode.value = false
   refreshChart(true)
 }
 
@@ -194,7 +222,7 @@ function exportData(format) {
       exportTime: new Date().toISOString(),
       normalizedOnlyForDrawing: normalizeDrawing.value,
       channels: Array.from({ length: channelCount.value }, (_, index) => ({
-        name: `I${index}`,
+        name: seriesNames.value[index] || `I${index}`,
         visible: visibleChannels.value[index],
         rawData: seriesData.value[index]
       }))
@@ -230,6 +258,10 @@ watch(() => props.latestPayload, (payload) => {
   if (payload) appendData(payload)
 })
 
+watch(() => props.simulationSamples, (samples) => {
+  loadSimulationSamples(samples)
+})
+
 watch(() => props.visible, (visible) => {
   if (visible) nextTick(handleResize)
 })
@@ -257,7 +289,7 @@ onUnmounted(() => {
         >
           <el-icon><View v-if="visibleChannels[index - 1]" /><Hide v-else /></el-icon>
           <i :style="{ background: colors()[index - 1] }" />
-          I{{ index - 1 }}
+          {{ seriesNames[index - 1] || `I${index - 1}` }}
         </button>
       </div>
       <div v-else class="waiting">等待解析数据通道</div>

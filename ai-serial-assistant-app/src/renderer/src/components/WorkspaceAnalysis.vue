@@ -14,7 +14,8 @@ const props = defineProps({
   channelCount: { type: Number, default: 0 }
 })
 
-const mapping = reactive({ target: 0, feedback: 1, output: 2 })
+const mapping = reactive({ target: 0, feedback: 1 })
+const responseEnabled = ref(false)
 const sampleIntervalMs = ref(50)
 const metrics = ref(null)
 const aiExplanation = ref('')
@@ -33,9 +34,45 @@ const channelOptions = computed(() =>
   Array.from({ length: Math.max(1, props.channelCount || 0) }, (_, index) => index)
 )
 
+const channelFeatures = computed(() => {
+  const count = Math.max(
+    props.channelCount || 0,
+    props.serialContext.channelHistory.filter((values) => values.length > 0).length
+  )
+  return Array.from({ length: count }, (_, index) => {
+    const values = (props.serialContext.channelHistory[index] || []).filter(Number.isFinite)
+    if (!values.length) return null
+    const n = values.length
+    const min = Math.min(...values)
+    const max = Math.max(...values)
+    const mean = values.reduce((sum, value) => sum + value, 0) / n
+    const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / n
+    const rms = Math.sqrt(values.reduce((sum, value) => sum + value ** 2, 0) / n)
+    return {
+      channel: `I${index}`,
+      n,
+      min,
+      max,
+      mean,
+      peak: Math.max(...values.map(Math.abs)),
+      rms,
+      std: Math.sqrt(variance),
+      latest: values[n - 1]
+    }
+  }).filter(Boolean)
+})
+
+function featureValue(value) {
+  if (!Number.isFinite(value)) return '--'
+  const magnitude = Math.abs(value)
+  return magnitude >= 10000 || (magnitude > 0 && magnitude < 0.001)
+    ? value.toExponential(3)
+    : Number(value.toFixed(4))
+}
+
 const samples = computed(() => createSamplesFromChannels(
   props.serialContext.channelHistory,
-  mapping,
+  { ...mapping, output: mapping.target },
   sampleIntervalMs.value
 ))
 
@@ -164,74 +201,115 @@ function exportReport() {
   <div class="workspace-analysis">
     <header class="analysis-header">
       <div>
-        <strong>响应分析</strong>
-        <span>{{ samples.length }} 个对齐采样点</span>
+        <strong>数据分析</strong>
+        <span>{{ channelFeatures.length }} 个有效通道 · {{ samples.length }} 个对齐采样点</span>
       </div>
       <div class="header-actions">
         <el-tooltip content="设置稳定带宽、误差阈值和最少采样点" placement="bottom">
-          <el-button circle size="small" :icon="Setting" @click="settingsVisible = true" />
+          <el-button circle size="small" :icon="Setting" :disabled="!responseEnabled" @click="settingsVisible = true" />
         </el-tooltip>
-        <el-button circle size="small" :icon="Refresh" @click="runAnalysis" />
-        <el-button circle size="small" :icon="Download" @click="exportReport" />
+        <el-button circle size="small" :icon="Refresh" :disabled="!responseEnabled" @click="runAnalysis" />
+        <el-button circle size="small" :icon="Download" :disabled="!responseEnabled" @click="exportReport" />
       </div>
     </header>
 
     <section class="analysis-scroll">
-      <div class="mapping-grid">
-        <label>目标
-          <el-select v-model="mapping.target" size="small">
-            <el-option v-for="index in channelOptions" :key="index" :label="`I${index}`" :value="index" />
-          </el-select>
-        </label>
-        <label>反馈
-          <el-select v-model="mapping.feedback" size="small">
-            <el-option v-for="index in channelOptions" :key="index" :label="`I${index}`" :value="index" />
-          </el-select>
-        </label>
-        <label>控制量
-          <el-select v-model="mapping.output" size="small">
-            <el-option v-for="index in channelOptions" :key="index" :label="`I${index}`" :value="index" />
-          </el-select>
-        </label>
-      </div>
-      <label class="sample-field">采样间隔
-        <el-input-number v-model="sampleIntervalMs" size="small" :min="1" :max="5000" controls-position="right" />
-        <span>ms</span>
-      </label>
-
-      <button v-if="!metrics?.valid" class="primary-action" @click="runAnalysis">生成响应分析</button>
-
-      <template v-else>
-        <div class="health-card" :class="{ good: metrics.health === '良好' }">
-          <span>响应状态</span>
-          <strong>{{ metrics.health }}</strong>
-          <small>{{ metrics.sampleRate || '--' }} Hz · {{ metrics.sampleCount }}点</small>
-        </div>
-        <div class="metrics-grid">
-          <div v-for="item in metricCards" :key="item.label" class="metric" :class="{ danger: item.danger }">
-            <span>{{ item.label }}</span>
-            <strong>{{ item.value }}</strong>
+      <section class="feature-section">
+        <div class="section-title">
+          <div>
+            <strong>通道数据特征</strong>
+            <span>默认开启，基于当前本地缓存实时计算</span>
           </div>
+          <el-tag type="success" size="small">已开启</el-tag>
+        </div>
+        <div v-if="channelFeatures.length" class="feature-table-wrap">
+          <table class="feature-table">
+            <thead>
+              <tr>
+                <th>通道</th><th>样本数</th><th>最新值</th><th>平均值</th>
+                <th>最小值</th><th>最大值</th><th>绝对峰值</th><th>均方根</th><th>标准差</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="item in channelFeatures" :key="item.channel">
+                <td><strong>{{ item.channel }}</strong></td>
+                <td>{{ item.n }}</td>
+                <td>{{ featureValue(item.latest) }}</td>
+                <td>{{ featureValue(item.mean) }}</td>
+                <td>{{ featureValue(item.min) }}</td>
+                <td>{{ featureValue(item.max) }}</td>
+                <td>{{ featureValue(item.peak) }}</td>
+                <td>{{ featureValue(item.rms) }}</td>
+                <td>{{ featureValue(item.std) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p v-else class="empty-features">等待解析数值通道后生成统计特征。</p>
+      </section>
+
+      <section class="response-section">
+        <div class="section-title">
+          <div>
+            <strong>响应分析（可选）</strong>
+            <span>适用于具有目标值与反馈值的阶跃响应数据</span>
+          </div>
+          <el-switch v-model="responseEnabled" size="small" />
         </div>
 
-        <section class="analysis-card">
-          <strong>判定依据</strong>
-          <p>{{ stabilityDescription }}</p>
-          <ul v-if="metrics.risks.length">
-            <li v-for="risk in metrics.risks" :key="risk">{{ risk }}</li>
-          </ul>
-          <p v-else class="safe">当前标准下未发现明显风险。</p>
-        </section>
-
-        <section class="analysis-card">
-          <div class="card-title">
-            <strong>AI 结构化解释（可选）</strong>
-            <el-button type="success" size="small" :icon="MagicStick" :loading="aiLoading" @click="requestAiExplanation">解释</el-button>
+        <template v-if="responseEnabled">
+          <div class="mapping-grid">
+            <label>目标
+              <el-select v-model="mapping.target" size="small">
+                <el-option v-for="index in channelOptions" :key="index" :label="`I${index}`" :value="index" />
+              </el-select>
+            </label>
+            <label>反馈
+              <el-select v-model="mapping.feedback" size="small">
+                <el-option v-for="index in channelOptions" :key="index" :label="`I${index}`" :value="index" />
+              </el-select>
+            </label>
           </div>
-          <p v-if="aiExplanation" class="ai-text">{{ aiExplanation }}</p>
-          <p v-else>AI仅解释指标和风险；本页不生成PID参数。</p>
-        </section>
-      </template>
+          <label class="sample-field">采样间隔
+            <el-input-number v-model="sampleIntervalMs" size="small" :min="1" :max="5000" controls-position="right" />
+            <span>ms</span>
+          </label>
+
+          <button v-if="!metrics?.valid" class="primary-action" @click="runAnalysis">生成响应分析</button>
+
+          <template v-else>
+            <div class="health-card" :class="{ good: metrics.health === '良好' }">
+              <span>响应状态</span>
+              <strong>{{ metrics.health }}</strong>
+              <small>{{ metrics.sampleRate || '--' }} Hz · {{ metrics.sampleCount }}点</small>
+            </div>
+            <div class="metrics-grid">
+              <div v-for="item in metricCards" :key="item.label" class="metric" :class="{ danger: item.danger }">
+                <span>{{ item.label }}</span>
+                <strong>{{ item.value }}</strong>
+              </div>
+            </div>
+
+            <section class="analysis-card">
+              <strong>判定依据</strong>
+              <p>{{ stabilityDescription }}</p>
+              <ul v-if="metrics.risks.length">
+                <li v-for="risk in metrics.risks" :key="risk">{{ risk }}</li>
+              </ul>
+              <p v-else class="safe">当前标准下未发现明显风险。</p>
+            </section>
+
+            <section class="analysis-card">
+              <div class="card-title">
+                <strong>AI 结构化解释（可选）</strong>
+                <el-button type="success" size="small" :icon="MagicStick" :loading="aiLoading" @click="requestAiExplanation">解释</el-button>
+              </div>
+              <p v-if="aiExplanation" class="ai-text">{{ aiExplanation }}</p>
+              <p v-else>AI仅解释指标和风险；本页不生成PID参数。</p>
+            </section>
+          </template>
+        </template>
+      </section>
     </section>
 
     <el-dialog v-model="settingsVisible" title="响应分析高级设置" width="520px">
@@ -265,7 +343,22 @@ function exportReport() {
 .workspace-analysis { display: flex; height: 100%; min-height: 0; flex-direction: column; color: var(--color-text-primary); background: var(--color-bg-secondary); }
 .analysis-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--color-border-default); }.analysis-header div:first-child { display: flex; flex-direction: column; }.analysis-header strong { font-size: 14px; }.analysis-header span { color: var(--color-text-tertiary); font-size: 10px; }
 .header-actions { display: flex; gap: 5px; }.analysis-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; }
-.mapping-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }.mapping-grid label, .sample-field { display: flex; flex-direction: column; gap: 4px; color: var(--color-text-secondary); font-size: 10px; }
+.feature-section,.response-section { padding: 12px; border: 1px solid var(--color-border-default); border-radius: var(--radius-md); background: var(--color-bg-primary); }
+.response-section { margin-top: 10px; }
+.section-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.section-title > div { display: flex; flex-direction: column; gap: 2px; }
+.section-title strong { font-size: 13px; }
+.section-title span { color: var(--color-text-tertiary); font-size: 10px; }
+.feature-table-wrap { max-width: 100%; overflow-x: auto; }
+.feature-table { width: 100%; min-width: 820px; border-collapse: collapse; font-family: var(--font-family-mono); font-size: 11px; }
+.feature-table th,.feature-table td { padding: 7px 9px; border-bottom: 1px solid var(--color-border-default); text-align: right; white-space: nowrap; }
+.feature-table th:first-child,.feature-table td:first-child { position: sticky; left: 0; text-align: left; background: var(--color-bg-primary); }
+.feature-table th { color: var(--color-text-tertiary); font-weight: 500; }
+.feature-table td { color: var(--color-text-secondary); }
+.feature-table tbody tr:hover { background: var(--color-bg-tertiary); }
+.feature-table td strong { color: var(--color-primary); }
+.empty-features { margin: 16px 0; color: var(--color-text-tertiary); font-size: 11px; text-align: center; }
+.mapping-grid { display: grid; grid-template-columns: repeat(2, minmax(140px, 1fr)); gap: 8px; }.mapping-grid label, .sample-field { display: flex; flex-direction: column; gap: 4px; color: var(--color-text-secondary); font-size: 10px; }
 .sample-field { position: relative; margin-top: 8px; }.sample-field > span { position: absolute; right: 8px; bottom: 7px; color: var(--color-text-tertiary); }
 .primary-action { width: 100%; margin-top: 12px; padding: 8px; border: 0; border-radius: var(--radius-sm); background: var(--color-primary); color: var(--color-text-inverse); cursor: pointer; font-weight: 600; }
 .health-card { display: flex; flex-direction: column; margin-top: 12px; padding: 12px; border: 1px solid rgba(239,68,68,.4); border-radius: var(--radius-md); background: var(--color-bg-primary); }.health-card.good { border-color: rgba(34,197,94,.5); }.health-card span,.health-card small { color: var(--color-text-tertiary); font-size: 10px; }.health-card strong { margin: 3px 0; color: var(--state-warning); font-size: 20px; }.health-card.good strong { color: var(--state-success); }
