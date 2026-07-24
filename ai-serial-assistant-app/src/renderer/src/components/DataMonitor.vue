@@ -5,13 +5,15 @@ import { DataLine, Grid, VideoPause, VideoPlay, Delete, Refresh, Cpu } from '@el
 const props = defineProps({
   connected: Boolean,
   showHex: Boolean,
+  activeView: { type: String, default: 'stream' },
+  showViewTabs: { type: Boolean, default: true },
   recording: { type: Object, default: () => ({ active: false, data: [], startTime: 0 }) }
 })
 const emit = defineEmits(['data', 'send', 'start-recording', 'stop-recording', 'clear-recording'])
 
 const input = ref('')
 const encoding = ref('utf8')
-const activeSubTab = ref('stream')
+const activeSubTab = ref(props.activeView === 'table' ? 'table' : 'stream')
 const messages = ref([])
 const tableRows = ref([])
 const MAX_TABLE_ROWS = 1000
@@ -165,6 +167,13 @@ watch(() => props.connected, (v) => {
   if (!v) stopAutoSend()
 })
 
+watch(() => props.activeView, (view) => {
+  if (view === 'stream' || view === 'table') {
+    activeSubTab.value = view
+    scrollToTop()
+  }
+})
+
 function clear() {
   messages.value = []
   tableRows.value = []
@@ -297,11 +306,11 @@ onUnmounted(() => {
   <div class="data-monitor">
     <!-- Sub tabs -->
     <div class="sub-tabs">
-      <button class="sub-tab" :class="{ active: activeSubTab === 'stream' }" @click="activeSubTab = 'stream'">
+      <button v-if="showViewTabs" class="sub-tab" :class="{ active: activeSubTab === 'stream' }" @click="activeSubTab = 'stream'">
         <el-icon size="13"><DataLine /></el-icon>
         <span>数据流</span>
       </button>
-      <button class="sub-tab" :class="{ active: activeSubTab === 'table' }" @click="activeSubTab = 'table'">
+      <button v-if="showViewTabs" class="sub-tab" :class="{ active: activeSubTab === 'table' }" @click="activeSubTab = 'table'">
         <el-icon size="13"><Grid /></el-icon>
         <span>数据表</span>
       </button>
