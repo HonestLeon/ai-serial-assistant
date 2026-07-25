@@ -9,12 +9,14 @@ import {
 } from '../services/controlAnalysis.mjs'
 import {
   applyPidGuardrails,
-  buildFallbackSuggestion,
-  isMetricsAcceptable,
-  maybeUpdateBestResult,
-  scoreMetrics,
-  shouldRollbackToBest
+  buildFallbackSuggestion
 } from '../services/pidSafety.mjs'
+import {
+  applyCanonicalPid,
+  createTuningSession,
+  readCanonicalPid,
+  registerTuningRound
+} from '../services/pidTuningSession.mjs'
 import {
   FEEDFORWARD_GROUPS,
   FEEDFORWARD_ITEMS_BY_ID,
@@ -114,18 +116,22 @@ const tuningHistory = ref([])
 const autoTuning = ref(false)
 const autoTuneRound = ref(0)
 const autoTuneStatus = ref('')
-let bestResult = null        // { pid, metrics, score, round }
+const autoTuneSettings = reactive({
+  engine: 'hybrid',
+  maxRounds: 12,
+  requiredStable: 2,
+  patience: 4
+})
+let tuningSession = null
 let autoTuneCancel = false
-const AUTO_TUNE_MAX_ROUNDS = 20
-const AUTO_TUNE_REQUIRED_STABLE = 2  // 连续达标轮数
 
 // 仿真运行状态：'idle' | 'running' | 'paused'
 const simRunState = ref('idle')
+const simulationPlaybackRate = ref(5)
 let simTimer = null
 let simFullSamples = []   // 一次性算出的完整样本
 let simCursor = 0          // 当前已推送到 response 的样本索引
 const SIM_STEP_MS = 30     // 推送间隔（约 33fps）
-const SIM_BATCH = 1        // 每次推送的样本数
 
 let collectTimer = null
 let firstResponseTime = null
@@ -233,7 +239,11 @@ function pushSimBatch() {
     finishSimulation()
     return
   }
-  const next = simFullSamples.slice(simCursor, simCursor + SIM_BATCH)
+  const dt = Math.max(0.0001, Number(simulationConfig.dt) || 0.01)
+  const batchSize = simulationPlaybackRate.value === 0
+    ? simFullSamples.length
+    : Math.max(1, Math.ceil((SIM_STEP_MS / 1000 / dt) * simulationPlaybackRate.value))
+  const next = simFullSamples.slice(simCursor, simCursor + batchSize)
   response.value = response.value.concat(next)
   emit('simulation-data', response.value)
   simCursor += next.length
@@ -409,37 +419,32 @@ async function analyzeResponse() {
     return false
   }
 
-  // 确定性算法先给出有界候选作为基线（无 AI Key 或 AI 失败时回退到此）
-  const candidate = buildPidSuggestion(deterministicMetrics.value, outputParams, { tuningOrder: tuningOrder.value })
-  Object.keys(candidate).forEach((key) => {
-    if (key in outputParams) outputParams[key] = String(candidate[key])
-  })
+  // 指标必须和“产生这组响应的参数”绑定；候选生成后再一次性写回，避免因果错位。
+  const testedPid = readCanonicalPid(outputParams, isCascade.value)
+  const candidate = buildPidSuggestion(deterministicMetrics.value, testedPid, { tuningOrder: tuningOrder.value })
   localReasons.value = candidate.reasons
 
   if (!props.aiConfig.apiKey) {
+    applyCanonicalPid(outputParams, candidate, isCascade.value)
     aiResult.value = '已完成本地确定性分析。未配置 AI API Key，候选参数（确定性算法）已填入下方。'
     analyzing.value = false
     return false
   }
 
   // 调用 AI 给出新参数（含历史上下文 + 5 次指数退避重试 + 安全护栏）
-  const result = await callAiForPid(deterministicMetrics.value, { thought: '' })
+  const result = await callAiForPid(deterministicMetrics.value, { currentPid: testedPid })
   analyzing.value = false
   if (!result.ok) {
     // AI 失败：用保底策略生成候选，保证流程不中断
-    const fallback = buildFallbackSuggestion(deterministicMetrics.value, outputParams)
-    Object.keys(fallback.params).forEach((key) => {
-      if (key in outputParams) outputParams[key] = String(fallback.params[key])
-    })
+    const fallback = buildFallbackSuggestion(deterministicMetrics.value, testedPid)
+    applyCanonicalPid(outputParams, fallback.params, isCascade.value)
     aiResult.value = `AI 调用失败（${result.error}），已用保底策略：${fallback.reason}。参数已填入下方。`
     return false
   }
 
   // AI 给出的参数填入候选（覆盖确定性基线）
   aiParams.value = result.params
-  Object.keys(result.params).forEach((key) => {
-    if (key in outputParams) outputParams[key] = String(result.params[key])
-  })
+  applyCanonicalPid(outputParams, result.params, isCascade.value)
   aiResult.value = `AI 已给出新参数并填入下方候选：${formatParamsForDisplay(result.params, isCascade.value)}`
   if (result.guardNotes.length) {
     aiResult.value += `\n安全护栏：${result.guardNotes.join('；')}`
@@ -462,9 +467,7 @@ async function callAiForPid(metrics, options = {}) {
   const formatSpec = cascade
     ? '{"speedKp":<0-20>,"speedKi":<0-10>,"speedKd":<0-10>,"positionKp":<0-20>,"positionKi":<0-10>,"positionKd":<0-10>,"thought":"<简短思考>"}'
     : '{"kp":<0-20>,"ki":<0-10>,"kd":<0-10>,"thought":"<简短思考>"}'
-  const currentParams = cascade
-    ? { speedKp: outputParams.speedKp, speedKi: outputParams.speedKi, speedKd: outputParams.speedKd, positionKp: outputParams.kp, positionKi: outputParams.ki, positionKd: outputParams.kd }
-    : { kp: outputParams.kp, ki: outputParams.ki, kd: outputParams.kd }
+  const currentParams = options.currentPid || readCanonicalPid(outputParams, cascade)
   const historyText = historyToPromptText(tuningHistory.value, 5)
   const userContent = JSON.stringify({
     任务: '根据响应指标、当前参数和调参历史，给出新的 PID 参数。只输出一个 JSON 对象，禁止任何解释、Markdown 或额外文字。',
@@ -532,10 +535,9 @@ async function callAiForPid(metrics, options = {}) {
 }
 
 /**
- * 自动调参循环（借鉴 llm-pid-tuner 的 _run_tuning_loop）。
- * 仅在仿真模式下可用：每轮 仿真→分析→AI→应用→记录历史，直到达标或达上限。
- * 终止条件：① 指标达标且连续 AUTO_TUNE_REQUIRED_STABLE 轮稳定 ② 超过 AUTO_TUNE_MAX_ROUNDS ③ 用户取消
- * 安全机制：仅在 STABLE 时更新最佳；劣化时自动回退到最佳参数。
+ * 可复现的自动调参实验：每轮严格记录
+ * “实际测试参数 → 指标 → 决策 → 下一轮候选”，避免把未验证候选误当成结果。
+ * AI 可用时采用混合引擎；无 API Key 或 AI 失败时自动切换本地规则引擎。
  */
 async function runAutoTuning() {
   if (testMode.value !== 'simulation') {
@@ -543,18 +545,17 @@ async function runAutoTuning() {
     return
   }
   if (autoTuning.value) return
-  if (!props.aiConfig.apiKey) {
-    error.value = '请先配置 AI API Key'
-    return
-  }
+  const useAi = autoTuneSettings.engine === 'hybrid' && Boolean(props.aiConfig.apiKey)
+  const engineLabel = useAi ? 'AI + 本地规则混合引擎' : '本地规则引擎（离线）'
   // 风险提示
   try {
     await ElMessageBox.confirm(
-      '自动调参将在仿真模式下连续多轮调用 AI 调整 PID 参数。\n\n' +
-      '说明：\n• 最多 ' + AUTO_TUNE_MAX_ROUNDS + ' 轮，达标后提前结束\n' +
+      `自动调参将在仿真模式下使用“${engineLabel}”连续运行多轮实验。\n\n` +
+      '说明：\n• 最多 ' + autoTuneSettings.maxRounds + ' 轮，达标后提前结束\n' +
       '• 仅在 STABLE 时记录最佳参数\n' +
       '• 检测到劣化时自动回退到最佳参数\n' +
-      '• 每轮参数与指标会写入调参历史\n\n' +
+      '• 连续无改善时停止并恢复已验证的最佳参数\n' +
+      '• 每轮会分别记录测试参数和下一轮候选\n\n' +
       '确定开始自动调参吗？',
       '自动调参',
       { confirmButtonText: '开始', cancelButtonText: '取消', type: 'info' }
@@ -565,20 +566,20 @@ async function runAutoTuning() {
 
   autoTuning.value = true
   autoTuneCancel = false
-  bestResult = null
-  let consecutiveStable = 0
+  tuningSession = createTuningSession(autoTuneSettings)
   const t0 = Date.now()
 
   try {
-    for (let round = 1; round <= AUTO_TUNE_MAX_ROUNDS; round += 1) {
+    for (let round = 1; round <= tuningSession.maxRounds; round += 1) {
       if (autoTuneCancel) {
         autoTuneStatus.value = `已取消（完成 ${round - 1} 轮）`
         break
       }
       autoTuneRound.value = round
-      autoTuneStatus.value = `第 ${round}/${AUTO_TUNE_MAX_ROUNDS} 轮：运行仿真…`
+      autoTuneStatus.value = `第 ${round}/${tuningSession.maxRounds} 轮：验证当前参数…`
 
       // 1. 同步运行仿真（一次性算完，不走 setInterval，避免循环与定时器交织）
+      const testedPid = readCanonicalPid(outputParams, isCascade.value)
       const overrides = buildSimOverrides()
       const result = simulatePidStrategy(strategyId.value, overrides)
       response.value = result.samples
@@ -593,72 +594,82 @@ async function runAutoTuning() {
       }
       deterministicMetrics.value = metrics
 
-      // 3. 记录当前轮的"参数+指标"快照（用于历史与最佳比较）
-      const currentPid = isCascade.value
-        ? { speedKp: Number(outputParams.speedKp), speedKi: Number(outputParams.speedKi), speedKd: Number(outputParams.speedKd), positionKp: Number(outputParams.kp), positionKi: Number(outputParams.ki), positionKd: Number(outputParams.kd) }
-        : { kp: Number(outputParams.kp), ki: Number(outputParams.ki), kd: Number(outputParams.kd) }
+      // 3. 会话状态机先评价本轮，再决定完成、回退、停止或继续。
+      const registered = registerTuningRound(
+        tuningSession,
+        { pid: testedPid, metrics, round },
+        {
+          rmseLimit: Math.abs(metrics.stepSize) * 0.05,
+          steadyErrorLimit: Math.abs(metrics.stepSize) * 0.02,
+          overshootLimit: strategy.value.acceptance.overshootLimit
+        }
+      )
+      tuningSession = registered.session
+      const historyRecord = {
+        ...registered.roundRecord,
+        analysis: registered.outcome.reason,
+        thought: '',
+        proposedPid: null,
+        source: ''
+      }
+      tuningHistory.value.push(historyRecord)
 
-      // 4. 最佳记录 + 劣化回退判定（在调 AI 之前，先看本轮效果）
-      bestResult = maybeUpdateBestResult(bestResult, { pid: currentPid, metrics, round })
-      const rollback = shouldRollbackToBest(bestResult, metrics)
-      if (rollback.shouldRollback && bestResult) {
-        autoTuneStatus.value = `第 ${round} 轮：${rollback.reason}，已回退`
-        Object.keys(bestResult.pid).forEach((k) => {
-          if (k in outputParams) outputParams[k] = String(bestResult.pid[k])
-        })
-        tuningHistory.value.push({
-          round, pid: currentPid, metrics, analysis: rollback.reason, thought: '自动回退'
-        })
+      if (registered.outcome.applyPid) {
+        applyCanonicalPid(outputParams, registered.outcome.applyPid, isCascade.value)
+      }
+      if (registered.outcome.decision === 'rollback') {
+        historyRecord.thought = '安全回退'
+        autoTuneStatus.value = `第 ${round} 轮：${registered.outcome.reason}`
         await new Promise((r) => setTimeout(r, 200))
         continue
       }
-
-      // 5. 终止条件①：指标达标且连续稳定
-      const acceptable = isMetricsAcceptable(metrics, {
-        rmseLimit: Math.abs(metrics.stepSize) * 0.05,
-        steadyErrorLimit: Math.abs(metrics.stepSize) * 0.02,
-        overshootLimit: strategy.value.acceptance.overshootLimit
-      })
-      if (acceptable.done) {
-        consecutiveStable += 1
-        if (consecutiveStable >= AUTO_TUNE_REQUIRED_STABLE) {
-          autoTuneStatus.value = `第 ${round} 轮：连续 ${consecutiveStable} 轮达标，自动调参完成（耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s）`
-          tuningHistory.value.push({
-            round, pid: currentPid, metrics, analysis: acceptable.reason, thought: '已达标'
-          })
-          break
-        }
-      } else {
-        consecutiveStable = 0
+      if (registered.outcome.isTerminal) {
+        historyRecord.thought = registered.outcome.decision === 'complete' ? '已达标' : '停止搜索'
+        autoTuneStatus.value = `${registered.outcome.reason}（耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s）`
+        break
       }
 
-      // 6. 调用 AI 给新参数
-      autoTuneStatus.value = `第 ${round}/${AUTO_TUNE_MAX_ROUNDS} 轮：调用 AI…`
-      const aiResult = await callAiForPid(metrics)
+      // 4. 为下一轮生成候选。候选只记录为“待验证”，不会冒充本轮结果。
+      autoTuneStatus.value = `第 ${round}/${tuningSession.maxRounds} 轮：生成下一轮候选…`
+      let proposedPid
       let thought = ''
-      let analysis = ''
-      if (aiResult.ok) {
-        Object.keys(aiResult.params).forEach((k) => {
-          if (k in outputParams) outputParams[k] = String(aiResult.params[k])
-        })
-        thought = aiResult.thought || ''
-        analysis = formatParamsForDisplay(aiResult.params, isCascade.value)
-        if (aiResult.guardNotes.length) analysis += `（护栏：${aiResult.guardNotes.join('；')}）`
-      } else {
-        // AI 失败：保底策略
-        const fallback = buildFallbackSuggestion(metrics, outputParams)
-        Object.keys(fallback.params).forEach((k) => {
-          if (k in outputParams) outputParams[k] = String(fallback.params[k])
-        })
-        thought = `AI失败: ${aiResult.error}`
-        analysis = `保底：${fallback.reason}`
+      let source = '本地规则'
+      let guardNotes = []
+      if (useAi) {
+        const resultAi = await callAiForPid(metrics, { currentPid: testedPid })
+        if (resultAi.ok) {
+          proposedPid = resultAi.params
+          thought = resultAi.thought || ''
+          source = 'AI + 安全护栏'
+          guardNotes = resultAi.guardNotes || []
+        } else {
+          thought = `AI 不可用：${resultAi.error}；已切换本地规则`
+        }
       }
-      tuningHistory.value.push({ round, pid: currentPid, metrics, analysis, thought })
-      autoTuneStatus.value = `第 ${round} 轮完成：${analysis}`
+      if (!proposedPid) {
+        const fallback = buildFallbackSuggestion(metrics, testedPid)
+        const guarded = applyPidGuardrails(testedPid, fallback.params)
+        proposedPid = guarded.params
+        guardNotes = guarded.notes
+        if (!thought) thought = fallback.reason
+      }
+      applyCanonicalPid(outputParams, proposedPid, isCascade.value)
+      historyRecord.proposedPid = { ...proposedPid }
+      historyRecord.source = source
+      historyRecord.thought = thought
+      historyRecord.analysis = `下一轮候选：${formatParamsForDisplay(proposedPid, isCascade.value)}`
+      if (guardNotes.length) {
+        historyRecord.analysis += `（护栏：${guardNotes.join('；')}）`
+      }
+      autoTuneStatus.value = `第 ${round} 轮已验证；${source}已生成下一轮候选`
       await new Promise((r) => setTimeout(r, 100))
     }
-    if (!autoTuneCancel && autoTuneStatus.value.startsWith('第')) {
-      // 循环正常结束但未达标
+    if (autoTuneCancel && tuningSession) {
+      const best = tuningSession.bestStable || tuningSession.bestObserved
+      if (best?.pid) {
+        applyCanonicalPid(outputParams, best.pid, isCascade.value)
+        autoTuneStatus.value += '；已恢复目前已验证的最佳参数'
+      }
     }
   } finally {
     autoTuning.value = false
@@ -778,7 +789,7 @@ function clearAll() {
   error.value = ''
   firstResponseTime = null
   tuningHistory.value = []
-  bestResult = null
+  tuningSession = null
   autoTuneRound.value = 0
   autoTuneStatus.value = ''
   outputParams.kp = '1.0'
@@ -851,6 +862,42 @@ onUnmounted(() => {
                 />
               </div>
             </div>
+            <div class="auto-tune-config">
+              <div class="field">
+                <label>仿真播放速度</label>
+                <el-select v-model="simulationPlaybackRate" size="small" :disabled="simRunState !== 'idle'">
+                  <el-option label="1×（按模型时间）" :value="1" />
+                  <el-option label="5×" :value="5" />
+                  <el-option label="20×" :value="20" />
+                  <el-option label="即时完成" :value="0" />
+                </el-select>
+              </div>
+              <div class="field">
+                <label>自动调参引擎</label>
+                <el-select v-model="autoTuneSettings.engine" size="small" :disabled="autoTuning">
+                  <el-option label="混合（AI 优先，失败转本地）" value="hybrid" />
+                  <el-option label="本地规则（离线）" value="rules" />
+                </el-select>
+              </div>
+              <div class="field">
+                <label>最大轮数</label>
+                <el-input-number v-model="autoTuneSettings.maxRounds" :min="1" :max="30" size="small" :disabled="autoTuning" />
+              </div>
+              <div class="field">
+                <label>连续达标轮数</label>
+                <el-input-number v-model="autoTuneSettings.requiredStable" :min="1" :max="5" size="small" :disabled="autoTuning" />
+              </div>
+              <div class="field">
+                <label>无改善停止轮数</label>
+                <el-input-number v-model="autoTuneSettings.patience" :min="1" :max="10" size="small" :disabled="autoTuning" />
+              </div>
+            </div>
+            <div
+              v-if="autoTuneSettings.engine === 'hybrid' && !aiConfig.apiKey"
+              class="engine-note"
+            >
+              未配置 AI API Key，本次会自动使用本地规则引擎，不影响闭环仿真。
+            </div>
             <div class="action-row">
               <button
                 class="btn-primary"
@@ -872,7 +919,7 @@ onUnmounted(() => {
               <button
                 v-if="!autoTuning"
                 class="btn-primary btn-auto-tune"
-                :disabled="testMode !== 'simulation' || !aiConfig.apiKey || simRunState !== 'idle'"
+                :disabled="testMode !== 'simulation' || simRunState !== 'idle'"
                 @click="runAutoTuning"
               >
                 <el-icon size="13"><Refresh /></el-icon>
@@ -1018,10 +1065,19 @@ onUnmounted(() => {
           <details v-if="tuningHistory.length" class="history-details">
             <summary>调参历史（{{ tuningHistory.length }} 轮）</summary>
             <div class="history-list">
-              <div v-for="h in tuningHistory.slice(-10)" :key="h.round" class="history-item">
-                <div class="history-round">Round {{ h.round }} · {{ h.metrics?.status || '--' }}</div>
-                <div class="history-pid">{{ h.pid ? Object.entries(h.pid).map(([k,v]) => `${k}=${v}`).join(', ') : '' }}</div>
-                <div class="history-metric">rmse={{ h.metrics?.rmse }}, 超调={{ h.metrics?.overshoot }}%, 稳态误差={{ h.metrics?.steadyError }}</div>
+              <div v-for="(h, index) in tuningHistory.slice(-10)" :key="`${h.round}-${index}`" class="history-item">
+                <div class="history-round">
+                  Round {{ h.round }} · {{ h.metrics?.status || '--' }}
+                  <el-tag v-if="h.isBest" size="small" type="success">刷新最佳</el-tag>
+                  <el-tag v-if="h.decision && h.decision !== 'continue'" size="small" type="warning">{{ h.decision }}</el-tag>
+                </div>
+                <div class="history-pid">
+                  实测：{{ h.testedPid || h.pid ? Object.entries(h.testedPid || h.pid).map(([k,v]) => `${k}=${v}`).join(', ') : '' }}
+                </div>
+                <div v-if="h.proposedPid" class="history-proposed">
+                  待验证（{{ h.source }}）：{{ Object.entries(h.proposedPid).map(([k,v]) => `${k}=${v}`).join(', ') }}
+                </div>
+                <div class="history-metric">评分={{ Number.isFinite(h.score) ? h.score.toFixed(3) : '--' }}，均方根误差={{ h.metrics?.rmse }}，超调={{ h.metrics?.overshoot }}%，稳态误差={{ h.metrics?.steadyError }}</div>
                 <div v-if="h.thought" class="history-thought">思考：{{ h.thought }}</div>
                 <div v-if="h.analysis" class="history-analysis">{{ h.analysis }}</div>
               </div>
@@ -1091,10 +1147,12 @@ onUnmounted(() => {
               <span>{{ testMode === 'simulation' ? '应用至仿真' : '下发 PID 参数' }}</span>
             </button>
             <button class="btn-secondary" @click="exportEmbeddedController">导出 .c / .h</button>
-            <el-checkbox v-model="autoSend" class="auto-send-cb" @change="onAutoSendChange">
+            <el-checkbox v-if="testMode === 'serial'" v-model="autoSend" class="auto-send-cb" @change="onAutoSendChange">
               自动下发
             </el-checkbox>
-            <span class="safety-note">边界：Kp 0~20，Ki/Kd 0~10；{{ autoSend ? '已开启自动下发，无需二次确认。' : '点击后仍需二次确认。' }}</span>
+            <span class="safety-note">
+              边界：Kp 0~20，Ki/Kd 0~10；{{ testMode === 'simulation' ? '仿真不会写入硬件。' : (autoSend ? '已开启自动下发，无需二次确认。' : '点击后仍需二次确认。') }}
+            </span>
           </div>
         </div>
       </div>
@@ -1263,6 +1321,11 @@ onUnmounted(() => {
   font-family: var(--font-family-mono);
   margin-top: 2px;
 }
+.history-proposed {
+  color: var(--color-ai);
+  font-family: var(--font-family-mono);
+  margin-top: 2px;
+}
 .history-metric {
   color: var(--color-text-tertiary);
   font-size: 10px;
@@ -1283,6 +1346,28 @@ onUnmounted(() => {
 
 .model-grid :deep(.el-input-number) {
   width: 100%;
+}
+
+.auto-tune-config {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.5fr) minmax(220px, 2fr) repeat(3, minmax(110px, 1fr));
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-tertiary);
+}
+
+.auto-tune-config :deep(.el-input-number),
+.auto-tune-config :deep(.el-select) {
+  width: 100%;
+}
+
+.engine-note {
+  margin: 0 0 var(--space-2);
+  color: var(--color-warning, #f5a623);
+  font-size: var(--text-xs);
 }
 
 .subsection-title {
@@ -1419,6 +1504,9 @@ onUnmounted(() => {
 
 @media (max-width: 720px) {
   .ff-groups {
+    grid-template-columns: 1fr;
+  }
+  .auto-tune-config {
     grid-template-columns: 1fr;
   }
 }
