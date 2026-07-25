@@ -28,7 +28,14 @@ const props = defineProps({
 })
 const emit = defineEmits(['send', 'update-ai-config', 'update-ai-switches'])
 
-const models = ['gpt-4o-mini', 'gpt-4o', 'deepseek-chat', 'qwen-turbo']
+const models = [
+  'gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini', 'gpt-4.1',
+  'deepseek-chat', 'deepseek-reasoner',
+  'qwen-turbo', 'qwen-plus', 'qwen-max',
+  'glm-4-flash', 'glm-4-plus', 'glm-4.5',
+  'claude-3-5-haiku', 'claude-3-5-sonnet',
+  'moonshot-v1-8k', 'yi-lightning'
+]
 const quickActions = [
   { label: '数据分析', icon: Histogram, prompt: 'analyze' },
   { label: '异常诊断', icon: Warning, prompt: 'diagnose' },
@@ -407,8 +414,8 @@ async function handleQuickAction(action) {
           filterable
           allow-create
           default-first-option
-          placeholder="选择或输入模型名"
-          style="width: 160px"
+          placeholder="选择或输入任意模型名"
+          style="width: 200px"
           @change="saveConfig"
         >
           <el-option v-for="m in models" :key="m" :label="m" :value="m" />

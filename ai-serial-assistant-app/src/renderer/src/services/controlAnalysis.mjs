@@ -135,6 +135,22 @@ export function analyzeControlSamples(inputSamples, options = {}) {
   }
   if (settling === null) risks.push('采样窗口内未进入稳定带')
 
+  // 状态判定（借鉴 llm-pid-tuner）：优先级 OSCILLATING > OVERSHOOTING > SLOW_RESPONSE > STABLE
+  // 用于 LLM 上下文与安全护栏的回退策略
+  // 过零点判定需过滤噪声：仅在误差幅度超过 5% 阶跃幅值时才计入
+  const errThreshold = amplitude * 0.05
+  let zeroCrossings = 0
+  for (let i = 1; i < errors.length; i += 1) {
+    const a = errors[i - 1]
+    const b = errors[i]
+    if (Math.abs(a) < errThreshold || Math.abs(b) < errThreshold) continue
+    if (a * b < 0) zeroCrossings += 1
+  }
+  let status = 'STABLE'
+  if (zeroCrossings > errors.length * 0.15) status = 'OSCILLATING'
+  else if (overshoot > overshootLimit) status = 'OVERSHOOTING'
+  else if (rmse > amplitude * 0.3 && Math.abs(steadyError) > amplitude * steadyErrorLimitRatio) status = 'SLOW_RESPONSE'
+
   return {
     valid: true,
     sampleCount: samples.length,
@@ -153,6 +169,7 @@ export function analyzeControlSamples(inputSamples, options = {}) {
     rmse: fmt(rmse),
     oscillation: fmt(oscillation, 2),
     outputPeak: fmt(outputPeak),
+    status,
     limits: {
       overshoot: overshootLimit,
       oscillation: oscillationLimit,
@@ -186,51 +203,90 @@ export function createSamplesFromChannels(channelHistory, mapping = {}, sampleIn
   }))
 }
 
+// 参数角色与环路权重：外环/单环完整修正，内环（速度环）修正幅度衰减到 30%
+const PARAM_SPEC = {
+  kp: { role: 'P', loop: 1, orderName: 'Kp' },
+  ki: { role: 'I', loop: 1, orderName: 'Ki' },
+  kd: { role: 'D', loop: 1, orderName: 'Kd' },
+  positionKp: { role: 'P', loop: 1, orderName: '位置环Kp' },
+  positionKi: { role: 'I', loop: 1, orderName: '位置环Ki' },
+  positionKd: { role: 'D', loop: 1, orderName: '位置环Kd' },
+  speedKp: { role: 'P', loop: 0.3, orderName: '速度环Kp' },
+  speedKi: { role: 'I', loop: 0.3, orderName: '速度环Ki' },
+  speedKd: { role: 'D', loop: 0.3, orderName: '速度环Kd' }
+}
+
+const PARAM_BOUNDS = { kp: 20, ki: 10, kd: 10, positionKp: 20, positionKi: 10, positionKd: 10, speedKp: 20, speedKi: 10, speedKd: 10 }
+
 /**
  * 只生成“候选参数”，绝不直接下发硬件。
+ * 支持单环（kp/ki/kd）与串级（speedKp/speedKi/speedKd + positionKp/positionKi/positionKd）。
+ * options.tuningOrder 决定调参顺序：排在前的参数承担更大修正幅度（指数衰减 0.5^pos）。
  */
-export function buildPidSuggestion(metrics, current = {}) {
-  const base = {
-    kp: clamp(finite(current.kp, 1.8), 0, 20),
-    ki: clamp(finite(current.ki, 0.22), 0, 10),
-    kd: clamp(finite(current.kd, 0.12), 0, 10)
-  }
+export function buildPidSuggestion(metrics, current = {}, options = {}) {
+  const isCascade = Object.keys(current).some((key) => key.startsWith('speed') || key.startsWith('position'))
+  const paramKeys = isCascade
+    ? ['speedKp', 'speedKi', 'speedKd', 'positionKp', 'positionKi', 'positionKd']
+    : ['kp', 'ki', 'kd']
+  const base = {}
+  paramKeys.forEach((key) => {
+    base[key] = clamp(finite(current[key], 0), 0, PARAM_BOUNDS[key])
+  })
 
   if (!metrics?.valid) {
     return { ...base, confidence: '低', reasons: ['有效数据不足，保留当前候选参数'] }
   }
 
-  let { kp, ki, kd } = base
+  const tuningOrder = options.tuningOrder && options.tuningOrder.length
+    ? options.tuningOrder
+    : (isCascade
+        ? ['速度环Kp', '速度环Ki', '位置环Kp', '位置环Ki', '位置环Kd']
+        : ['Kp', 'Ki', 'Kd'])
+
   const reasons = []
+  const adjustments = []
   if (metrics.overshoot > metrics.limits.overshoot) {
-    kp *= 0.82
-    ki *= 0.78
-    kd *= 1.22
+    adjustments.push({ P: 0.82, I: 0.78, D: 1.22 })
     reasons.push('超调偏大：降低比例/积分并增加微分阻尼')
   }
   if (metrics.oscillation > metrics.limits.oscillation) {
-    kp *= 0.86
-    ki *= 0.82
-    kd *= 1.15
+    adjustments.push({ P: 0.86, I: 0.82, D: 1.15 })
     reasons.push('稳态振荡偏大：降低环路激进程度')
   }
   if (Math.abs(metrics.steadyError) > Math.max(Math.abs(metrics.stepSize) * 0.05, 1e-6)) {
-    ki *= 1.18
+    adjustments.push({ I: 1.18 })
     reasons.push('稳态误差偏大：小幅增加积分作用')
   }
   if (metrics.overshoot <= 5 && metrics.settlingTime !== null && metrics.riseTime !== null && metrics.riseTime > metrics.settlingTime * 0.55) {
-    kp *= 1.1
+    adjustments.push({ P: 1.10 })
     reasons.push('响应较保守：小幅提高比例增益')
   }
   if (!reasons.length) reasons.push('当前响应满足基础阈值，建议先保持参数并扩大样本验证')
 
-  return {
-    kp: fmt(clamp(kp, 0, 20)),
-    ki: fmt(clamp(ki, 0, 10)),
-    kd: fmt(clamp(kd, 0, 10)),
-    confidence: metrics.sampleCount >= 80 ? '中' : '低',
-    reasons
-  }
+  const result = { ...base }
+  paramKeys.forEach((key) => {
+    const spec = PARAM_SPEC[key]
+    const orderPos = tuningOrder.indexOf(spec.orderName)
+    const posIdx = orderPos >= 0 ? orderPos : 0
+    let value = result[key]
+    adjustments.forEach((adj) => {
+      const factor = adj[spec.role]
+      if (!factor) return
+      // tuningOrder 顺序衰减：0 位完整修正，后续按 0.5^pos 衰减；再叠加环路权重
+      const orderFactor = 1 + (factor - 1) * Math.pow(0.5, posIdx)
+      const finalFactor = 1 + (orderFactor - 1) * spec.loop
+      value *= finalFactor
+    })
+    result[key] = value
+  })
+
+  paramKeys.forEach((key) => {
+    result[key] = fmt(clamp(result[key], 0, PARAM_BOUNDS[key]))
+  })
+
+  result.confidence = metrics.sampleCount >= 80 ? '中' : '低'
+  result.reasons = reasons
+  return result
 }
 
 export function buildStructuredAiContext(metrics, suggestion, extra = {}) {
@@ -247,4 +303,38 @@ export function buildStructuredAiContext(metrics, suggestion, extra = {}) {
       '信息不足时必须明确说明，不得虚构设备模型或结论'
     ]
   }
+}
+
+/**
+ * 把调参历史（最近几轮）打包为 LLM 可读文本。
+ * 借鉴 llm-pid-tuner 的 history.to_prompt_text：每轮记录 {参数, 指标, AI分析}，
+ * 让 LLM “借鉴历史、避免重复无效方向”。
+ *
+ * @param {Array} history  每项形如 { round, pid, metrics, analysis, thought }
+ * @param {number} maxRounds  最多打包几轮（默认 5）
+ * @returns {string}
+ */
+export function historyToPromptText(history, maxRounds = 5) {
+  if (!Array.isArray(history) || history.length === 0) return ''
+  const recent = history.slice(-maxRounds)
+  const lines = ['## 调参历史（最近几轮，请仔细借鉴，避免重复无效方向）：']
+  recent.forEach((h) => {
+    const pidStr = h.pid
+      ? Object.entries(h.pid).map(([k, v]) => `${k}=${v}`).join(', ')
+      : '未知'
+    const m = h.metrics || {}
+    const metricsStr = [
+      `status=${m.status || '未知'}`,
+      `rmse=${m.rmse ?? 'N/A'}`,
+      `overshoot=${m.overshoot ?? 'N/A'}%`,
+      `steadyError=${m.steadyError ?? 'N/A'}`,
+      `oscillation=${m.oscillation ?? 'N/A'}%`
+    ].join(', ')
+    lines.push(`### Round ${h.round ?? '?'}`)
+    lines.push(`- 参数: ${pidStr}`)
+    lines.push(`- 指标: ${metricsStr}`)
+    if (h.thought) lines.push(`- AI思考: ${String(h.thought).slice(0, 300)}`)
+    if (h.analysis) lines.push(`- 分析总结: ${String(h.analysis).slice(0, 200)}`)
+  })
+  return lines.join('\n')
 }

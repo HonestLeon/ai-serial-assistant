@@ -1,13 +1,22 @@
 const fs = require('node:fs')
 const path = require('node:path')
-const compilerDirectory = fs.readdirSync(path.resolve('node_modules/.pnpm'))
-  .find((name) => name.startsWith('@vue+compiler-sfc@'))
-if (!compilerDirectory) throw new Error('未找到 @vue/compiler-sfc')
+
+// 兼容 pnpm 与 npm 安装：优先在 .pnpm 下查找，回退到 node_modules/@vue/compiler-sfc
+let compilerModule
+const pnpmDirectory = path.resolve('node_modules/.pnpm')
+if (fs.existsSync(pnpmDirectory)) {
+  const compilerDirectory = fs.readdirSync(pnpmDirectory)
+    .find((name) => name.startsWith('@vue+compiler-sfc@'))
+  if (!compilerDirectory) throw new Error('未找到 @vue/compiler-sfc')
+  compilerModule = require(path.resolve(pnpmDirectory, compilerDirectory, 'node_modules/@vue/compiler-sfc'))
+} else {
+  compilerModule = require('@vue/compiler-sfc')
+}
 const {
   compileScript,
   compileTemplate,
   parse
-} = require(path.resolve('node_modules/.pnpm', compilerDirectory, 'node_modules/@vue/compiler-sfc'))
+} = compilerModule
 
 function collectVueFiles(directory) {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {

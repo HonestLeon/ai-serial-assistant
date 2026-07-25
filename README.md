@@ -1,255 +1,143 @@
 # AI 串口调试助手
 
-基于 **Electron + Vue 3** 的智能串口调试桌面应用，面向嵌入式开发、硬件调试和 IoT 场景。集成实时波形绘制、AI 数据分析、PID 调参辅助等能力，提供深色专业风格的统一界面体验。
+> 一款面向嵌入式 / 硬件调试的桌面工具：把串口数据实时画成波形，用 AI 帮你读懂数据、辅助调参。
+> 尤其适合参加**电赛、智能车、RC、RM** 等竞赛、需要频繁调 PID 的同学——把最耗时的试错环节压掉。
+
+![主界面](参赛材料/界面展示.png)
 
 ---
 
-## 一、项目简介
+## 它能帮你做什么
 
-AI 串口调试助手致力于打造一款现代化的串口通信工具，在传统的收发、波形查看功能之上，引入 AI 能力帮助用户：
-
-- 自动识别通信协议与数据异常
-- 分析波形特征并给出优化建议
-- 辅助 PID 参数整定（发送阶跃 → 采集响应 → 本地确定性分析 → AI 解释 → 人工确认下发）
-
-项目采用 Electron 构建跨平台桌面应用，渲染进程使用 Vue 3 + Element Plus 进行界面开发，主进程通过 `serialport` 库实现底层串口通信。
-
----
-
-## 二、技术栈
-
-| 层级 | 技术 |
-|------|------|
-| 桌面框架 | Electron 42.x |
-| 构建工具 | electron-vite + Vite 7 |
-| 前端框架 | Vue 3.5.x |
-| UI 组件库 | Element Plus 2.14.x |
-| 图标 | @element-plus/icons-vue |
-| 图表 | ECharts 6.x |
-| 串口通信 | serialport 13.x |
-| 进程通信 | Electron IPC + Preload 脚本 |
+- **实时波形**：串口数据自动绘制成多通道曲线，可缩放、平移、显隐通道、导出 CSV / JSON
+- **数据表与录制回放**：结构化查看通道数值（I0–I7），一键录制数据流，回放时自动断开实时串口
+- **AI 助手**：对接 OpenAI 兼容 API（默认 DeepSeek），做数据分析、异常诊断、协议解析，并自动携带串口上下文
+- **确定性响应分析**：对阶跃响应**本地**计算上升时间、稳定时间、超调率、稳态误差、RMSE——不依赖 AI 也能跑
+- **PID 辅助调参**：内置**策略注册表**（不同系统 / 控制结构预设验收指标），发阶跃 → 本地分析生成有界候选参数 → AI 解释 → 你手动二次确认再下发；可一键**导出嵌入式 `.c/.h` 控制器**（安全、可控）
+- **离线模拟**：无需硬件，内置二阶欠阻尼阶跃响应，用来验证整套分析与调参链路
 
 ---
 
-## 三、代码架构
+## 界面速览
 
-项目采用 Electron 经典的三进程架构：主进程（Main）、预加载脚本（Preload）、渲染进程（Renderer）。
+应用主界面自上而下、自左而右分几个区域：
 
-```
-ai-serial-assistant-app/
-├── src/main/
-│   ├── index.js          # 主进程入口：窗口创建、IPC 注册、生命周期管理
-│   └── serial.js         # 串口服务：枚举/打开/关闭/发送/接收
-├── src/preload/
-│   └── index.js          # 安全桥接：将 serial API 暴露给渲染进程
-└── src/renderer/
-    ├── index.html        # 渲染进程入口 HTML
-    └── src/
-        ├── main.js       # Vue 应用初始化、Element Plus 注册
-        ├── style.css     # 全局样式与设计系统变量
-        ├── App.vue       # 应用主布局：标题栏、三栏布局、状态栏
-        └── components/
-            ├── SerialPanel.vue    # 串口配置与连接控制
-            ├── DataMonitor.vue    # 数据收发/数据流/数据表
-            ├── ChartPanel.vue     # 实时波形图
-            ├── AiPanel.vue        # AI 对话与快捷操作
-            ├── AnalysisPanel.vue  # 确定性响应分析（指标计算 + 有界候选 + 报告导出）
-            ├── PidPanel.vue       # PID 阶跃采集 → 本地分析 → 人工确认下发
-            ├── ChannelPanel.vue   # 数据通道列表
-            └── StatusBar.vue      # 底部状态栏
-```
+- **左侧边栏「协议与连接」**（SerialPanel）：选协议引擎、配串口参数、填 AI 设置、切 DTR / RTS
+- **上部「实时波形」**（WorkspaceChart）：串口数据实时绘制成多通道曲线，**始终可见**；可拖动中间分隔条调整上下区域高度
+- **下部分页签栏**：五个标签页，按需切换——
+  - **数据流**：收发数据、自动发送、录制回放、控制响应模拟
+  - **数据表**：结构化通道数值（I0–I7）
+  - **数据分析**：本地确定性响应分析（上升 / 稳定时间、超调率、稳态误差、RMSE）
+  - **AI 助手**：对话、快捷操作、异常检测、协议识别
+  - **PID 调参**：阶跃采集 → 本地分析 → 辅助确认下发
+- **底部状态栏**（StatusBar）：连接状态、Rx / Tx 计数、HEX 切换、主题切换
 
-### 3.1 主进程（Main Process）
-
-- 负责创建 BrowserWindow、加载渲染页面
-- 通过 `ipcMain.handle` 注册串口相关 IPC 通道
-- 调用 `serial.js` 中的 `listPorts`、`openPort`、`closePort`、`send` 完成硬件交互
-- 接收串口数据后通过 `webContents.send` 推送到渲染进程
-
-### 3.2 预加载脚本（Preload）
-
-- 使用 `contextBridge.exposeInMainWorld` 向渲染进程暴露 `window.electronAPI`
-- 提供 `serial.list()`、`serial.open()`、`serial.close()`、`serial.send()` 等异步调用
-- 提供 `serial.onData()`、`serial.onStatus()`、`serial.onError()` 等事件监听
-- 保持 `contextIsolation: true`，避免直接暴露 Node.js API 到前端
-
-### 3.3 渲染进程（Renderer Process）
-
-- Vue 3 组合式 API 开发组件
-- 各页面通过 `v-show` 切换，避免频繁挂载/卸载
-- 数据流、波形图、AI 助手、确定性分析、PID 调参分别对应独立组件
-- 通过 `window.electronAPI.serial` 与主进程通信
+> 更多截图见 `参赛材料/`：`界面展示.png`、`数据展示.png`、`AI助手展示.png` 等。
 
 ---
 
-## 四、设计系统
+## 系统要求
 
-项目参考 VOFA+ 风格并加入 AI 主题色，采用统一的深色设计系统：
-
-```css
-:root {
-  /* 背景层级 */
-  --color-bg-primary: #0d1117;
-  --color-bg-secondary: #161b22;
-  --color-bg-tertiary: #1c2333;
-
-  /* 文字层级 */
-  --color-text-primary: #e6edf3;
-  --color-text-secondary: #8b949e;
-  --color-text-tertiary: #6e7681;
-
-  /* 品牌与 AI 强调色 */
-  --color-primary: #58a6ff;
-  --color-ai: #3fb950;
-
-  /* 状态色 */
-  --state-success: #3fb950;
-  --state-warning: #d29922;
-  --state-error: #f85149;
-
-  /* 数据通道色 */
-  --color-channel-0: #f778ba;
-  --color-channel-1: #58a6ff;
-  --color-channel-2: #79c0ff;
-  --color-channel-3: #d29922;
-  --color-channel-4: #bc8cff;
-  --color-channel-5: #3fb950;
-  --color-channel-6: #f0883e;
-  --color-channel-7: #f85149;
-
-  /* 布局 */
-  --sidebar-width: 260px;
-  --right-panel-width: 220px;
-  --header-height: 40px;
-  --statusbar-height: 28px;
-}
-```
-
-设计稿源文件位于 `AI串口助手前端界面设计/` 目录，包含：
-
-- `pages/main-workspace.html`：工作区设计稿
-- `pages/waveform.html`：波形图设计稿
-- `pages/ai-chat.html`：AI 助手设计稿
-- `pages/pid-tuning.html`：PID 调参设计稿
-- `pages/ui-demo.html`：UI 组件示例 Demo
-- `colors_and_type.css`：颜色与字体规范
+- Windows 10+ / macOS / Linux
+- 若从源码运行：Node.js 18+、npm 9+
+- AI 功能需要可访问的 OpenAI 兼容 API（默认 DeepSeek，需自备 Key）
 
 ---
 
-## 五、开发环境
+## 快速开始
 
-### 5.1 前置依赖
-
-- Node.js 18+
-- npm 9+ 或 pnpm 8+
-- Windows / macOS / Linux
-
-### 5.2 安装依赖
+**方式一：开发预览（需 Node）**
 
 ```bash
 cd ai-serial-assistant-app
 npm install
-```
-
-> 国内环境已配置 `.npmrc` 使用 Electron 国内镜像，可加速 Electron 与 electron-builder 二进制文件下载。
-
-### 5.3 开发运行
-
-```bash
 npm run dev
 ```
 
-启动后 Electron 窗口会自动打开，渲染进程开发服务器运行在 `http://localhost:5173/`。
+Electron 窗口会自动打开，渲染进程由 Vite 提供热更新。
 
-### 5.4 生产构建
-
-```bash
-npm run build
-```
-
-构建产物输出到 `out/` 目录：
-
-- `out/main/index.js`：主进程代码
-- `out/preload/index.mjs`：预加载脚本
-- `out/renderer/`：渲染进程资源
-
-### 5.5 打包发布
+**方式二：构建安装包**
 
 ```bash
 npm run dist
 ```
 
-使用 electron-builder 生成对应平台的安装包。
+使用 electron-builder 生成当前平台的安装包。
+
+> 国内环境已配置 `.npmrc` 使用 Electron 国内镜像，依赖安装更快。
 
 ---
 
-## 六、开发测试
+## 使用指南
 
-### 6.1 当前测试方式
+### 1. 连接串口
 
-- **构建验证**：运行 `npm run build` 检查主进程、预加载脚本、渲染进程是否全部编译通过
-- **界面验证**：运行 `npm run dev` 启动 Electron 应用，检查布局、主题、组件渲染
-- **串口验证**：连接实际串口设备，测试端口枚举、打开/关闭、数据收发、实时波形
+1. 左侧选择数据引擎（**Raw / JustFloat**）
+2. 点「刷新」获取可用端口列表
+3. 选端口、波特率、数据位、停止位、校验位、流控（默认 115200, 8N1）
+4. 点「打开串口」建立连接
+5. 连接后可点 DTR / RTS 按钮切换硬件控制信号
 
-### 6.2 调试技巧
+### 2. 收发数据
 
-- 渲染进程 DevTools：在 Electron 窗口中按 `Ctrl+Shift+I`（Windows/Linux）或 `Cmd+Option+I`（macOS）
-- 主进程日志：终端直接查看 `console.log` 输出
-- 串口数据监听：在 `DataMonitor.vue` 的消息列表中观察 Rx/Tx 数据
+- **接收**：「数据流」标签实时显示，带时间戳与 Rx / Tx 方向标识
+- **数据表**：切到「数据表」看结构化通道数值（I0–I7）
+- **发送**：底部输入内容，选文本或 HEX 编码，回车或点发送
+- **自动发送**：设间隔（ms）后定时循环发送，断连自动停止
 
-### 6.3 常见问题
+### 3. 录制与回放
 
-| 问题 | 解决方案 |
-|------|----------|
-| Electron 下载慢 | 已配置 `.npmrc` 国内镜像，必要时手动设置 `ELECTRON_MIRROR` |
-| 串口打开失败 | 检查设备是否被其他程序占用，或尝试以管理员权限运行 |
-| 图标构建报错 | 确保使用 `@element-plus/icons-vue` 实际导出的图标名称 |
+- 点「录制」开始记录串口数据流
+- 点「回放」会**先自动关闭串口**，再按原始时间间隔重放
+- 点「清空录制」清除录制数据
 
----
+### 4. 实时波形
 
-## 七、当前进度
+- 通道列表眼睛图标可显隐对应通道
+- **Y 轴**：自动 / 手动（手动可设 Min / Max）
+- **X 轴**：鼠标滚轮缩放，按住拖动平移
+- **标准化绘图**：悬停提示与导出数据仍使用原始值
+- **导出**：CSV / JSON 保存当前波形
 
-### 已完成 ✅
+### 5. AI 助手
 
-- [x] Electron + Vue 3 项目骨架搭建
-- [x] 串口服务封装（list / open / close / send / receive）
-- [x] IPC 安全桥接（Preload 脚本）
-- [x] 深色主题设计系统落地（颜色、字体、间距、布局变量）
-- [x] 应用主布局（标题栏 + 三栏布局 + 状态栏）
-- [x] 串口配置面板（SerialPanel，含 Raw / JustFloat 协议引擎）
-- [x] 数据收发区（DataMonitor，含数据表视图 / 录制回放 / 控制响应模拟）
-- [x] 实时波形图（ChartPanel + ECharts，CSV/JSON 导出）
-- [x] AI 对话面板（AiPanel，OpenAI / DeepSeek 接入 + 异常检测 + 协议识别）
-- [x] 确定性响应分析（AnalysisPanel：上升时间 / 稳定时间 / 超调率 / 稳态误差 / RMSE / 稳态波动，可导出报告）
-- [x] 辅助 PID 调参（PidPanel：本地确定性分析生成有界候选 → AI 解释 → 人工二次确认下发）
-- [x] 数据通道面板（ChannelPanel）
-- [x] 状态栏组件（StatusBar）
-- [x] Element Plus 图标兼容性修复
-- [x] UI 示例 Demo（ui-demo.html）
-- [x] 生产构建通过验证
-- [x] MVP 自测（`npm run test:analysis` 覆盖指标计算 / 通道对齐 / 候选边界 / 数据不足分支）
+切换到「AI 助手」标签页：
 
-### 进行中 🚧
+1. 左侧「AI 设置」填模型、Base URL、API Key（默认 DeepSeek；Key 仅留当前会话）
+2. **快捷操作**：数据分析 / 异常诊断 / 协议解析（自动构造带串口上下文的 prompt）
+3. 开启**实时异常检测**（3σ 统计 + stuck 检测）、**协议自动识别**（JSON / AT / CSV / Modbus HEX / ASCII）
+4. 自由对话会自动携带最近数据与通道数值作为上下文
 
-- [ ] 自动调参增强：策略注册表（多系统 / 多控制结构差异化调参）
-- [ ] 参数安全限制与异常自动回退（防机械损伤）
-- [ ] 嵌入式集成（生成 `.c/.h`，函数指针注入式）
-- [ ] 离线信号处理降级（Z-N / 继电自整定，无网可用）
+支持模型：`gpt-4o-mini`、`gpt-4o`、`deepseek-chat`、`qwen-turbo`
 
-### 待完成 📋
+### 6. PID 辅助调参
 
-- [ ] 单元测试扩展与 E2E 测试
-- [ ] 应用打包与自动更新
-- [ ] 多语言支持
-- [ ] 用户配置持久化
-- [ ] 协议插件机制（FireWater / 自定义二进制等）
-- [ ] 系统辨识与多通信方式（J-Link / Ozone）
+切换到「PID 调参」标签页：
+
+1. 先在「策略注册表」选控制策略（如空载电机、平衡车等，内置验收指标：超调 ≤ X%、稳定带 ±Y%）；选测试来源（**仿真** 纯软件验证不下发硬件 / **真实串口**）
+2. 配阶跃指令、幅值、采集时长、反馈通道，点击发送
+3. **本地确定性分析**算指标并生成 Kp / Ki / Kd 候选（受 Kp 0~20、Ki / Kd 0~10 边界约束）
+4. AI **只解释**原因与风险，不改参数
+5. 确认设备处于安全工况、记好原参数后，在二次确认框中手动确认下发
+6. 需要嵌入到单片机时，点「导出 .c / .h」一键生成控制器代码文件
+
+### 7. 离线体验（无需硬件）
+
+在「数据流」标签页点「控制响应模拟」生成 50 ms 采样的二阶欠阻尼阶跃响应（I0 目标、I1 反馈、I2 控制量、I3 误差）。跑数秒后，切到「数据分析」标签页查看响应指标，或在「PID 调参」里走完整调参链路——全程无需任何硬件。
 
 ---
 
-## 八、贡献与许可
+## 常见问题
 
-- 作者：AI Serial Assistant Team
-- 许可证：MIT
+| 问题 | 解决 |
+|------|------|
+| 串口打不开 | 检查是否被其他程序占用；必要时以管理员权限运行 |
+| 想要浅色 / 深色 | 状态栏主题按钮切换，localStorage 记忆，**默认浅色** |
+| AI 没反应 | 检查 Base URL / Key / 模型；Key 仅当前会话有效，重启需重填 |
+| 波形不显示 | 确认协议引擎与设备输出格式匹配（Raw：行内数字；JustFloat：二进制浮点帧） |
 
-欢迎提交 Issue 和 PR，共同完善这款面向开发者的串口调试工具。
+---
+
+## 给开发者
+
+代码架构、目录结构、IPC、协议解析、开发命令等请见 **[`ai-serial-assistant-app/README.md`](ai-serial-assistant-app/README.md)**。
