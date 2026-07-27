@@ -106,7 +106,10 @@ export const PID_STRATEGIES = {
     name: '位置—速度串级 PID',
     description: '外环位置 PID 给出目标速度，内环速度 PID 给出电流控制量。',
     parameters: ['速度环Kp', '速度环Ki', '位置环Kp', '位置环Ki', '位置环Kd'],
-    defaultOrder: ['速度环Kp', '速度环Ki', '位置环Kp', '位置环Ki', '位置环Kd'],
+    // 调参顺序：位置环（外环）排首位，posIdx=0 不衰减，主导响应速度
+    // 速度环（内环）作为跟随环，posIdx=3 通过 0.5^3 衰减 + loop=0.3 权重衰减
+    // 若速度环排首位，位置环Kp 在 posIdx=2 被严重衰减，导致响应慢、Kp 调整迟缓
+    defaultOrder: ['位置环Kp', '位置环Ki', '位置环Kd', '速度环Kp', '速度环Ki'],
     acceptance: { overshootLimit: 15, settlingBand: 0.04, oscillationLimit: 8 },
     defaults: {
       duration: 5,
@@ -137,6 +140,8 @@ export const PID_STRATEGIES = {
     parameters: ['Kp', 'Kd', 'Ki'],
     defaultOrder: ['Kp', 'Kd', 'Ki'],
     acceptance: { overshootLimit: 25, settlingBand: 0.03, oscillationLimit: 12 },
+    // 不稳定系统标记：必须有 Kd 提供阻尼，调参策略走 PD → PID 路径，不走纯 P
+    unstable: true,
     defaults: {
       duration: 5,
       dt: 0.005,
@@ -149,7 +154,7 @@ export const PID_STRATEGIES = {
       l: 0.25,
       outputLimit: 8,
       // 倒立摆为开环不稳定系统，纯 P 必发散。这里保留 Kd=1.2 提供阻尼，
-      // 让仿真可运行；调参策略会从 PID 阶段开始微调。
+      // 让仿真可运行；调参策略会从 PD 阶段开始（Kd 保留，调 Kp）。
       kp: 4,
       ki: 0,
       kd: 1.2

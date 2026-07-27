@@ -457,19 +457,26 @@ function formatParamsForDisplay(params, cascade) {
 /**
  * 从调参历史中提取上一个"好"的 Kp（P 阶段、超调在验收标准内、无明显震荡），用于二分法下界。
  * 单环返回 kp，串级返回当前活跃环（speedKp）。
+ * 不稳定系统（倒立摆）：PD 阶段（Ki=0，Kd 可非零），好值额外要求稳态振幅<=3%。
  */
-function extractLastGoodKp(history, cascade, overshootLimit) {
+function extractLastGoodKp(history, cascade, overshootLimit, unstable = false) {
   for (let i = history.length - 1; i >= 0; i -= 1) {
     const h = history[i]
     if (!h?.pid || !h?.metrics) continue
     const kp = Number(cascade ? h.pid.speedKp : h.pid.kp) || 0
     const ki = Number(cascade ? h.pid.speedKi : h.pid.ki) || 0
     const kd = Number(cascade ? h.pid.speedKd : h.pid.kd) || 0
-    // P 阶段判定：Kp>0 且 Ki=Kd=0
-    if (kp > 0 && ki === 0 && kd === 0) {
+    // P 阶段判定：稳定系统 Ki=Kd=0；不稳定系统（PD 阶段）Ki=0、Kd 可非零
+    const inPhase = unstable ? (kp > 0 && ki === 0) : (kp > 0 && ki === 0 && kd === 0)
+    if (inPhase) {
       const m = h.metrics
-      // 好值：超调在验收标准内 且 无明显震荡
-      if ((m.overshoot ?? 0) <= overshootLimit && !m.hasSignificantOscillation) {
+      if (unstable) {
+        // 不稳定系统好值：振荡<=5%（PD阶段放宽到5%，不要求STABLE）
+        const oscOk = (m.oscillation ?? 0) <= 5
+        if ((m.overshoot ?? 0) <= overshootLimit && !m.hasSignificantOscillation && oscOk) {
+          return kp
+        }
+      } else if ((m.overshoot ?? 0) <= overshootLimit && !m.hasSignificantOscillation) {
         return kp
       }
     }
@@ -480,18 +487,24 @@ function extractLastGoodKp(history, cascade, overshootLimit) {
 /**
  * 从调参历史中提取上一个"坏"的 Kp（P 阶段、超调超限或有明显震荡），用于二分法上界。
  * 一旦建立上界，P 阶段就只二分不增大，收敛到无超调边界。
+ * 不稳定系统：振荡>5%即视为坏值（PD阶段放宽到5%，不要求STABLE）。
  */
-function extractLastBadKp(history, cascade, overshootLimit) {
+function extractLastBadKp(history, cascade, overshootLimit, unstable = false) {
   for (let i = history.length - 1; i >= 0; i -= 1) {
     const h = history[i]
     if (!h?.pid || !h?.metrics) continue
     const kp = Number(cascade ? h.pid.speedKp : h.pid.kp) || 0
     const ki = Number(cascade ? h.pid.speedKi : h.pid.ki) || 0
     const kd = Number(cascade ? h.pid.speedKd : h.pid.kd) || 0
-    if (kp > 0 && ki === 0 && kd === 0) {
+    const inPhase = unstable ? (kp > 0 && ki === 0) : (kp > 0 && ki === 0 && kd === 0)
+    if (inPhase) {
       const m = h.metrics
-      // 坏值：超调超过验收标准 或 有明显震荡
-      if ((m.overshoot ?? 0) > overshootLimit || m.hasSignificantOscillation) {
+      if (unstable) {
+        const oscOverLimit = (m.oscillation ?? 0) > 5
+        if ((m.overshoot ?? 0) > overshootLimit || m.hasSignificantOscillation || oscOverLimit) {
+          return kp
+        }
+      } else if ((m.overshoot ?? 0) > overshootLimit || m.hasSignificantOscillation) {
         return kp
       }
     }
@@ -520,8 +533,9 @@ async function analyzeResponse() {
 
   // 指标必须和“产生这组响应的参数”绑定；候选生成后再一次性写回，避免因果错位。
   const testedPid = readCanonicalPid(outputParams, isCascade.value)
-  const lastGoodKp = extractLastGoodKp(tuningHistory.value, isCascade.value, strategy.value.acceptance.overshootLimit)
-  const lastBadKp = extractLastBadKp(tuningHistory.value, isCascade.value, strategy.value.acceptance.overshootLimit)
+  const unstableFlag = !!strategy.value.unstable
+  const lastGoodKp = extractLastGoodKp(tuningHistory.value, isCascade.value, strategy.value.acceptance.overshootLimit, unstableFlag)
+  const lastBadKp = extractLastBadKp(tuningHistory.value, isCascade.value, strategy.value.acceptance.overshootLimit, unstableFlag)
   // 记录本轮到调参历史（供下一轮 extractLastGoodKp/extractLastBadKp 提取上下界用于二分法）
   tuningHistory.value.push({
     round: tuningHistory.value.length + 1,
@@ -864,9 +878,9 @@ async function runAutoTuning() {
       let source = '本地规则'
       let guardNotes = []
       if (useAi) {
-        const lastGoodKpAuto = extractLastGoodKp(tuningHistory.value, isCascade.value, strategy.value.acceptance.overshootLimit)
-        const lastBadKpAuto = extractLastBadKp(tuningHistory.value, isCascade.value, strategy.value.acceptance.overshootLimit)
-        const resultAi = await callAiForPid(metrics, { currentPid: testedPid, lastGoodKp: lastGoodKpAuto, lastBadKp: lastBadKpAuto })
+        const lastGoodKpAuto = extractLastGoodKp(tuningHistory.value, isCascade.value, strategy.value.acceptance.overshootLimit, !!strategy.value.unstable)
+        const lastBadKpAuto = extractLastBadKp(tuningHistory.value, isCascade.value, strategy.value.acceptance.overshootLimit, !!strategy.value.unstable)
+        const resultAi = await callAiForPid(metrics, { currentPid: testedPid, lastGoodKp: lastGoodKpAuto, lastBadKp: lastBadKpAuto, unstable: !!strategy.value.unstable })
         if (resultAi.ok) {
           proposedPid = resultAi.params
           thought = resultAi.thought || ''
@@ -877,9 +891,9 @@ async function runAutoTuning() {
         }
       }
       if (!proposedPid) {
-        const lastGoodKpAuto = extractLastGoodKp(tuningHistory.value, isCascade.value, strategy.value.acceptance.overshootLimit)
-        const lastBadKpAuto = extractLastBadKp(tuningHistory.value, isCascade.value, strategy.value.acceptance.overshootLimit)
-        const fallback = buildFallbackSuggestion(metrics, testedPid, { lastGoodKp: lastGoodKpAuto, lastBadKp: lastBadKpAuto })
+        const lastGoodKpAuto = extractLastGoodKp(tuningHistory.value, isCascade.value, strategy.value.acceptance.overshootLimit, !!strategy.value.unstable)
+        const lastBadKpAuto = extractLastBadKp(tuningHistory.value, isCascade.value, strategy.value.acceptance.overshootLimit, !!strategy.value.unstable)
+        const fallback = buildFallbackSuggestion(metrics, testedPid, { lastGoodKp: lastGoodKpAuto, lastBadKp: lastBadKpAuto, unstable: !!strategy.value.unstable })
         const guarded = applyPidGuardrails(testedPid, fallback.params)
         proposedPid = guarded.params
         guardNotes = guarded.notes

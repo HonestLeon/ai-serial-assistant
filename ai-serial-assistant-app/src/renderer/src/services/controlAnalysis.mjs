@@ -64,24 +64,45 @@ function oscillationAmplitude(values) {
 }
 
 /**
+ * 对 feedback 序列做窗口=5 的居中滑动平均，剔除高频噪声。
+ * 用于振荡峰检测前预处理；不影响指标统计本身。
+ */
+function movingAverage(values, window = 5) {
+  const half = Math.floor(window / 2)
+  return values.map((_, i) => {
+    let sum = 0
+    let count = 0
+    for (let j = Math.max(0, i - half); j <= Math.min(values.length - 1, i + half); j += 1) {
+      sum += values[j]
+      count += 1
+    }
+    return sum / count
+  })
+}
+
+/**
  * 找出阶跃响应后的振荡峰值（过冲峰与回冲谷交替）。
  * 每个峰返回 { index, t, value, amplitude }，amplitude 为偏离最终目标的绝对距离。
  *
- * 关键：只有 feedback 真正超过 finalTarget（出现过冲）之后，才开始记录回冲谷。
- * 这样纯 P 稳态误差（feedback 恒小于 target、从未超过）不会产生任何峰，
- * 不会被误判为震荡。
- *
- * 过滤阈值：偏离 finalTarget 小于 stepSize*2% 的波动视为噪声，不计入。
- * direction>=0 表示阶跃向上，同侧（超出 finalTarget）为过冲峰，反侧为回冲谷。
+ * 关键设计（满足验收要求"剔除噪声项影响后"）：
+ *   1. 先对 feedback 做 5 点滑动平均滤波，滤除高频噪声，仅保留低频振荡分量；
+ *   2. 只有 feedback 真正超过 finalTarget（出现过冲）之后，才开始记录回冲谷。
+ *      这样纯 P 稳态误差（feedback 恒小于 target、从未超过）不会产生任何峰，
+ *      不会被误判为震荡；
+ *   3. 过滤阈值：偏离 finalTarget 小于 stepSize*2% 的波动视为噪声，不计入。
+ *   direction>=0 表示阶跃向上，同侧（超出 finalTarget）为过冲峰，反侧为回冲谷。
  */
 function findOscillationPeaks(samples, startIndex, finalTarget, stepSize, direction) {
   const threshold = Math.abs(stepSize) * 0.02
+  // 滑动平均滤波：剔除高频噪声后再检测峰（"剔除噪声项影响"）
+  const feedbacks = samples.map((s) => s.feedback)
+  const filtered = movingAverage(feedbacks, 5)
   const peaks = []
   let hasOvershoot = false  // 是否已经出现过冲（feedback 超过 finalTarget）
   for (let i = startIndex + 1; i < samples.length - 1; i += 1) {
-    const prev = samples[i - 1].feedback
-    const curr = samples[i].feedback
-    const next = samples[i + 1].feedback
+    const prev = filtered[i - 1]
+    const curr = filtered[i]
+    const next = filtered[i + 1]
     const dev = (curr - finalTarget) * direction      // 同侧为正（过冲）
     const devPrev = (prev - finalTarget) * direction
     const devNext = (next - finalTarget) * direction
@@ -156,6 +177,9 @@ export function analyzeControlSamples(inputSamples, options = {}) {
   const errors = postStep.map((sample) => sample.target - sample.feedback)
   const rmse = rms(errors)
   const tailFeedback = tail.map((sample) => sample.feedback)
+  // 稳态振幅：直接计算末尾窗真实振幅（不滤波）
+  // 验收标准"剔除噪声项影响"是指峰检测剔除高频噪声峰（findOscillationPeaks 已做滤波），
+  // 但稳态振幅应反映真实振荡（包括 Ki 过大导致的极限环），不能被滑动平均滤掉
   const oscillation = oscillationAmplitude(tailFeedback) / amplitude * 100
 
   // 振荡峰值分析：找出所有过冲峰/回冲谷，用于精确判定震荡
@@ -287,7 +311,10 @@ const PARAM_SPEC = {
   speedKd: { role: 'D', loop: 0.3, orderName: '速度环Kd' }
 }
 
-const PARAM_BOUNDS = { kp: 20, ki: 10, kd: 10, positionKp: 20, positionKi: 10, positionKd: 10, speedKp: 20, speedKi: 10, speedKd: 10 }
+// positionKp 上限设为 8：串级位置环输出速度目标，positionKp·error 受 speedLimit（默认 8）限制
+// target=0.8 时 positionKp=10 会让 speedTarget=8 持续饱和，导致极限环振荡（Kd 无法抑制）
+// 上限 8 让 target≥1 时 positionKp·error ≤ 8 不饱和；target<1 时仍有饱和风险，由调参策略识别处理
+const PARAM_BOUNDS = { kp: 20, ki: 10, kd: 10, positionKp: 8, positionKi: 10, positionKd: 10, speedKp: 20, speedKi: 10, speedKd: 10 }
 
 /**
  * 只生成“候选参数”，绝不直接下发硬件。
@@ -317,25 +344,112 @@ export function buildPidSuggestion(metrics, current = {}, options = {}) {
   }
 
   // 判定阶段：根据当前参数中是否启用 I/D 推断
+  // 串级以位置环（外环）为主导：阶段判断基于 positionKp/positionKi/positionKd
+  // 速度环（内环）作为跟随环，其 Kp 在 P 阶段也参与调整但权重较低
   const eps = 1e-6
-  const pOn = finite(current[isCascade ? 'speedKp' : 'kp'], 0) > eps
-  const iOn = finite(current[isCascade ? 'speedKi' : 'ki'], 0) > eps
-  const dOn = finite(current[isCascade ? 'speedKd' : 'kd'], 0) > eps
+  const pOn = finite(current[isCascade ? 'positionKp' : 'kp'], 0) > eps
+  const iOn = finite(current[isCascade ? 'positionKi' : 'ki'], 0) > eps
+  const dOn = finite(current[isCascade ? 'positionKd' : 'kd'], 0) > eps
+  // unstable 选项：用于不稳定系统（倒立摆/平衡车），必须有 Kd 提供阻尼
+  // 不稳定系统不走纯 P 阶段，从 PD 起步（Kp=0 也有 Kd），调好 Kp 后直接加 Ki 进 PID
+  const unstable = !!options.unstable
   let phase
-  if (!pOn && !iOn && !dOn) phase = 'P'        // 初始：从纯 P 开始
+  if (unstable) {
+    if (!iOn) phase = 'PD'        // 起始/调Kp阶段：Kd 保留，Ki=0
+    else phase = 'PID'            // 加 Ki 阶段
+  } else if (!pOn && !iOn && !dOn) phase = 'P'        // 初始：从纯 P 开始
   else if (pOn && !iOn && !dOn) phase = 'P'    // 纯 P 阶段
   else if (pOn && iOn && !dOn) phase = 'PI'    // PI 阶段
   else phase = 'PID'                            // 完整 PID 阶段
 
-  // 噪声约束：稳态振荡大或输出峰值高 → 不加 D
-  const noisy = finite(metrics.oscillation, 0) > finite(metrics.limits?.oscillation, 10) * 1.2
+  // 噪声约束：稳态振荡大或输出峰值高 → 不加 D（不稳定系统例外，Kd 是必需阻尼）
+  const noisy = !unstable && (
+    finite(metrics.oscillation, 0) > finite(metrics.limits?.oscillation, 10) * 1.2
     || finite(metrics.outputPeak, 0) > Math.abs(finite(metrics.stepSize, 1)) * 2
+  )
 
   const reasons = []
   const adjustments = []
 
+  // 阶段 PD：不稳定系统（倒立摆/平衡车）专用。保留 Kd 提供阻尼，仅调 Kp
+  // 与 P 阶段同样的二分法逻辑，但 Kd 不变（不被强制清零）
+  if (phase === 'PD') {
+    const overshootMargin = finite(metrics.limits.overshoot, 20) * 1.2
+    const overshootLimit = finite(metrics.limits.overshoot, 20)
+    const steadyErrRatio = Math.abs(finite(metrics.steadyError, 0))
+      / Math.max(Math.abs(finite(metrics.stepSize, 1)), 1e-6)
+    const hasOsc = !!metrics.hasSignificantOscillation
+    // PD 阶段目的是调 Kp，振荡标准放宽到 5%（验收标准 3% 留给 PID 阶段）
+    // 不要求 STABLE 状态：不稳定系统在 Kp 不足时振荡大但 status=SLOW_RESPONSE，仍应视为坏值
+    const oscOverLimit = finite(metrics.oscillation, 0) > 5
+    const currentKp = finite(current[isCascade ? 'positionKp' : 'kp'], 0)
+    const lastGoodKp = finite(options.lastGoodKp, 0)
+    const lastBadKp = finite(options.lastBadKp, 0)
+    const isBad = hasOsc || oscOverLimit || metrics.overshoot > overshootMargin
+    const bisectMean = (lastGoodKp > 0 && lastBadKp > 0) ? (lastGoodKp + lastBadKp) / 2 : 0
+    const bisectConverged = lastGoodKp > 0 && lastBadKp > 0
+      && (lastBadKp - lastGoodKp) < bisectMean * 0.1
+
+    if (bisectConverged) {
+      // Kp 收敛 → 加 Ki 进入 PID
+      // 不稳定系统 Ki 起始值更小（0.05），避免引入过大超调和震荡
+      const kiInit = unstable ? 0.05 : 0.3
+      adjustments.push({ I: { abs: kiInit } })
+      reasons.push(`阶段PD完成：Kp 二分区间已收敛（下界 ${fmt(lastGoodKp, 3)} ↔ 上界 ${fmt(lastBadKp, 3)}），加 Ki 进入 PID`)
+      phase = 'PID'
+    } else if (!pOn) {
+      // Kp=0 起始：给一个初始 Kp 试探（不稳定系统起始 Kp 更大，由初始值逻辑处理）
+      adjustments.push({ P: 1.0 })
+      reasons.push('阶段PD：Kp=0，给一个初始 Kp 试探（Kd 保留阻尼）')
+    } else if (isBad) {
+      const trigger = hasOsc ? '震荡' : (oscOverLimit ? `稳态振幅${fmt(metrics.oscillation, 1)}%>5%` : '超调')
+      const triggerDetail = hasOsc
+        ? `峰数${metrics.oscillationPeakCount}，最大振幅 ${fmt(metrics.maxPeakAmplitudePct, 1)}%`
+        : oscOverLimit
+          ? `稳态振幅 ${fmt(metrics.oscillation, 1)}% > 5%`
+          : `超调 ${fmt(metrics.overshoot, 1)}% > ${fmt(overshootMargin, 1)}%`
+      // 失稳检测：振荡极大（>50%）且稳态误差极大 → Kp 严重不足，应增大 Kp
+      // （倒立摆等不稳定系统在 Kp 不足时会发散，减小 Kp 只会让系统更不稳定）
+      const diverged = finite(metrics.oscillation, 0) > 50
+        && steadyErrRatio > 1.0
+      if (diverged) {
+        const factor = steadyErrRatio > 5 ? 3.0 : (steadyErrRatio > 2 ? 2.0 : 1.6)
+        adjustments.push({ P: factor })
+        reasons.push(`阶段PD：系统失稳（振荡 ${fmt(metrics.oscillation, 1)}%，稳态误差 ${fmt(steadyErrRatio * 100, 1)}%），Kp 严重不足，激进增大 Kp（×${factor}）`)
+      } else if (lastGoodKp > 0 && lastGoodKp < currentKp) {
+        const bisect = (lastGoodKp + currentKp) / 2
+        adjustments.push({ P: { abs: bisect } })
+        reasons.push(`阶段PD：${trigger}（${triggerDetail}），二分法取中间值 Kp=${fmt(bisect, 3)}（下界 ${fmt(lastGoodKp, 3)} ↔ 当前 ${fmt(currentKp, 3)}）`)
+      } else if (lastBadKp > 0 && currentKp < lastBadKp * 0.5) {
+        // 当前 Kp 远小于上界 → 直接二分到上界附近
+        const bisect = (currentKp + lastBadKp) / 2
+        adjustments.push({ P: { abs: bisect } })
+        reasons.push(`阶段PD：${trigger}（${triggerDetail}），当前 Kp 远小于上界，二分逼近上界 Kp=${fmt(bisect, 3)}（当前 ${fmt(currentKp, 3)} ↔ 上界 ${fmt(lastBadKp, 3)}）`)
+      } else {
+        adjustments.push({ P: 0.7 })
+        reasons.push(`阶段PD：${trigger}（${triggerDetail}），减小 Kp`)
+      }
+    } else if (lastBadKp > 0 && currentKp < lastBadKp) {
+      const bisect = (currentKp + lastBadKp) / 2
+      adjustments.push({ P: { abs: bisect } })
+      reasons.push(`阶段PD：当前 Kp=${fmt(currentKp, 3)} 无超调，继续二分逼近上界 Kp=${fmt(bisect, 3)}（当前 ${fmt(currentKp, 3)} ↔ 上界 ${fmt(lastBadKp, 3)}）`)
+    } else if (metrics.overshoot > overshootLimit) {
+      // 超调已接近验收标准 → Kp 已尽量增大，进入 PID 加 Ki
+      const kiInit = unstable ? 0.05 : 0.3
+      adjustments.push({ I: { abs: kiInit } })
+      reasons.push(`阶段PD完成：超调 ${fmt(metrics.overshoot, 1)}% 已接近验收标准 ${fmt(overshootLimit, 1)}%，加 Ki 进入 PID`)
+      phase = 'PID'
+    } else {
+      let factor, desc
+      if (steadyErrRatio > 0.3) { factor = 1.6; desc = '稳态误差较大，增大 Kp（×1.6）' }
+      else if (steadyErrRatio > 0.1) { factor = 1.4; desc = '稳态误差中等，增大 Kp（×1.4）' }
+      else { factor = 1.2; desc = '稳态误差较小，保守增大 Kp（×1.2）' }
+      adjustments.push({ P: factor })
+      reasons.push(`阶段PD：超调 ${fmt(metrics.overshoot, 1)}% 在可接受范围内、无明显震荡，${desc}（Kd 保留）`)
+    }
+  }
   // 阶段 1：纯 P。在可接受超调范围内，Kp 能给多大给多大
-  if (phase === 'P') {
+  else if (phase === 'P') {
     // 可接受超调上限：验收标准的 1.2 倍（允许一定超调以换取响应速度）
     const overshootMargin = finite(metrics.limits.overshoot, 20) * 1.2
     const overshootLimit = finite(metrics.limits.overshoot, 20)
@@ -344,8 +458,8 @@ export function buildPidSuggestion(metrics, current = {}, options = {}) {
       / Math.max(Math.abs(finite(metrics.stepSize, 1)), 1e-6)
     // 明显震荡判定：从第三个峰起振幅 > 5% 阶跃幅值
     const hasOsc = !!metrics.hasSignificantOscillation
-    // 当前活跃环的 Kp（单环用 kp，串级用 speedKp）
-    const currentKp = finite(current[isCascade ? 'speedKp' : 'kp'], 0)
+    // 当前活跃环的 Kp（单环用 kp，串级用 positionKp 外环主导）
+    const currentKp = finite(current[isCascade ? 'positionKp' : 'kp'], 0)
     // 二分法上下界：由调用方从历史中提取
     const lastGoodKp = finite(options.lastGoodKp, 0)  // 下界：无超调（<3%）无震荡
     const lastBadKp = finite(options.lastBadKp, 0)    // 上界：超调超限或有明显震荡
@@ -359,8 +473,15 @@ export function buildPidSuggestion(metrics, current = {}, options = {}) {
 
     if (bisectConverged) {
       // 二分区间已收敛 → Kp 已逼近边界，进入 PI（无论当前好坏）
-      adjustments.push({ I: 1.0 })
+      // 给 Ki 一个明确起始值（避免 0 × 1.0 = 0 的死锁）
+      adjustments.push({ I: { abs: 0.3 } })
       reasons.push(`阶段1(P)完成：二分区间已收敛（下界 ${fmt(lastGoodKp, 3)} ↔ 上界 ${fmt(lastBadKp, 3)}，差值 ${fmt(lastBadKp - lastGoodKp, 3)} < 均值 ${fmt(bisectMean, 3)} 的 10%），进入阶段2(PI)`)
+      phase = 'PI'
+    } else if (currentKp >= PARAM_BOUNDS[isCascade ? 'positionKp' : 'kp'] * 0.99) {
+      // Kp 已达上限但仍无超调/坏值 → Kp 已尽力，进入 PI 加 Ki 消除稳态误差
+      // （串级位置环纯P有稳态误差，必须加Ki消除；单环电机纯P也可能有稳态误差）
+      adjustments.push({ I: { abs: 0.3 } })
+      reasons.push(`阶段1(P)完成：Kp=${fmt(currentKp, 2)} 已达上限 ${PARAM_BOUNDS[isCascade ? 'positionKp' : 'kp']}，进入阶段2(PI)加 Ki 消除稳态误差`)
       phase = 'PI'
     } else if (!pOn) {
       // 从零开始：给一个初始 Kp 试探
@@ -389,7 +510,7 @@ export function buildPidSuggestion(metrics, current = {}, options = {}) {
       reasons.push(`阶段1(P)：当前 Kp=${fmt(currentKp, 3)} 无超调，继续二分逼近上界 Kp=${fmt(bisect, 3)}（当前 ${fmt(currentKp, 3)} ↔ 上界 ${fmt(lastBadKp, 3)}）`)
     } else if (metrics.overshoot > overshootLimit) {
       // 超调已接近验收标准 → Kp 已尽量增大，进入阶段 2
-      adjustments.push({ I: 1.0 })
+      adjustments.push({ I: { abs: 0.3 } })
       reasons.push(`阶段1(P)完成：超调 ${fmt(metrics.overshoot, 1)}% 已接近验收标准 ${fmt(overshootLimit, 1)}%，Kp 已尽量增大，进入阶段2(PI)加 Ki 消除稳态误差`)
       phase = 'PI'
     } else {
@@ -414,9 +535,38 @@ export function buildPidSuggestion(metrics, current = {}, options = {}) {
     if (metrics.overshoot > metrics.limits.overshoot) {
       adjustments.push({ P: 0.9, I: 0.85 })
       reasons.push('阶段2(PI)：PI 引起超调，适度降 P/Ki')
+    } else if (finite(metrics.oscillation, 0) > 3) {
+      // 稳态振幅 > 3%（验收标准）
+      // 区分两种情况：
+      //   1. Kp 临界振荡（P 阶段就有振荡，稳态误差大，Kp 未达上限）→ 减小 Kp 抑制振荡，增大 Ki 补偿稳态误差
+      //      典型场景：小惯量系统 Kp 临近失稳，加 Kd 会放大噪声失稳，只能减小 Kp
+      //   2. Ki 引起极限环（Kp 已达上限或稳态误差小）→ 加 Kd 增加阻尼抑制
+      const steadyErrRatio = Math.abs(finite(metrics.steadyError, 0))
+        / Math.max(Math.abs(finite(metrics.stepSize, 1)), 1e-6)
+      const currentKp = finite(current[isCascade ? 'positionKp' : 'kp'], 0)
+      const kpBound = PARAM_BOUNDS[isCascade ? 'positionKp' : 'kp']
+      // Kp 临界振荡判定：稳态误差大 + Kp 未达上限（Kp 还有空间但已振荡）
+      // 若 Kp 已达上限，稳态误差大是 Kp 力不能及（如位置环 Kp 饱和），振荡是 Ki 极限环
+      const kpCriticalOsc = steadyErrRatio > 0.05 && currentKp < kpBound * 0.99
+      if (kpCriticalOsc) {
+        // Kp 临界振荡：减小 Kp 抑制振荡，增大 Ki 补偿稳态误差
+        adjustments.push({ P: 0.85, I: 1.3 })
+        reasons.push(`阶段2(PI)：稳态振幅 ${fmt(metrics.oscillation, 1)}% > 3% 且稳态误差大（${fmt(steadyErrRatio * 100, 1)}%），Kp 临界振荡，减小 Kp 抑制振荡、增大 Ki 补偿稳态误差`)
+      } else {
+        // Ki 极限环：加 Kd 增加阻尼抑制（而非减小 Ki，因为需要 Ki 消除稳态误差）
+        adjustments.push({ D: 1.0 })
+        reasons.push(`阶段2(PI)完成：稳态振幅 ${fmt(metrics.oscillation, 1)}% > 3%，进入阶段3(PID)加 Kd 抑制振荡`)
+        phase = 'PID'
+      }
     } else if (Math.abs(metrics.steadyError) > Math.max(Math.abs(metrics.stepSize) * 0.05, 1e-6)) {
-      adjustments.push({ I: 1.3 })
-      reasons.push('阶段2(PI)：稳态误差偏大，增大 Ki')
+      // 稳态误差偏大：根据误差大小动态选择 Ki 增长因子（加速收敛）
+      const steadyErrRatio = Math.abs(metrics.steadyError) / Math.max(Math.abs(metrics.stepSize), 1e-6)
+      let factor, desc
+      if (steadyErrRatio > 0.2) { factor = 2.0; desc = '稳态误差较大，激进增大 Ki（×2.0）' }
+      else if (steadyErrRatio > 0.05) { factor = 1.5; desc = '稳态误差中等，中等幅度增大 Ki（×1.5）' }
+      else { factor = 1.2; desc = '稳态误差较小，保守增大 Ki（×1.2）' }
+      adjustments.push({ I: factor })
+      reasons.push(`阶段2(PI)：${desc}`)
     } else if (metrics.oscillation > metrics.limits.oscillation && !noisy) {
       // PI 稳定但有轻微振荡 → 进入阶段 3 加 D
       adjustments.push({ D: 1.0 })
@@ -432,27 +582,118 @@ export function buildPidSuggestion(metrics, current = {}, options = {}) {
   }
   // 阶段 3：PID。加 Kd 增加阻尼
   else {
-    if (noisy) {
-      // 噪声大 → 关闭 D，回到 PI
+    const currentKd = finite(current[isCascade ? 'speedKd' : 'kd'], 0)
+    const currentKi = finite(current[isCascade ? 'speedKi' : 'ki'], 0)
+    const kdBound = PARAM_BOUNDS[isCascade ? 'speedKd' : 'kd']
+    const oscOverLimit = finite(metrics.oscillation, 0) > 3
+    const hasHighOvershoot = metrics.overshoot > metrics.limits.overshoot
+    const hasSigOsc = !!metrics.hasSignificantOscillation
+    // 失稳检测：系统失稳（status≠STABLE 且振荡很大）
+    const destabilized = metrics.status !== 'STABLE' && finite(metrics.oscillation, 0) > 20
+
+    if (destabilized) {
+      if (unstable) {
+        // 不稳定系统失稳：回到 PD 阶段（Ki=0），保留 Kd 阻尼，Kp 由下一轮 PD 重新探索
+        adjustments.push({ I: 0.0 })
+        reasons.push(`阶段3(PID)：系统失稳（振荡 ${fmt(metrics.oscillation, 1)}%），不稳定系统回到 PD 阶段（清零 Ki）`)
+        phase = 'PD'
+      } else {
+        // 稳定系统失稳：Kd 过大放大噪声
+        // 减半 Kd 重试，而不是直接清零（避免 Kd=0 → PI 振荡 → 又加 Kd=起始值 → 又失稳 的死循环）
+        // 直到 Kd 减到很小仍失稳，才关闭 Kd 改为减小 Kp
+        const currentKd = finite(current[isCascade ? 'speedKd' : 'kd'], 0)
+        if (currentKd > 0.01) {
+          adjustments.push({ D: 0.5 })
+          reasons.push(`阶段3(PID)：Kd=${fmt(currentKd, 3)} 引入失稳（振荡 ${fmt(metrics.oscillation, 1)}%），减半 Kd 重试`)
+        } else {
+          // Kd 已很小仍失稳 → 关闭 Kd，回到 PI 减小 Kp 抑制振荡
+          adjustments.push({ D: 0.0, P: 0.85, I: 1.2 })
+          reasons.push(`阶段3(PID)：Kd=${fmt(currentKd, 4)} 已很小仍失稳，关闭 Kd 回到 PI，减小 Kp 抑制振荡、增大 Ki 补偿稳态误差`)
+          phase = 'PI'
+        }
+      }
+    } else if (hasHighOvershoot || hasSigOsc) {
+      // 超调/显著震荡：Ki 是主因（PID 阶段刚加 Ki），优先减小 Ki 而非增大 Kd
+      // 增大 Kd 会放大高频噪声、加剧震荡，所以只有 Ki 已很小时才增大 Kd
+      if (currentKi > 0.05) {
+        adjustments.push({ I: 0.5 })
+        reasons.push(`阶段3(PID)：超调 ${fmt(metrics.overshoot, 1)}%/震荡（峰数 ${metrics.oscillationPeakCount}），减小 Ki（${fmt(currentKi, 3)}→${fmt(currentKi * 0.5, 3)}）`)
+      } else if (currentKd < kdBound * 0.95) {
+        adjustments.push({ D: 1.3 })
+        reasons.push(`阶段3(PID)：超调 ${fmt(metrics.overshoot, 1)}% 但 Ki 已很小，增大 Kd 增加阻尼（Kd ${fmt(currentKd, 2)}→${fmt(currentKd * 1.3, 2)}）`)
+      } else {
+        adjustments.push({ P: 0.85 })
+        reasons.push(`阶段3(PID)：超调 ${fmt(metrics.overshoot, 1)}% 且 Kd 已达上限，减小 Kp`)
+      }
+    } else if (oscOverLimit && finite(current[isCascade ? 'positionKp' : 'kp'], 0) > 0.5) {
+      // 稳态振幅 > 3% 但系统稳定无显著震荡
+      const currentKp = finite(current[isCascade ? 'positionKp' : 'kp'], 0)
+      const kpBound = PARAM_BOUNDS[isCascade ? 'positionKp' : 'kp']
+      const steadyErrRatio = Math.abs(finite(metrics.steadyError, 0))
+        / Math.max(Math.abs(finite(metrics.stepSize, 1)), 1e-6)
+      const kpAtBound = currentKp >= kpBound * 0.99
+      // 稳定系统：稳态误差大 + 振荡大 + Kp 未达上限 → Kp 临界振荡（非 Ki 极限环）
+      // 减小 Kp 抑制振荡，增大 Ki 补偿稳态误差（典型场景：小惯量系统 Kp 临近失稳）
+      // 若 Kp 已达上限，稳态误差大是 Kp 力不能及，振荡是 Ki 极限环，应增大 Kd
+      const kpCriticalOsc = !unstable && steadyErrRatio > 0.05 && !kpAtBound
+      // Kp 饱和极限环：Kp 达上限 + Kd 已较大 + 振荡未改善 → 速度目标饱和导致极限环
+      // Kd 无法抑制这种饱和振荡，只能减小 Kp 解除饱和（不增大 Ki，因为 Ki 已够大）
+      const kpSaturationOsc = !unstable && kpAtBound && currentKd > 0.5
+      if (kpCriticalOsc) {
+        adjustments.push({ P: 0.85, I: 1.3 })
+        reasons.push(`阶段3(PID)：稳态振幅 ${fmt(metrics.oscillation, 1)}% > 3% 且稳态误差大（${fmt(steadyErrRatio * 100, 1)}%），Kp 临界振荡，减小 Kp 抑制振荡、增大 Ki 补偿稳态误差`)
+      } else if (kpSaturationOsc) {
+        // Kp 饱和极限环：减小 Kp 解除速度目标饱和（不增大 Ki，避免加剧极限环）
+        adjustments.push({ P: 0.9 })
+        reasons.push(`阶段3(PID)：Kp=${fmt(currentKp, 2)} 达上限且 Kd=${fmt(currentKd, 2)} 较大，振荡 ${fmt(metrics.oscillation, 1)}% 未改善，Kp 饱和导致极限环，减小 Kp 解除饱和`)
+      } else if (unstable && currentKd > 2) {
+        // 不稳定系统 Kd 过大（>2）会放大噪声导致振荡加剧（D项噪声 ∝ Kd×noise/dt）
+        // 减小 Kd 以降低噪声放大；同时若稳态误差大则增大 Kp 提供更强回复力矩
+        if (steadyErrRatio > 0.1) {
+          adjustments.push({ D: 0.7, P: 1.2 })
+          reasons.push(`阶段3(PID)：稳态振幅 ${fmt(metrics.oscillation, 1)}% > 3% 且 Kd=${fmt(currentKd, 2)} 过大放大噪声、稳态误差大，减小 Kd 并增大 Kp`)
+        } else {
+          adjustments.push({ D: 0.7 })
+          reasons.push(`阶段3(PID)：稳态振幅 ${fmt(metrics.oscillation, 1)}% > 3% 且 Kd=${fmt(currentKd, 2)} 过大放大噪声，减小 Kd`)
+        }
+      } else if (unstable && steadyErrRatio > 0.1) {
+        // 不稳定系统稳态误差大 → Kp 不足，增大 Kp 提供更强回复力矩（而非减小 Kp）
+        adjustments.push({ P: 1.3 })
+        reasons.push(`阶段3(PID)：稳态振幅 ${fmt(metrics.oscillation, 1)}% > 3% 且稳态误差大（${fmt(steadyErrRatio * 100, 1)}%），增大 Kp 提供更强回复力矩`)
+      } else if (currentKd < kdBound * 0.95) {
+        adjustments.push({ D: 1.4 })
+        reasons.push(`阶段3(PID)：稳态振幅 ${fmt(metrics.oscillation, 1)}% > 3%，增大 Kd 增加阻尼（Kd ${fmt(currentKd, 2)}→${fmt(currentKd * 1.4, 2)}）`)
+      } else {
+        // Kd 已达上限才减小 Kp
+        adjustments.push({ P: 0.85, I: 0.9 })
+        reasons.push(`阶段3(PID)：稳态振幅 ${fmt(metrics.oscillation, 1)}% > 3% 且 Kd 已达上限 ${fmt(kdBound, 1)}，减小 Kp`)
+      }
+    } else if (noisy && !unstable) {
+      // 噪声大 → 关闭 D，回到 PI（不稳定系统例外，Kd 必需）
       adjustments.push({ D: 0.0 })
       reasons.push('阶段3(PID)：检测到反馈噪声较大，关闭 Kd（D 项会放大噪声），回到 PI')
       phase = 'PI'
-    } else if (metrics.overshoot > metrics.limits.overshoot || metrics.oscillation > metrics.limits.oscillation) {
-      adjustments.push({ D: 1.25, P: 0.95 })
-      reasons.push('阶段3(PID)：超调/振荡偏大，增大 Kd 增加阻尼')
     } else if (Math.abs(metrics.steadyError) > Math.max(Math.abs(metrics.stepSize) * 0.05, 1e-6)) {
-      adjustments.push({ I: 1.1 })
-      reasons.push('阶段3(PID)：稳态误差偏大，小幅增大 Ki')
+      // 稳态误差偏大：根据误差大小动态选择 Ki 增长因子（加速收敛）
+      const steadyErrRatio = Math.abs(metrics.steadyError) / Math.max(Math.abs(metrics.stepSize), 1e-6)
+      let factor, desc
+      if (steadyErrRatio > 0.3) { factor = 2.0; desc = '稳态误差较大，激进增大 Ki（×2.0）' }
+      else if (steadyErrRatio > 0.1) { factor = 1.5; desc = '稳态误差中等，中等幅度增大 Ki（×1.5）' }
+      else { factor = 1.3; desc = '稳态误差较小，保守增大 Ki（×1.3）' }
+      adjustments.push({ I: factor })
+      reasons.push(`阶段3(PID)：${desc}`)
     } else {
       adjustments.push({ D: 1.1 })
       reasons.push('阶段3(PID)：已基本达标，微调 Kd 优化阻尼')
     }
   }
 
+  // 默认调参顺序：串级以位置环（外环）为主，位置环Kp 排首位（posIdx=0 不衰减）
+  // 速度环作为内环跟随，其 Kp 调整通过 loop=0.3 权重衰减
   const tuningOrder = options.tuningOrder && options.tuningOrder.length
     ? options.tuningOrder
     : (isCascade
-        ? ['速度环Kp', '速度环Ki', '位置环Kp', '位置环Ki', '位置环Kd']
+        ? ['位置环Kp', '位置环Ki', '位置环Kd', '速度环Kp', '速度环Ki']
         : ['Kp', 'Ki', 'Kd'])
 
   const result = { ...base }
@@ -462,8 +703,23 @@ export function buildPidSuggestion(metrics, current = {}, options = {}) {
     const posIdx = orderPos >= 0 ? orderPos : 0
     let value = result[key]
     // 从零开始时给一个小初始值，否则 0×factor 永远是 0
-    if (value < 1e-9 && spec.role === 'P' && phase === 'P') {
-      value = 0.5
+    // 不稳定系统（倒立摆）需要更大起始 Kp 才能克服重力失稳（Kp > mgl/J）
+    // 串级位置环（外环）需要更大起始 Kp 才能获得足够快的响应
+    if (value < 1e-9 && spec.role === 'P' && (phase === 'P' || phase === 'PD')) {
+      if (unstable) value = 5.0
+      else if (isCascade && key === 'positionKp') value = 2.0  // 位置环起始值更大以加快响应
+      else value = 0.5
+    }
+    // PI 阶段从 0 开始 Ki 时给一个起始值（避免 Ki=0 死锁）
+    // 不稳定系统 Ki 起始值更小（0.05），避免引入过大超调和震荡
+    if (value < 1e-9 && spec.role === 'I' && (phase === 'PI' || phase === 'PID')) {
+      value = unstable ? 0.05 : 0.3
+    }
+    // PID 阶段从 0 开始 Kd 时给一个起始值
+    // 起始值取 0.01（而非 0.05）：小惯量系统（J=0.01, dt=0.01）D 项 = Kd·d/dt，
+    // Kd=0.05 时 D 项增益 = 5，易放大噪声失稳；Kd=0.01 时 D 项增益 = 1，更安全
+    if (value < 1e-9 && spec.role === 'D' && phase === 'PID' && !unstable) {
+      value = 0.01
     }
     adjustments.forEach((adj) => {
       const adjSpec = adj[spec.role]
@@ -480,9 +736,13 @@ export function buildPidSuggestion(metrics, current = {}, options = {}) {
       const finalFactor = 1 + (orderFactor - 1) * spec.loop
       value *= finalFactor
     })
-    // 阶段约束：P 阶段强制 Ki=Kd=0；PI 阶段强制 Kd=0
+    // 阶段约束：
+    //   P 阶段强制 Ki=Kd=0
+    //   PI 阶段强制 Kd=0
+    //   PD 阶段强制 Ki=0（保留 Kd）
     if (phase === 'P' && spec.role !== 'P') value = 0
     else if (phase === 'PI' && spec.role === 'D') value = 0
+    else if (phase === 'PD' && spec.role === 'I') value = 0
     result[key] = value
   })
 
