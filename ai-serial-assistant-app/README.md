@@ -75,7 +75,9 @@ ai-serial-assistant-app/
             ├── style.css      # 设计系统（亮/暗双主题 CSS 变量 + Element Plus 覆盖）
             ├── services/      # 纯算法层（无 Vue 依赖，供组件与 tests/ 共用）
             │   ├── controlAnalysis.mjs   #   确定性分析 + 候选生成 + AI 上下文打包
-            │   └── pidSimulation.mjs     #   策略注册表 + 物理仿真 + 嵌入式代码生成
+            │   ├── pidSimulation.mjs     #   策略注册表 + 物理仿真 + 嵌入式代码生成
+            │   ├── pidSafety.mjs         #   安全护栏 + 兜底策略 + 评分 + 最佳记录 + 回退判定
+            │   └── pidTuningSession.mjs  #   自动调参会话状态机（轮次编排/停止判定/回退）
             └── components/
                 ├── SerialPanel.vue       # 串口配置 + AI 设置 + 协议引擎 + DTR/RTS
                 ├── DataMonitor.vue       # 数据流/数据表 + 自动发送 + 录制回放 + 控制响应模拟
@@ -100,7 +102,7 @@ ai-serial-assistant-app/
 | `WorkspaceChart` | 实时波形绘制：滑动窗口缓冲（MAX_POINTS=2000）、八通道解析、通道显隐、归一化、X 缩放平移、Y 自动/手动、主题联动、CSV/JSON 导出（详见下方「波形分析模块」章节） |
 | `WorkspaceAnalysis` | 通道特征统计（EDA）+ 确定性响应分析（上升/稳定时间、超调率、稳态误差、RMSE、稳态波动）+ 高级判定标准 + AI 结构化解释 + 报告导出；`analyzeControlSamples` 与调参模块共用（详见下方「波形分析模块」章节） |
 | `AiPanel` | 对话 + 快捷操作（数据分析/异常诊断/协议解析）+ 异常检测（3σ + stuck）+ 协议启发式识别 |
-| `PidPanel` | 调参流程编排与 UI（步骤 0 策略/1 阶跃/2 分析/3 下发）；算法全部外置到 `services/controlAnalysis.mjs` 与 `services/pidSimulation.mjs`（详见下方「PID 辅助调参」章节） |
+| `PidPanel` | 调参流程编排与 UI（步骤 0 策略/1 阶跃/2 分析/3 下发，含「自动调参」闭环 `runAutoTuning`）；算法全部外置到 `services/`（详见下方「PID 辅助调参」章节） |
 | `StatusBar` | 连接状态、Rx/Tx 计数、HEX 切换、主题切换 |
 
 > ⚠ **未挂载组件提醒**：`ChartPanel.vue` / `AnalysisPanel.vue` 为早期版本遗留，`ChannelPanel.vue` 为新增的「数据通道」面板，三者当前均未被 `App.vue` 挂载——活动图表/分析组件是 `WorkspaceChart.vue` / `WorkspaceAnalysis.vue`，通道数值由 `DataMonitor` 的「数据表」承担。新增功能请勿引用这些未接入组件，建议后续清理。
@@ -299,6 +301,8 @@ ai-serial-assistant-app/
 | `components/PidPanel.vue` | 流程编排与 UI（步骤 0 策略/1 阶跃/2 分析/3 下发），不含算法 |
 | `services/controlAnalysis.mjs` | 确定性分析 `analyzeControlSamples`、候选生成 `buildPidSuggestion`、AI 上下文打包 `buildStructuredAiContext` |
 | `services/pidSimulation.mjs` | 策略注册表 `PID_STRATEGIES`、物理仿真 `simulatePidStrategy`、嵌入式代码生成 `generateEmbeddedControllerFiles` |
+| `services/pidSafety.mjs` | 安全护栏 `applyPidGuardrails`、兜底 `buildFallbackSuggestion`、评分 `scoreMetrics`、最佳记录 `maybeUpdateBestResult`、回退判定 `shouldRollbackToBest`、达标判定 `isMetricsAcceptable` |
+| `services/pidTuningSession.mjs` | 自动调参会话状态机 `createTuningSession` / `registerTuningRound`（轮次编排、best 跟踪、停止判定 complete/stagnated/max-rounds） |
 
 > ⚠ 注意：`analyzeControlSamples` 同时被 `WorkspaceAnalysis.vue`（波形分析模块）与 `PidPanel.vue`（调参模块）调用——这正是「先做波形分析、再做调参」架构依赖的落点：调参的指标计算直接复用波形分析的能力。
 
@@ -444,13 +448,56 @@ if (响应保守)                    { P:1.10 /* 小幅提比例 */ }
 
 ---
 
-### 8. 测试覆盖（`tests/`）
+### 8. 安全护栏与自动调参闭环（`pidSafety.mjs` / `pidTuningSession.mjs`）
+
+> 本节对应 07-26 新增的「自动调参」能力。设计借鉴开源项目 [llm-pid-tuner](https://github.com/KINGSTON-115/llm-pid-tuner) 的 `pid_safety.py`，但落地为纯函数、并与我们的确定性分析 + 人工确认定位结合：**自动调参仅在仿真模式下运行**，真实硬件仍走人工确认。
+
+**`pidSafety.mjs`（五项纯函数，全部无副作用、可测试）**：
+
+| 函数 | 作用 |
+|------|------|
+| `applyPidGuardrails(current, proposed)` | 先按 `PID_LIMITS`（Kp 0~20、Ki/Kd 0~10，串级各轴同限）裁剪边界，再按 `maxIncreaseRatio`（Kp ×3、Ki/Kd ×4）限制单步增幅，防 LLM 一拍脑袋给 10 倍参数。返回 `{ params, notes }` |
+| `buildFallbackSuggestion(metrics, current)` | LLM 不可用时按 `metrics.status` 给保守乘性修正：OSCILLATING→降 P/I 增 D、OVERSHOOTING→降 P/I 增 D、SLOW_RESPONSE→增 P（稳态误差大同时增 I）、STABLE→细调。保证流程不中断 |
+| `scoreMetrics(metrics)` | 评分（越低越好）：`rmse + 1.2·|steadyError| + 0.6·overshoot + 0.3·oscillation + 状态惩罚`（OSCILLATING 12 / OVERSHOOTING 8 / SLOW_RESPONSE 6）。用于 best 比较与劣化判定 |
+| `maybeUpdateBestResult(best, current)` | **仅在 STABLE 时**更新最佳记录，避免回滚到坏参数 |
+| `shouldRollbackToBest(best, curMetrics)` | best 为 STABLE 且当前非 STABLE → 立即回退；或 rmse/steadyError/overshoot 任一**双阈值劣化**（相对 >1.3 倍 且 绝对增量 >0.5）→ 回退 |
+| `isMetricsAcceptable(metrics, opts)` | 终止条件：STABLE 且 rmse/稳态误差/超调均在阈值内 |
+
+**`pidTuningSession.mjs`（自动调参会话状态机）**：
+
+`createTuningSession({ maxRounds=12, requiredStable=2, patience=4 })` 创建会话；每轮调 `registerTuningRound(session, { pid, metrics, round }, acceptance)` 返回 `{ session, outcome, roundRecord }`。`outcome.decision` 取值：
+
+| decision | 触发条件 | 动作 |
+|----------|----------|------|
+| `continue` | 未达标、未劣化、未到上限 | 用候选参数进入下一轮 |
+| `rollback` | `shouldRollbackToBest` 命中 | 回退到 `bestStable.pid`，streak 清零 |
+| `complete` | 连续 `requiredStable` 轮达标 | 终止，应用最佳参数 |
+| `stagnated` | 连续 `patience` 轮无改善 | 终止，恢复已验证最佳参数 |
+| `max-rounds` | 达到 `maxRounds` 上限 | 终止，恢复最佳参数 |
+
+会话同时维护 `bestStable`（仅 STABLE 记录）与 `bestObserved`（任意最低分），取消时也会恢复最佳。
+
+**`PidPanel.vue::runAutoTuning()`（仿真模式闭环）**：
+
+仅在 `testMode === 'simulation'` 可用。点击「开始自动调参」后：
+1. 风险确认对话框（说明轮次/回退/停止规则）。
+2. 引擎选择：`hybrid`（有 API Key 则 AI 给参 + 安全护栏，AI 失败自动切本地规则）或 `local`（纯 `buildFallbackSuggestion` + 护栏，**离线可用**）。
+3. 循环 `maxRounds` 轮：① `simulatePidStrategy` 跑仿真 → ② `analyzeControlSamples` 算指标 → ③ `registerTuningRound` 评价（决定 continue/rollback/complete/stagnated/max-rounds）→ ④ 若未终止，生成下一轮候选（hybrid 走 AI，否则规则兜底 + `applyPidGuardrails`）→ 应用 → 下一轮。
+4. 终止/取消时恢复 `bestStable || bestObserved` 的参数。
+
+> 与手动调参的关系：手动模式仍是「AI 给候选 → 人工二次确认 → 下发」；自动模式把"确认"这一步交给会话状态机，但**仅限仿真**，不下发真实硬件。这既兑现了"辅助式"定位，又让仿真下能体验完整闭环。
+
+---
+
+### 9. 测试覆盖（`tests/`）
 
 MVP 自测脚本直接 import 上述 `services` 中的纯函数，保证「算法实现」与「算法验证」同源：
 
 - `control-analysis.mjs`：喂入构造的阶跃响应，断言指标（超调/稳定时间等）计算正确，并验证 `buildPidSuggestion` 的 tuningOrder 衰减与串级 6 参数支持。
 - `ai-data-context.mjs`：验证 `buildStructuredAiContext` 打包的结构化上下文。
 - `pid-simulation.mjs`：验证 `simulatePidStrategy` 三个策略的采样有效性；验证 `generateEmbeddedControllerFiles` 生成的是通信层（含 `zhichuan_periodic_send`/`zhichuan_parse_command`、不含 PID 计算逻辑）、前馈掩码按勾选正确生成（如 linear+gravity → 0x0041u、全选 → 0x01FFu、无勾选 → 0x0000u）。
+- `pid-safety.mjs`：验证 `applyPidGuardrails` 的边界裁剪与单步增幅限制、`buildFallbackSuggestion` 按 status 的乘性修正、`scoreMetrics` / `maybeUpdateBestResult`（仅 STABLE 更新）/ `shouldRollbackToBest`（双阈值劣化）/ `isMetricsAcceptable` 的判定。
+- `pid-tuning-session.mjs`：验证会话状态机——`registerTuningRound` 的五种 decision（continue/rollback/complete/stagnated/max-rounds）、best 跟踪、取消时恢复最佳参数。
 - `vue-sfc-compile.cjs`：用 `@vue/compiler-sfc` 编译所有 `.vue` 组件，捕获模板/脚本语法错误（兼容 npm 与 pnpm 安装环境）。
 
 运行：`npm run test:analysis`。
@@ -472,7 +519,7 @@ MVP 自测脚本直接 import 上述 `services` 中的纯函数，保证「算�
 | `npm run dev` | 经 `scripts/dev.js` 启动：先删除 `ELECTRON_RUN_AS_NODE`（避免 Electron 以纯 Node 模式运行导致 `require('electron')` 异常），再 `electron-vite dev` |
 | `npm run build` | `electron-vite build`，产物到 `out/`（out/main、out/preload、out/renderer） |
 | `npm run dist` | `electron-vite build && electron-builder`，生成安装包 |
-| `npm run test:analysis` | 跑 `tests/` 下 4 个脚本：控制指标计算、AI 上下文、PID 候选、Vue SFC 编译 |
+| `npm run test:analysis` | 跑 `tests/` 下 6 个脚本：控制指标计算、AI 上下文、PID 仿真、PID 安全护栏、自动调参会话、Vue SFC 编译 |
 
 > 调试：`npm run dev` 启动时 `isDev` 为真（`electron-vite dev` 设了 `ELECTRON_RENDERER_URL`），`src/main/index.js` 会在 `ready-to-show` 时自动 `openDevTools({ mode: 'detach' })`；生产构建不会开。随时也可手动 `Ctrl+Shift+I`（macOS `Cmd+Option+I`）开关。主进程日志看终端。
 
@@ -500,15 +547,17 @@ MVP 自测脚本直接 import 上述 `services` 中的纯函数，保证「算�
 - AI 助手（OpenAI 兼容接入、上下文注入、异常检测、协议识别）
 - 确定性响应分析、PID 辅助调参（本地候选 + AI 给参 + 人工确认/自动下发）
 - 策略注册表（多系统 / 多控制结构差异化调参，含仿真 / 真实串口测试来源与验收指标）
-- 参数安全限制（Kp 0~20、Ki/Kd 0~10 边界 + 二次确认下发，防异常参数损坏硬件）
-- 嵌入式集成（一键导出 `.c/.h` 控制器代码）
-- MVP 自测（`tests/` 4 脚本）
+- 参数安全限制（Kp 0~20、Ki/Kd 0~10 边界 + 单步增幅限制 + 二次确认下发，防异常参数损坏硬件）
+- **自动调参闭环（仿真模式）**：会话状态机 + best 跟踪 + 自动回退 + 停止判定（complete/stagnated/max-rounds），hybrid（AI+护栏）/ local（规则兜底）双引擎，离线可用
+- LLM 失败规则兜底（`buildFallbackSuggestion`，按 status 保守修正，流程不中断）
+- 嵌入式集成（一键导出 `.c/.h` 通信层，函数指针注入式）
+- MVP 自测（`tests/` 6 脚本）
 
 ### 进行中 🚧
 
-- 异常自动回退（超调 / 震荡越界时自动回退上一稳定态；当前仅提供手动回退提示与二次确认，自动化待实现）
 - 离线信号处理降级（Z-N / 继电自整定，无网可用）
 - 策略模板扩充（直立环 / 速度环 / 舵机环等更多竞赛系统预设与精细前馈项）
+- 自动调参向真实硬件延伸（当前仅仿真；硬件仍走人工确认闭环）
 
 ### 待完成 📋
 

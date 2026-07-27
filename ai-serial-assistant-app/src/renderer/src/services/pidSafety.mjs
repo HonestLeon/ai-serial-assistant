@@ -67,50 +67,150 @@ export function applyPidGuardrails(current, proposed) {
 }
 
 /**
- * LLM 不可用 / 返回异常时的保底策略：按 metrics.status 给保守的乘性修正。
- * 与 buildPidSuggestion 互补——前者是规则给“候选”，本函数是“回退”，语义不同。
+ * LLM 不可用 / 返回异常时的保底策略：遵循 P→PI→PID 分阶段调参，与 buildPidSuggestion 同策略。
  *
  * @param {object} metrics  analyzeControlSamples 的结果（需含 status 字段）
  * @param {object} current  当前参数
  * @returns {{ params: object, reason: string }}
  */
-export function buildFallbackSuggestion(metrics, current) {
-  const status = metrics?.status || 'STABLE'
+export function buildFallbackSuggestion(metrics, current, options = {}) {
+  const eps = 1e-6
+  const keys = Object.keys(current).filter((k) => k in PID_LIMITS)
+  // 推断当前阶段（与 buildPidSuggestion 一致）
+  const pKey = keys.find((k) => k === 'kp' || k === 'positionKp' || k === 'speedKp')
+  const iKey = keys.find((k) => k === 'ki' || k === 'positionKi' || k === 'speedKi')
+  const dKey = keys.find((k) => k === 'kd' || k === 'positionKd' || k === 'speedKd')
+  const pOn = pKey ? finite(current[pKey], 0) > eps : false
+  const iOn = iKey ? finite(current[iKey], 0) > eps : false
+  const dOn = dKey ? finite(current[dKey], 0) > eps : false
+  let phase
+  if (!pOn && !iOn && !dOn) phase = 'P'
+  else if (pOn && !iOn && !dOn) phase = 'P'
+  else if (pOn && iOn && !dOn) phase = 'PI'
+  else phase = 'PID'
+
+  // 噪声约束
+  const noisy = finite(metrics?.oscillation, 0) > finite(metrics?.limits?.oscillation, 10) * 1.2
+
+  // 上一个无超调无震荡的 Kp（用于 P 阶段二分法下界）
+  const lastGoodKp = finite(options.lastGoodKp, 0)
+  // 上一个超调/震荡的 Kp（用于 P 阶段二分法上界）
+  const lastBadKp = finite(options.lastBadKp, 0)
+  const currentKp = pKey ? finite(current[pKey], 0) : 0
+  // P 阶段减小 Kp 时是否可用二分法（当前坏 + 有下界）
+  const canBisectDown = phase === 'P' && lastGoodKp > 0 && lastGoodKp < currentKp
+  // P 阶段当前好但有上界 → 继续二分逼近上界
+  const canBisectUp = phase === 'P' && lastBadKp > 0 && currentKp < lastBadKp
+  // 二分区间是否已收敛（上下界差 < 上下界均值的 10%）
+  const bisectMean = (lastGoodKp > 0 && lastBadKp > 0) ? (lastGoodKp + lastBadKp) / 2 : 0
+  const bisectConverged = phase === 'P' && lastGoodKp > 0 && lastBadKp > 0
+    && (lastBadKp - lastGoodKp) < bisectMean * 0.1
+
   const factor = { P: 1, I: 1, D: 1 }
+  // 二分法目标值（非 null 时直接设定，覆盖因子）
+  let bisectP = null
   let reason = '保底策略：'
-  switch (status) {
+  switch (metrics?.status) {
     case 'OSCILLATING':
-      factor.P = 0.8;  factor.I = 0.85; factor.D = 1.2
-      reason += '检测到震荡，降 P/I 增 D 阻尼'
+      if (phase === 'P' && bisectConverged) {
+        // P 阶段二分区间已收敛 → 进入 PI（即使当前震荡）
+        factor.I = 0.5
+        reason += `P 阶段二分区间已收敛（下界 ${lastGoodKp.toFixed(3)} ↔ 上界 ${lastBadKp.toFixed(3)}），进入 PI 阶段加 Ki`
+        phase = 'PI'
+      } else if (phase === 'PID') { factor.P = 0.85; factor.I = 0.85; factor.D = 1.2; reason += '检测到震荡，降低当前活跃项' }
+      else if (phase === 'PI') { factor.P = 0.85; factor.I = 0.85; reason += '检测到震荡，降低当前活跃项' }
+      else if (canBisectDown) {
+        bisectP = (lastGoodKp + currentKp) / 2
+        reason += `P 阶段检测到震荡，二分法取中间值 Kp=${bisectP.toFixed(3)}（下界 ${lastGoodKp.toFixed(3)} ↔ 当前 ${currentKp.toFixed(3)}）`
+      }
+      else { factor.P = 0.8; reason += '检测到震荡，降低当前活跃项' }
       break
     case 'OVERSHOOTING':
-      factor.P = 0.85; factor.I = 0.9;  factor.D = 1.15
-      reason += '检测到超调，适度降 P/I 增 D'
+      if (phase === 'P' && bisectConverged) {
+        // P 阶段二分区间已收敛 → 进入 PI（即使当前超调）
+        factor.I = 0.5
+        reason += `P 阶段二分区间已收敛（下界 ${lastGoodKp.toFixed(3)} ↔ 上界 ${lastBadKp.toFixed(3)}），进入 PI 阶段加 Ki`
+        phase = 'PI'
+      } else if (phase === 'PID') { factor.P = 0.9; factor.D = 1.15; reason += '检测到超调，降低当前活跃项' }
+      else if (phase === 'PI') { factor.P = 0.9; factor.I = 0.9; reason += '检测到超调，降低当前活跃项' }
+      else if (canBisectDown) {
+        bisectP = (lastGoodKp + currentKp) / 2
+        reason += `P 阶段检测到超调，二分法取中间值 Kp=${bisectP.toFixed(3)}（下界 ${lastGoodKp.toFixed(3)} ↔ 当前 ${currentKp.toFixed(3)}）`
+      }
+      else { factor.P = 0.85; reason += '检测到超调，降低当前活跃项' }
       break
     case 'SLOW_RESPONSE':
-      factor.P = 1.25; factor.I = 1.2;  factor.D = 1.0
-      reason += '响应过慢，增大 P，稳态误差大时同时增大 I'
+      if (phase === 'P') { factor.P = 1.25 }
+      else if (phase === 'PI') { factor.I = 1.2 }
+      else { factor.P = 1.1; factor.I = 1.1 }
+      reason += '响应过慢，增大当前活跃项'
       break
     default:
-      // STABLE 但仍有稳态误差
-      if (metrics && Math.abs(finite(metrics.steadyError, 0)) > 1) {
-        factor.I = 1.15
-        reason += '稳态误差偏大，小幅增大 I'
+      // STABLE
+      if (phase === 'P') {
+        if (bisectConverged) {
+          // 二分区间已收敛 → 进入 PI
+          factor.I = 0.5
+          reason += `P 阶段二分区间已收敛（下界 ${lastGoodKp.toFixed(3)} ↔ 上界 ${lastBadKp.toFixed(3)}），进入 PI 阶段加 Ki`
+          phase = 'PI'
+        } else if (canBisectUp) {
+          // 当前好但有上界 → 继续二分逼近上界（避免走增大分支跳过上界）
+          bisectP = (currentKp + lastBadKp) / 2
+          reason += `P 阶段当前 Kp=${currentKp.toFixed(3)} 无超调，继续二分逼近上界 Kp=${bisectP.toFixed(3)}（当前 ${currentKp.toFixed(3)} ↔ 上界 ${lastBadKp.toFixed(3)}）`
+        } else {
+          // 无上界 → P 阶段稳定且不超调，进入 PI（开 I）
+          factor.I = 0.5  // 从小开始
+          reason += 'P 阶段已稳定，进入 PI 阶段加 Ki'
+          phase = 'PI'
+        }
+      } else if (phase === 'PI') {
+        if (Math.abs(finite(metrics?.steadyError, 0)) > 1) {
+          factor.I = 1.15
+          reason += '稳态误差偏大，小幅增大 Ki'
+        } else if (!noisy) {
+          factor.D = 0.5  // 从小开始
+          reason += 'PI 阶段已稳定，进入 PID 阶段加 Kd'
+          phase = 'PID'
+        } else {
+          factor.I = 1.05
+          reason += '稳态误差已消除且噪声大，维持 PI（不加 D）'
+        }
       } else {
-        factor.P = 1.05; factor.I = 1.05
-        reason += '已稳定，细调 P/I'
+        factor.D = 1.1
+        reason += 'PID 已稳定，微调 Kd 优化阻尼'
       }
   }
+
   const out = {}
-  Object.keys(current).forEach((k) => {
+  keys.forEach((k) => {
     if (!(k in PID_LIMITS)) return
     const role = k.toLowerCase().includes('kp') ? 'P'
       : k.toLowerCase().includes('ki') ? 'I'
       : 'D'
-    const v = finite(current[k], 0) * factor[role]
+    // 阶段约束
+    if (phase === 'P' && role !== 'P') { out[k] = 0; return }
+    if (phase === 'PI' && role === 'D') { out[k] = 0; return }
+    // 噪声约束：噪声大时 D 强制为 0
+    if (role === 'D' && noisy) { out[k] = 0; return }
+    // 从零开始升级时给一个初始小值，否则 0×factor 永远是 0
+    const cur = finite(current[k], 0)
+    if (cur < 1e-9 && role === 'I' && phase === 'PI') {
+      out[k] = 0.3
+      return
+    }
+    if (cur < 1e-9 && role === 'D' && phase === 'PID') {
+      out[k] = 0.05
+      return
+    }
+    // 二分法：P 阶段减小 Kp 时直接设定目标值，覆盖因子计算
+    if (role === 'P' && bisectP !== null) {
+      out[k] = Number(clamp(bisectP, 0, PID_LIMITS[k].max).toFixed(6))
+      return
+    }
+    const v = cur * factor[role]
     out[k] = Number(clamp(v, 0, PID_LIMITS[k].max).toFixed(6))
   })
-  return { params: out, reason }
+  return { params: out, reason, phase }
 }
 
 /**

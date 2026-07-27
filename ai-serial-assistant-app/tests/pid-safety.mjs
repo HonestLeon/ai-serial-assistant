@@ -54,14 +54,46 @@ console.log('4. applyPidGuardrails 边界裁剪')
   assert('kd 不超过 10', g.params.kd <= 10)
 }
 
-console.log('5. buildFallbackSuggestion 按状态生成保守建议')
+console.log('5. buildFallbackSuggestion 按状态生成保守建议（分阶段）')
 {
-  const metrics = { status: 'OSCILLATING', steadyError: 0.5 }
-  const cur = { kp: 4, ki: 2, kd: 0.5 }
-  const fb = buildFallbackSuggestion(metrics, cur)
-  assert('震荡时 P 应降低', fb.params.kp < cur.kp)
-  assert('震荡时 D 应增大', fb.params.kd > cur.kd)
-  console.log('     reason =', fb.reason)
+  // P 阶段：只调 P
+  const m1 = { status: 'OSCILLATING', steadyError: 0.5 }
+  const c1 = { kp: 4, ki: 0, kd: 0 }
+  const f1 = buildFallbackSuggestion(m1, c1)
+  assert('P 阶段：震荡时 Kp 应降低', f1.params.kp < c1.kp)
+  assert('P 阶段：Ki 应保持为 0', f1.params.ki === 0)
+  assert('P 阶段：Kd 应保持为 0', f1.params.kd === 0)
+  console.log('     P阶段 reason =', f1.reason, ', phase =', f1.phase)
+
+  // PI 阶段：P 和 I 可调，D 保持为 0
+  const m2 = { status: 'SLOW_RESPONSE', steadyError: 2 }
+  const c2 = { kp: 4, ki: 0.5, kd: 0 }
+  const f2 = buildFallbackSuggestion(m2, c2)
+  assert('PI 阶段：响应慢时 Ki 应增大', f2.params.ki > c2.ki)
+  assert('PI 阶段：Kd 应保持为 0', f2.params.kd === 0)
+  console.log('     PI阶段 reason =', f2.reason, ', phase =', f2.phase)
+
+  // PID 阶段：震荡时 D 可增大
+  const m3 = { status: 'OSCILLATING', steadyError: 0.5 }
+  const c3 = { kp: 4, ki: 2, kd: 0.5 }
+  const f3 = buildFallbackSuggestion(m3, c3)
+  assert('PID 阶段：震荡时 Kp 应降低', f3.params.kp < c3.kp)
+  assert('PID 阶段：震荡时 D 应增大', f3.params.kd > c3.kd)
+  console.log('     PID阶段 reason =', f3.reason, ', phase =', f3.phase)
+
+  // 噪声约束：噪声大时 D 强制为 0
+  const m4 = { status: 'STABLE', steadyError: 0.1, oscillation: 15, limits: { oscillation: 10 } }
+  const c4 = { kp: 4, ki: 2, kd: 0.5 }
+  const f4 = buildFallbackSuggestion(m4, c4)
+  assert('噪声大时 Kd 应强制为 0', f4.params.kd === 0)
+  console.log('     噪声约束 reason =', f4.reason)
+
+  // STABLE 且 P 阶段 → 应进入 PI 阶段
+  const m5 = { status: 'STABLE', steadyError: 0.1, oscillation: 2, limits: { oscillation: 10 } }
+  const c5 = { kp: 4, ki: 0, kd: 0 }
+  const f5 = buildFallbackSuggestion(m5, c5)
+  assert('P 阶段稳定后应进入 PI（Ki > 0）', f5.params.ki > 0)
+  console.log('     P→PI 升级 reason =', f5.reason, ', phase =', f5.phase)
 }
 
 console.log('6. scoreMetrics 越低越好')

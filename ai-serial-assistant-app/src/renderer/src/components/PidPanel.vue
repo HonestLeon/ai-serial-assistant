@@ -58,6 +58,58 @@ const feedforwardFormulaText = computed(() => {
 // 前馈掩码（C 字面量，如 0x0041u）：由勾选项生成，写入导出的 .h；也可手动复制到已有工程头文件
 const feedforwardMaskLiteral = computed(() => formatFeedforwardMask(feedforwardSelection))
 
+// 当前参数总览（用于UI显示，便于看清调参过程）
+const currentParamsOverview = computed(() => {
+  const cascade = isCascade.value
+  const pid = cascade
+    ? {
+        '速度环Kp': outputParams.speedKp,
+        '速度环Ki': outputParams.speedKi,
+        '速度环Kd': outputParams.speedKd,
+        '位置环Kp': outputParams.kp,
+        '位置环Ki': outputParams.ki,
+        '位置环Kd': outputParams.kd
+      }
+    : {
+        Kp: outputParams.kp,
+        Ki: outputParams.ki,
+        Kd: outputParams.kd
+      }
+  const ffItems = Object.entries(feedforwardSelection).map(([id, coeff]) => {
+    const item = FEEDFORWARD_ITEMS_BY_ID[id]
+    return item ? `${item.name.split(' ')[0]}=${coeff}` : null
+  }).filter(Boolean)
+  // 推断当前阶段
+  const eps = 1e-6
+  const pVal = Number(cascade ? outputParams.speedKp : outputParams.kp) || 0
+  const iVal = Number(cascade ? outputParams.speedKi : outputParams.ki) || 0
+  const dVal = Number(cascade ? outputParams.speedKd : outputParams.kd) || 0
+  const phase = (!pVal && !iVal && !dVal) || (pVal > eps && !iVal && !dVal) ? 'P'
+    : (pVal > eps && iVal > eps && !dVal) ? 'PI'
+    : 'PID'
+  return { pid, ffItems, phase }
+})
+
+// 参数变化高亮：记录上次参数值，AI 应用后对比并标记变化项
+const paramChangeHighlight = reactive({})
+let prevParamsSnapshot = null
+function snapshotAndHighlightChange() {
+  if (prevParamsSnapshot) {
+    Object.keys(outputParams).forEach((k) => {
+      if (prevParamsSnapshot[k] !== outputParams[k]) {
+        paramChangeHighlight[k] = Date.now()
+      }
+    })
+  }
+  prevParamsSnapshot = { ...outputParams }
+}
+// 清除高亮（5秒后自动淡出）
+function isParamChanged(key) {
+  const t = paramChangeHighlight[key]
+  if (!t) return false
+  return Date.now() - t < 5000
+}
+
 function copyFeedforwardMask() {
   navigator.clipboard?.writeText(feedforwardMaskLiteral.value).then(
     () => { simulationStatus.value = `已复制前馈掩码 ${feedforwardMaskLiteral.value} 到剪贴板` },
@@ -87,14 +139,16 @@ const stepConfig = reactive({
   outputChannel: -1
 })
 
+// PID 候选参数：从纯 P 开始（Ki=Kd=0），让分阶段调参策略自动从 P 阶段试探 Kp
+// 串级策略的 speedKi/speedKd、positionKi/positionKd 会在 applyStrategyDefaults 中按策略重置
 const outputParams = reactive({
-  kp: '1.8',
-  ki: '0.22',
-  kd: '0.12',
+  kp: '1.0',
+  ki: '0',
+  kd: '0',
   // 串级策略额外使用
-  speedKp: '2',
-  speedKi: '4',
-  speedKd: '0.01'
+  speedKp: '1.0',
+  speedKi: '0',
+  speedKd: '0'
 })
 
 const isCascade = computed(() => strategyId.value === 'cascade_position')
@@ -400,6 +454,51 @@ function formatParamsForDisplay(params, cascade) {
   return `Kp=${params.kp}, Ki=${params.ki}, Kd=${params.kd}`
 }
 
+/**
+ * 从调参历史中提取上一个"好"的 Kp（P 阶段、超调在验收标准内、无明显震荡），用于二分法下界。
+ * 单环返回 kp，串级返回当前活跃环（speedKp）。
+ */
+function extractLastGoodKp(history, cascade, overshootLimit) {
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    const h = history[i]
+    if (!h?.pid || !h?.metrics) continue
+    const kp = Number(cascade ? h.pid.speedKp : h.pid.kp) || 0
+    const ki = Number(cascade ? h.pid.speedKi : h.pid.ki) || 0
+    const kd = Number(cascade ? h.pid.speedKd : h.pid.kd) || 0
+    // P 阶段判定：Kp>0 且 Ki=Kd=0
+    if (kp > 0 && ki === 0 && kd === 0) {
+      const m = h.metrics
+      // 好值：超调在验收标准内 且 无明显震荡
+      if ((m.overshoot ?? 0) <= overshootLimit && !m.hasSignificantOscillation) {
+        return kp
+      }
+    }
+  }
+  return null
+}
+
+/**
+ * 从调参历史中提取上一个"坏"的 Kp（P 阶段、超调超限或有明显震荡），用于二分法上界。
+ * 一旦建立上界，P 阶段就只二分不增大，收敛到无超调边界。
+ */
+function extractLastBadKp(history, cascade, overshootLimit) {
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    const h = history[i]
+    if (!h?.pid || !h?.metrics) continue
+    const kp = Number(cascade ? h.pid.speedKp : h.pid.kp) || 0
+    const ki = Number(cascade ? h.pid.speedKi : h.pid.ki) || 0
+    const kd = Number(cascade ? h.pid.speedKd : h.pid.kd) || 0
+    if (kp > 0 && ki === 0 && kd === 0) {
+      const m = h.metrics
+      // 坏值：超调超过验收标准 或 有明显震荡
+      if ((m.overshoot ?? 0) > overshootLimit || m.hasSignificantOscillation) {
+        return kp
+      }
+    }
+  }
+  return null
+}
+
 async function analyzeResponse() {
   if (response.value.length < 5) {
     error.value = '采集数据不足，请先执行阶跃测试'
@@ -421,7 +520,23 @@ async function analyzeResponse() {
 
   // 指标必须和“产生这组响应的参数”绑定；候选生成后再一次性写回，避免因果错位。
   const testedPid = readCanonicalPid(outputParams, isCascade.value)
-  const candidate = buildPidSuggestion(deterministicMetrics.value, testedPid, { tuningOrder: tuningOrder.value })
+  const lastGoodKp = extractLastGoodKp(tuningHistory.value, isCascade.value, strategy.value.acceptance.overshootLimit)
+  const lastBadKp = extractLastBadKp(tuningHistory.value, isCascade.value, strategy.value.acceptance.overshootLimit)
+  // 记录本轮到调参历史（供下一轮 extractLastGoodKp/extractLastBadKp 提取上下界用于二分法）
+  tuningHistory.value.push({
+    round: tuningHistory.value.length + 1,
+    pid: { ...testedPid },
+    metrics: { ...deterministicMetrics.value },
+    analysis: '',
+    thought: '',
+    proposedPid: null,
+    source: '手动分析'
+  })
+  const candidate = buildPidSuggestion(deterministicMetrics.value, testedPid, {
+    tuningOrder: tuningOrder.value,
+    lastGoodKp,
+    lastBadKp
+  })
   localReasons.value = candidate.reasons
 
   if (!props.aiConfig.apiKey) {
@@ -432,22 +547,29 @@ async function analyzeResponse() {
   }
 
   // 调用 AI 给出新参数（含历史上下文 + 5 次指数退避重试 + 安全护栏）
-  const result = await callAiForPid(deterministicMetrics.value, { currentPid: testedPid })
+  const result = await callAiForPid(deterministicMetrics.value, { currentPid: testedPid, lastGoodKp, lastBadKp })
   analyzing.value = false
   if (!result.ok) {
     // AI 失败：用保底策略生成候选，保证流程不中断
-    const fallback = buildFallbackSuggestion(deterministicMetrics.value, testedPid)
+    const fallback = buildFallbackSuggestion(deterministicMetrics.value, testedPid, { lastGoodKp, lastBadKp })
     applyCanonicalPid(outputParams, fallback.params, isCascade.value)
-    aiResult.value = `AI 调用失败（${result.error}），已用保底策略：${fallback.reason}。参数已填入下方。`
+    snapshotAndHighlightChange()
+    const phaseTag = fallback.phase ? ` [阶段: ${fallback.phase}]` : ''
+    aiResult.value = `AI 调用失败（${result.error}），已用保底策略${phaseTag}：${fallback.reason}。参数已填入下方。`
     return false
   }
 
   // AI 给出的参数填入候选（覆盖确定性基线）
   aiParams.value = result.params
   applyCanonicalPid(outputParams, result.params, isCascade.value)
-  aiResult.value = `AI 已给出新参数并填入下方候选：${formatParamsForDisplay(result.params, isCascade.value)}`
+  snapshotAndHighlightChange()  // 高亮变化的参数项，给用户即时反馈
+  const phaseTag = result.phase ? ` [阶段: ${result.phase}]` : ''
+  aiResult.value = `AI 已给出新参数并填入下方候选${phaseTag}：${formatParamsForDisplay(result.params, isCascade.value)}`
   if (result.guardNotes.length) {
     aiResult.value += `\n安全护栏：${result.guardNotes.join('；')}`
+  }
+  if (result.thought) {
+    aiResult.value += `\nAI 思考：${result.thought}`
   }
 
   // 自动下发：已连接串口时直接写入设备，无需人工确认
@@ -469,10 +591,62 @@ async function callAiForPid(metrics, options = {}) {
     : '{"kp":<0-20>,"ki":<0-10>,"kd":<0-10>,"thought":"<简短思考>"}'
   const currentParams = options.currentPid || readCanonicalPid(outputParams, cascade)
   const historyText = historyToPromptText(tuningHistory.value, 5)
+
+  // 推断当前调参阶段（与 buildPidSuggestion 一致）
+  const eps = 1e-6
+  const pVal = cascade ? currentParams.speedKp : currentParams.kp
+  const iVal = cascade ? currentParams.speedKi : currentParams.ki
+  const dVal = cascade ? currentParams.speedKd : currentParams.kd
+  const phase = (!pVal && !iVal && !dVal) || (pVal > eps && !iVal && !dVal) ? 'P'
+    : (pVal > eps && iVal > eps && !dVal) ? 'PI'
+    : 'PID'
+  // 噪声判定
+  const noisy = (metrics.oscillation ?? 0) > (metrics.limits?.oscillation ?? 10) * 1.2
+
+  // 可接受超调上限：验收标准的 1.2 倍（P 阶段允许一定超调以换取响应速度）
+  const overshootLimit = metrics.limits?.overshoot ?? 20
+  const overshootMargin = overshootLimit * 1.2
+  const curOvershoot = metrics.overshoot ?? 0
+  const fmtPct = (v) => Number(v).toFixed(1)
+
+  // 按阶段生成针对性策略提示，让 AI 明确本轮调整方向
+  let phaseStrategy
+  if (phase === 'P') {
+    const hasOsc = !!metrics.hasSignificantOscillation
+    const peakInfo = `峰数 ${metrics.oscillationPeakCount ?? 0}，最大振幅 ${fmtPct(metrics.maxPeakAmplitudePct ?? 0)}%`
+    if (hasOsc) {
+      phaseStrategy = `当前 P 阶段：检测到明显震荡（${peakInfo}，从第三个峰起振幅应≤5%）。` +
+        `应减小 Kp 直到震荡消失。Ki=Kd=0。`
+    } else if (curOvershoot > overshootMargin) {
+      phaseStrategy = `当前 P 阶段：超调 ${fmtPct(curOvershoot)}% 超出可接受范围（≤${fmtPct(overshootMargin)}%），应减小 Kp。Ki=Kd=0。`
+    } else if (curOvershoot > overshootLimit) {
+      phaseStrategy = `当前 P 阶段：超调 ${fmtPct(curOvershoot)}% 已接近可接受上限（≤${fmtPct(overshootMargin)}%），Kp 已尽量增大。` +
+        `可保持当前 Kp 进入 PI 阶段加 Ki 消除稳态误差。`
+    } else {
+      // 根据稳态误差告诉 AI 应激进还是保守
+      const steadyErrRatio = Math.abs(metrics.steadyError ?? 0) / Math.max(Math.abs(metrics.stepSize ?? 1), 1e-6)
+      let factorHint
+      if (steadyErrRatio > 0.3) {
+        factorHint = '稳态误差较大，应激进增大 Kp（×1.5~2.0）'
+      } else if (steadyErrRatio > 0.1) {
+        factorHint = '稳态误差中等，应中等幅度增大 Kp（×1.3~1.5）'
+      } else {
+        factorHint = '稳态误差较小，应保守增大 Kp（×1.2~1.3）'
+      }
+      phaseStrategy = `当前 P 阶段：超调 ${fmtPct(curOvershoot)}% 远低于验收标准 ${fmtPct(overshootLimit)}%，无明显震荡。` +
+        `${factorHint}，在可接受超调范围内（≤${fmtPct(overshootMargin)}%）尽量把 Kp 给大。Ki=Kd=0。`
+    }
+  } else if (phase === 'PI') {
+    phaseStrategy = '当前 PI 阶段：P 已调好，加 Ki 消除稳态误差，Kd=0。稳态误差大时增大 Ki，超调时降 P/Ki。'
+  } else {
+    phaseStrategy = '当前 PID 阶段：加 Kd 抑制超调/振荡。噪声大时禁止加 Kd。'
+  }
+
   const userContent = JSON.stringify({
-    任务: '根据响应指标、当前参数和调参历史，给出新的 PID 参数。只输出一个 JSON 对象，禁止任何解释、Markdown 或额外文字。',
+    任务: '根据响应指标、当前参数、调参历史和当前阶段，给出新的 PID 参数。只输出一个 JSON 对象，禁止任何解释、Markdown 或额外文字。',
     输出格式: formatSpec,
     当前参数: currentParams,
+    当前阶段: phase,
     响应指标: {
       状态: metrics.status,
       超调率: metrics.overshoot,
@@ -481,16 +655,27 @@ async function callAiForPid(metrics, options = {}) {
       稳态误差: metrics.steadyError,
       均方根误差: metrics.rmse,
       振荡: metrics.oscillation,
-      采样点数: metrics.sampleCount
+      振荡峰数: metrics.oscillationPeakCount ?? 0,
+      振荡频率: metrics.oscillationFrequency ?? null,
+      最大峰振幅百分比: metrics.maxPeakAmplitudePct ?? 0,
+      明显震荡: metrics.hasSignificantOscillation ? '是（从第三个峰起振幅>5%，应减小 Kp）' : '否',
+      采样点数: metrics.sampleCount,
+      反馈噪声大: noisy ? '是（禁止加 Kd）' : '否'
+    },
+    超调空间: {
+      当前超调率: `${fmtPct(curOvershoot)}%`,
+      验收标准: `${fmtPct(overshootLimit)}%`,
+      可接受上限: `${fmtPct(overshootMargin)}%（P 阶段允许达到此值以最大化 Kp）`
     },
     调参历史: historyText || '（暂无历史，这是第一轮）',
     场景: testMode.value === 'simulation'
       ? `仿真测试；模型：${strategy.value.description}`
       : `真实串口阶跃测试；阶跃幅值 ${stepConfig.amplitude}`,
+    调参策略: phaseStrategy,
     安全要求: '参数必须循序渐进，单步增幅不得超过 3 倍。借鉴历史中的 AI 思考，避免重复无效方向。'
   }, null, 2)
 
-  const systemContent = `你是 PID 调参助手。只输出一个 JSON 对象表示新参数，禁止输出任何解释、说明、Markdown 代码块或额外文字。输出格式：${formatSpec}。所有数值必须在给定范围内。必须仔细阅读"调参历史"字段，避免重复无效方向。thought 字段限 100 字内简述调整思路。`
+  const systemContent = `你是 PID 调参助手。只输出一个 JSON 对象表示新参数，禁止输出任何解释、说明、Markdown 代码块或额外文字。输出格式：${formatSpec}。所有数值必须在给定范围内。必须仔细阅读"调参历史"字段，避免重复无效方向。thought 字段限 100 字内简述调整思路，须说明当前阶段与本次调整方向。`
 
   // 5 次指数退避重试
   const delays = [0, 2, 4, 8, 16]
@@ -519,13 +704,55 @@ async function callAiForPid(metrics, options = {}) {
       const raw = data2.choices?.[0]?.message?.content || ''
       const parsed = parseAiParams(raw, cascade)
       if (!parsed) { lastError = '返回格式无法解析'; continue }
+      // 阶段约束后处理：P 阶段强制 Ki=Kd=0；PI 阶段强制 Kd=0；噪声大时强制 Kd=0
+      if (phase === 'P') {
+        if (cascade) { parsed.speedKi = 0; parsed.speedKd = 0; parsed.positionKi = 0; parsed.positionKd = 0 }
+        else { parsed.ki = 0; parsed.kd = 0 }
+      } else if (phase === 'PI') {
+        if (cascade) { parsed.speedKd = 0; parsed.positionKd = 0 }
+        else { parsed.kd = 0 }
+      }
+      if (noisy) {
+        if (cascade) { parsed.speedKd = 0; parsed.positionKd = 0 }
+        else { parsed.kd = 0 }
+      }
       // 安全护栏裁剪（单步增幅限制 + 边界）
       const guard = applyPidGuardrails(currentParams, parsed)
+      // P 阶段二分法强制覆盖：AI 可能给一个不合理的 Kp，用二分上下界强制约束
+      const lgKp = Number(options.lastGoodKp) || 0  // 下界（无超调）
+      const lbKp = Number(options.lastBadKp) || 0   // 上界（超调/震荡）
+      if (phase === 'P') {
+        const kpKey = cascade ? 'speedKp' : 'kp'
+        const curKp = Number(currentParams[kpKey]) || 0
+        const overshootMargin = (Number(metrics.limits?.overshoot) || 20) * 1.2
+        const isBad = (Number(metrics.overshoot) || 0) > overshootMargin || metrics.hasSignificantOscillation
+        const aiKp = Number(guard.params[kpKey]) || 0
+        // 收敛判定：上下界差 < 均值的 10%
+        const bisectMean = (lgKp > 0 && lbKp > 0) ? (lgKp + lbKp) / 2 : 0
+        const bisectConverged = lgKp > 0 && lbKp > 0 && (lbKp - lgKp) < bisectMean * 0.1
+        if (bisectConverged) {
+          // 区间已收敛 → 强制进入 PI：保持当前 Kp，开启 Ki
+          if (cascade) { guard.params.speedKi = 0.5 }
+          else { guard.params.ki = 0.5 }
+          guard.notes.push(`P 阶段二分区间已收敛（下界 ${lgKp.toFixed(3)} ↔ 上界 ${lbKp.toFixed(3)}），强制进入 PI 阶段`)
+        } else if (isBad && lgKp > 0 && lgKp < curKp) {
+          // 当前坏 + 有下界 → 二分(下界+当前)/2，覆盖 AI Kp
+          const bisect = (lgKp + curKp) / 2
+          guard.params[kpKey] = bisect
+          guard.notes.push(`P 阶段二分法覆盖 AI Kp: ${aiKp.toFixed(3)} → ${bisect.toFixed(3)}（下界 ${lgKp.toFixed(3)} ↔ 当前 ${curKp.toFixed(3)}）`)
+        } else if (!isBad && lbKp > 0 && curKp < lbKp) {
+          // 当前好 + 有上界 → 继续二分(当前+上界)/2 逼近上界，覆盖 AI Kp（避免跳过上界）
+          const bisect = (curKp + lbKp) / 2
+          guard.params[kpKey] = bisect
+          guard.notes.push(`P 阶段继续二分逼近上界，覆盖 AI Kp: ${aiKp.toFixed(3)} → ${bisect.toFixed(3)}（当前 ${curKp.toFixed(3)} ↔ 上界 ${lbKp.toFixed(3)}）`)
+        }
+      }
       return {
         ok: true,
         params: guard.params,
         thought: parsed.thought || '',
-        guardNotes: guard.notes
+        guardNotes: guard.notes,
+        phase
       }
     } catch (e) {
       lastError = e.message || String(e)
@@ -616,6 +843,7 @@ async function runAutoTuning() {
 
       if (registered.outcome.applyPid) {
         applyCanonicalPid(outputParams, registered.outcome.applyPid, isCascade.value)
+        snapshotAndHighlightChange()
       }
       if (registered.outcome.decision === 'rollback') {
         historyRecord.thought = '安全回退'
@@ -636,7 +864,9 @@ async function runAutoTuning() {
       let source = '本地规则'
       let guardNotes = []
       if (useAi) {
-        const resultAi = await callAiForPid(metrics, { currentPid: testedPid })
+        const lastGoodKpAuto = extractLastGoodKp(tuningHistory.value, isCascade.value, strategy.value.acceptance.overshootLimit)
+        const lastBadKpAuto = extractLastBadKp(tuningHistory.value, isCascade.value, strategy.value.acceptance.overshootLimit)
+        const resultAi = await callAiForPid(metrics, { currentPid: testedPid, lastGoodKp: lastGoodKpAuto, lastBadKp: lastBadKpAuto })
         if (resultAi.ok) {
           proposedPid = resultAi.params
           thought = resultAi.thought || ''
@@ -647,13 +877,16 @@ async function runAutoTuning() {
         }
       }
       if (!proposedPid) {
-        const fallback = buildFallbackSuggestion(metrics, testedPid)
+        const lastGoodKpAuto = extractLastGoodKp(tuningHistory.value, isCascade.value, strategy.value.acceptance.overshootLimit)
+        const lastBadKpAuto = extractLastBadKp(tuningHistory.value, isCascade.value, strategy.value.acceptance.overshootLimit)
+        const fallback = buildFallbackSuggestion(metrics, testedPid, { lastGoodKp: lastGoodKpAuto, lastBadKp: lastBadKpAuto })
         const guarded = applyPidGuardrails(testedPid, fallback.params)
         proposedPid = guarded.params
         guardNotes = guarded.notes
         if (!thought) thought = fallback.reason
       }
       applyCanonicalPid(outputParams, proposedPid, isCascade.value)
+      snapshotAndHighlightChange()
       historyRecord.proposedPid = { ...proposedPid }
       historyRecord.source = source
       historyRecord.thought = thought
@@ -668,6 +901,7 @@ async function runAutoTuning() {
       const best = tuningSession.bestStable || tuningSession.bestObserved
       if (best?.pid) {
         applyCanonicalPid(outputParams, best.pid, isCascade.value)
+        snapshotAndHighlightChange()
         autoTuneStatus.value += '；已恢复目前已验证的最佳参数'
       }
     }
@@ -814,7 +1048,9 @@ onUnmounted(() => {
 
 <template>
   <div class="pid-panel">
-    <div class="pid-content">
+    <div class="pid-layout">
+      <!-- ============ 左栏：策略注册表 + 当前参数总览 ============ -->
+      <div class="pid-left">
       <!-- 策略注册表与低成本仿真 -->
       <div class="step-card">
         <div class="step-header">
@@ -849,55 +1085,31 @@ onUnmounted(() => {
             <span>验收：超调 ≤ {{ strategy.acceptance.overshootLimit }}%，稳定带 ±{{ strategy.acceptance.settlingBand * 100 }}%</span>
           </div>
 
+          <!-- 当前参数总览：移到策略注册表内，调参过程中持续可见 -->
+          <div class="current-params-overview">
+            <div class="overview-header">
+              <span class="overview-title">当前参数总览</span>
+              <span class="phase-tag" :class="`phase-${currentParamsOverview.phase.toLowerCase()}`">阶段: {{ currentParamsOverview.phase }}</span>
+            </div>
+            <div class="overview-params">
+              <div
+                v-for="(val, key) in currentParamsOverview.pid"
+                :key="key"
+                class="overview-param"
+                :class="{ 'param-changed': isParamChanged(key === '速度环Kp' ? 'speedKp' : key === '速度环Ki' ? 'speedKi' : key === '速度环Kd' ? 'speedKd' : key === '位置环Kp' ? 'kp' : key === '位置环Ki' ? 'ki' : key === '位置环Kd' ? 'kd' : key) }"
+              >
+                <span class="param-name">{{ key }}</span>
+                <span class="param-val">{{ val }}</span>
+              </div>
+            </div>
+            <div v-if="currentParamsOverview.ffItems.length" class="overview-ff">
+              <span class="ff-label">前馈:</span>
+              <span v-for="ff in currentParamsOverview.ffItems" :key="ff" class="ff-item">{{ ff }}</span>
+            </div>
+          </div>
+
           <template v-if="testMode === 'simulation'">
-            <div class="subsection-title">模型参数（已提供接近真实条件的默认值）</div>
-            <div class="model-grid">
-              <div v-for="[key, label] in simulationFields" :key="key" class="field">
-                <label>{{ label }}</label>
-                <el-input-number
-                  v-model="simulationConfig[key]"
-                  size="small"
-                  :controls="false"
-                  :step="key === 'dt' || key === 'noise' ? 0.001 : 0.1"
-                />
-              </div>
-            </div>
-            <div class="auto-tune-config">
-              <div class="field">
-                <label>仿真播放速度</label>
-                <el-select v-model="simulationPlaybackRate" size="small" :disabled="simRunState !== 'idle'">
-                  <el-option label="1×（按模型时间）" :value="1" />
-                  <el-option label="5×" :value="5" />
-                  <el-option label="20×" :value="20" />
-                  <el-option label="即时完成" :value="0" />
-                </el-select>
-              </div>
-              <div class="field">
-                <label>自动调参引擎</label>
-                <el-select v-model="autoTuneSettings.engine" size="small" :disabled="autoTuning">
-                  <el-option label="混合（AI 优先，失败转本地）" value="hybrid" />
-                  <el-option label="本地规则（离线）" value="rules" />
-                </el-select>
-              </div>
-              <div class="field">
-                <label>最大轮数</label>
-                <el-input-number v-model="autoTuneSettings.maxRounds" :min="1" :max="30" size="small" :disabled="autoTuning" />
-              </div>
-              <div class="field">
-                <label>连续达标轮数</label>
-                <el-input-number v-model="autoTuneSettings.requiredStable" :min="1" :max="5" size="small" :disabled="autoTuning" />
-              </div>
-              <div class="field">
-                <label>无改善停止轮数</label>
-                <el-input-number v-model="autoTuneSettings.patience" :min="1" :max="10" size="small" :disabled="autoTuning" />
-              </div>
-            </div>
-            <div
-              v-if="autoTuneSettings.engine === 'hybrid' && !aiConfig.apiKey"
-              class="engine-note"
-            >
-              未配置 AI API Key，本次会自动使用本地规则引擎，不影响闭环仿真。
-            </div>
+            <!-- 运行/自动调参按钮：常驻可见 -->
             <div class="action-row">
               <button
                 class="btn-primary"
@@ -932,61 +1144,121 @@ onUnmounted(() => {
               >取消自动调参</button>
               <span class="data-count">{{ autoTuning ? autoTuneStatus : simulationStatus }}</span>
             </div>
+
+            <!-- 不变参数折叠：模型参数、播放速度、自动调参配置、前馈、调参顺序 -->
+            <details class="collapse-section">
+              <summary>模型参数 / 仿真播放速度 / 自动调参配置</summary>
+              <div class="subsection-title">模型参数（已提供接近真实条件的默认值）</div>
+              <div class="model-grid">
+                <div v-for="[key, label] in simulationFields" :key="key" class="field">
+                  <label>{{ label }}</label>
+                  <el-input-number
+                    v-model="simulationConfig[key]"
+                    size="small"
+                    :controls="false"
+                    :step="key === 'dt' || key === 'noise' ? 0.001 : 0.1"
+                  />
+                </div>
+              </div>
+              <div class="auto-tune-config">
+                <div class="field">
+                  <label>仿真播放速度</label>
+                  <el-select v-model="simulationPlaybackRate" size="small" :disabled="simRunState !== 'idle'">
+                    <el-option label="1×（按模型时间）" :value="1" />
+                    <el-option label="5×" :value="5" />
+                    <el-option label="20×" :value="20" />
+                    <el-option label="即时完成" :value="0" />
+                  </el-select>
+                </div>
+                <div class="field">
+                  <label>自动调参引擎</label>
+                  <el-select v-model="autoTuneSettings.engine" size="small" :disabled="autoTuning">
+                    <el-option label="混合（AI 优先，失败转本地）" value="hybrid" />
+                    <el-option label="本地规则（离线）" value="rules" />
+                  </el-select>
+                </div>
+                <div class="field">
+                  <label>最大轮数</label>
+                  <el-input-number v-model="autoTuneSettings.maxRounds" :min="1" :max="30" size="small" :disabled="autoTuning" />
+                </div>
+                <div class="field">
+                  <label>连续达标轮数</label>
+                  <el-input-number v-model="autoTuneSettings.requiredStable" :min="1" :max="5" size="small" :disabled="autoTuning" />
+                </div>
+                <div class="field">
+                  <label>无改善停止轮数</label>
+                  <el-input-number v-model="autoTuneSettings.patience" :min="1" :max="10" size="small" :disabled="autoTuning" />
+                </div>
+              </div>
+              <div
+                v-if="autoTuneSettings.engine === 'hybrid' && !aiConfig.apiKey"
+                class="engine-note"
+              >
+                未配置 AI API Key，本次会自动使用本地规则引擎，不影响闭环仿真。
+              </div>
+            </details>
           </template>
 
-          <div class="subsection-title">前馈项（多选，可跨栏组合；不勾选即纯 PID）</div>
-          <div class="ff-groups">
-            <div v-for="group in FEEDFORWARD_GROUPS" :key="group.id" class="ff-group">
-              <label class="ff-group-label">{{ group.label }}</label>
-              <el-select
-                v-model="feedforwardSelectedByGroup[group.id]"
-                multiple
-                collapse-tags
-                collapse-tags-tooltip
-                size="small"
-                placeholder="点击勾选"
-                @change="onFeedforwardGroupChange(group.id)"
-              >
-                <el-option
-                  v-for="item in group.items"
-                  :key="item.id"
-                  :label="item.name"
-                  :value="item.id"
-                />
-              </el-select>
-            </div>
-          </div>
-          <div v-if="Object.keys(feedforwardSelection).length" class="ff-coeffs">
-            <div v-for="(coeff, id) in feedforwardSelection" :key="id" class="field ff-coeff-field">
-              <label>{{ FEEDFORWARD_ITEMS_BY_ID[id]?.name || id }} · 系数</label>
-              <el-input-number
-                v-model="feedforwardSelection[id]"
-                size="small"
-                :controls="false"
-                :step="0.01"
-              />
-            </div>
-          </div>
-          <div class="formula">{{ feedforwardFormulaText }}</div>
-          <div class="ff-mask-row">
-            <span class="ff-mask-label">前馈掩码（已自动写入导出的 .h；如需手动粘贴到已有工程可复制）：</span>
-            <code class="ff-mask-value">{{ feedforwardMaskLiteral }}</code>
-            <button class="btn-secondary btn-mini" @click="copyFeedforwardMask">复制</button>
-          </div>
-
-          <div class="subsection-title">调参顺序（由用户决定）</div>
-          <div class="order-list">
-            <div v-for="(item, index) in tuningOrder" :key="item" class="order-item">
-              <span>{{ index + 1 }}. {{ item }}</span>
-              <div>
-                <button :disabled="index === 0" @click="moveTuningStep(index, -1)">↑</button>
-                <button :disabled="index === tuningOrder.length - 1" @click="moveTuningStep(index, 1)">↓</button>
+          <details class="collapse-section">
+            <summary>前馈项（{{ Object.keys(feedforwardSelection).length }} 项已勾选）</summary>
+            <div class="ff-groups">
+              <div v-for="group in FEEDFORWARD_GROUPS" :key="group.id" class="ff-group">
+                <label class="ff-group-label">{{ group.label }}</label>
+                <el-select
+                  v-model="feedforwardSelectedByGroup[group.id]"
+                  multiple
+                  collapse-tags
+                  collapse-tags-tooltip
+                  size="small"
+                  placeholder="点击勾选"
+                  @change="onFeedforwardGroupChange(group.id)"
+                >
+                  <el-option
+                    v-for="item in group.items"
+                    :key="item.id"
+                    :label="item.name"
+                    :value="item.id"
+                  />
+                </el-select>
               </div>
             </div>
-          </div>
+            <div v-if="Object.keys(feedforwardSelection).length" class="ff-coeffs">
+              <div v-for="(coeff, id) in feedforwardSelection" :key="id" class="field ff-coeff-field">
+                <label>{{ FEEDFORWARD_ITEMS_BY_ID[id]?.name || id }} · 系数</label>
+                <el-input-number
+                  v-model="feedforwardSelection[id]"
+                  size="small"
+                  :controls="false"
+                  :step="0.01"
+                />
+              </div>
+            </div>
+            <div class="formula">{{ feedforwardFormulaText }}</div>
+            <div class="ff-mask-row">
+              <span class="ff-mask-label">前馈掩码（已自动写入导出的 .h；如需手动粘贴到已有工程可复制）：</span>
+              <code class="ff-mask-value">{{ feedforwardMaskLiteral }}</code>
+              <button class="btn-secondary btn-mini" @click="copyFeedforwardMask">复制</button>
+            </div>
+          </details>
+
+          <details class="collapse-section">
+            <summary>调参顺序（由用户决定）</summary>
+            <div class="order-list">
+              <div v-for="(item, index) in tuningOrder" :key="item" class="order-item">
+                <span>{{ index + 1 }}. {{ item }}</span>
+                <div>
+                  <button :disabled="index === 0" @click="moveTuningStep(index, -1)">↑</button>
+                  <button :disabled="index === tuningOrder.length - 1" @click="moveTuningStep(index, 1)">↓</button>
+                </div>
+              </div>
+            </div>
+          </details>
         </div>
       </div>
+      </div>
 
+      <!-- ============ 右栏：阶跃 + 分析 + AI 给参 + PID 下发 ============ -->
+      <div class="pid-right">
       <!-- 步骤 1: 阶跃信号配置 -->
       <div v-if="testMode === 'serial'" class="step-card">
         <div class="step-header">
@@ -1156,6 +1428,7 @@ onUnmounted(() => {
           </div>
         </div>
       </div>
+      </div>
     </div>
   </div>
 </template>
@@ -1164,10 +1437,95 @@ onUnmounted(() => {
 .pid-panel {
   height: 100%;
   min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: hidden;
   padding: var(--space-4);
   color: var(--color-text-primary);
+}
+
+/* 两栏布局：左策略注册表 + 当前参数总览；右分析 + AI 给参 + 下发 */
+.pid-layout {
+  display: flex;
+  gap: var(--space-4);
+  height: 100%;
+  width: 100%;
+  max-width: 1400px;
+  margin: 0 auto;
+  align-items: stretch;
+}
+
+.pid-left {
+  flex: 0 0 380px;
+  min-width: 0;
+  height: 100%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.pid-right {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.pid-left > .step-card,
+.pid-right > .step-card {
+  flex: 0 0 auto;
+}
+
+/* 折叠面板：仿真不变的参数默认收起 */
+.collapse-section {
+  margin-top: var(--space-3);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-primary);
+  overflow: hidden;
+}
+
+.collapse-section > summary {
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 13px;
+  background: var(--color-bg-tertiary);
+  list-style: none;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.collapse-section > summary::-webkit-details-marker {
+  display: none;
+}
+
+.collapse-section > summary::after {
+  content: '▶';
+  font-size: 10px;
+  color: var(--color-text-secondary);
+  transition: transform 0.2s;
+}
+
+.collapse-section[open] > summary::after {
+  transform: rotate(90deg);
+}
+
+.collapse-section[open] > summary {
+  border-bottom: 1px solid var(--color-border-default);
+}
+
+.collapse-section > *:not(summary) {
+  padding-left: var(--space-3);
+  padding-right: var(--space-3);
+}
+
+.collapse-section > *:not(summary):last-child {
+  padding-bottom: var(--space-3);
+  padding-top: var(--space-3);
 }
 
 .pid-content {
@@ -1375,6 +1733,93 @@ onUnmounted(() => {
   color: var(--color-text-secondary);
   font-size: var(--text-xs);
   font-weight: 600;
+}
+
+/* 当前参数总览栏 */
+.current-params-overview {
+  margin-bottom: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+}
+.overview-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.overview-title {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+.phase-tag {
+  font-size: 10px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-weight: 600;
+}
+.phase-tag.phase-p {
+  background: rgba(229, 72, 77, 0.12);
+  color: var(--color-danger, #e5484d);
+}
+.phase-tag.phase-pi {
+  background: rgba(245, 166, 35, 0.15);
+  color: var(--color-warning, #f5a623);
+}
+.phase-tag.phase-pid {
+  background: rgba(0, 168, 112, 0.12);
+  color: var(--color-success, #00a870);
+}
+.overview-params {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+.overview-param {
+  display: flex;
+  flex-direction: column;
+  padding: 3px 10px;
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border-default);
+  border-radius: 4px;
+  min-width: 70px;
+  transition: background 0.3s, border-color 0.3s;
+}
+.overview-param .param-name {
+  font-size: 10px;
+  color: var(--color-text-tertiary);
+}
+.overview-param .param-val {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-primary);
+  font-family: var(--font-family-mono);
+}
+/* 参数变化高亮：AI 应用后该参数背景闪绿 */
+.overview-param.param-changed {
+  background: rgba(0, 168, 112, 0.15);
+  border-color: var(--color-success, #00a870);
+}
+.overview-ff {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin-top: var(--space-2);
+  font-size: var(--text-xs);
+}
+.overview-ff .ff-label {
+  color: var(--color-text-tertiary);
+}
+.overview-ff .ff-item {
+  padding: 1px 8px;
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border-default);
+  border-radius: 3px;
+  font-family: var(--font-family-mono);
+  color: var(--color-ai, #7c5cff);
 }
 
 .strategy-note {

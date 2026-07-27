@@ -450,3 +450,65 @@ Python 仿真 / 真实硬件 / Simulink 都实现 `compute_pid + update + get_da
 4. 自动调参支持“混合引擎”和“本地规则引擎”；未配置 API Key 时可完整离线运行。
 5. 增加最大轮数、连续达标轮数和无改善停止轮数；达到终止条件、轮数上限或用户取消时恢复已验证的最佳参数。
 6. 仿真播放增加 1×、5×、20×和即时完成，避免小步长模型按单点刷新导致等待过久。
+
+---
+
+## 六、2026-07-26 二刷：dev 分支自 `3d4e401` 以来的更新
+
+> 上次分析基于 main 分支提交 `3d4e401 docs: replace latest-verified branch guidance`。本次用 Git 核查发现：**真正的功能更新在 `origin/dev`**（main 主要是文档同步），自 `3d4e401` 以来约 40+ 个非 merge 提交、+6611 行。下面是更新全貌与可借鉴点。
+
+### 6.1 更新概况
+
+- `3d4e401` 在 **main**（文档提交）；功能主线在 **origin/dev**。
+- 规模：40+ 非 merge 提交，`git diff --stat 3d4e401..origin/dev` 显示 +6611/-1377 行，涉及 43 个文件。
+- 性质：既有架构重构（调参循环拆分、LLM 拆模块、Simulink 大改），也有新功能（硬件配置文件、可配置护栏、运行时改目标值、PLC Modbus），还有若干正确性修复（达标观察、护栏语义、双环应用）。
+
+### 6.2 主要新功能 / 重构
+
+| 类别 | 提交 / 文件 | 内容 |
+|---|---|---|
+| **调参架构重构** | `core/tuning_session.py` / `tuning_engine.py` / `tuning_loop.py` | 把单体 `_run_tuning_loop` 拆成 `TuningSessionState` + `RoundEvaluation` + `DecisionOutcome` 数据类 + `evaluate_completed_round` / `finalize_decision` / `record_observation_round` / `apply_rollback`。逻辑与 UI 进一步解耦 |
+| **硬件配置文件** #35 | `hw/profiles.py` | `generic_serial_csv` / `stm32f407_openmv`(双控制器+视觉中心 80,60) / `mspm0_datavision`，含 `board_family`、`controller_count`、采样格式提示、`build_profile_commands` 指令构造器 |
+| **可配置护栏** #38 | `pid_safety.py` | `get_pid_limits(mode)` 分三套：`DEFAULT_PID_LIMITS`(硬件 P1000/I250/D250)、`PYTHON_SIM_PID_LIMITS`(P5000/I500/D500)、`SIMULINK_PID_LIMITS`(P5000/I500/D500，ratio 放宽到 5/6)；并支持 `CONFIG["PID_LIMITS"]` 按 mode 覆盖 |
+| **运行时改目标值** #43 | `core/adapters.py` 等 | TUI 里实时改 setpoint，跨 Python sim / Simulink / 可写硬件 profile 统一处理 |
+| **PLC Modbus 适配器** #46 | 新 `plc/` 模块（modbus/pid_semantics/profile/environment/demo） | 把 PID 调参延伸到 PLC，含 example_profile.json |
+| **达标观察** #32 | `tuning_session.record_observation_round` | 达标后不立即停、不请求新参数，保持当前 PID 观察 `REQUIRED_STABLE_ROUNDS`(默认 3)轮；期间劣化则清零恢复调参 |
+| 工程化 | 多文件 | `core/i18n.py`(多语言)、`launcher.py`、`llm-pid-tuner.spec`+`build_ubuntu_package.sh`(打包)、`core/csv_export.py`、`core/env.py`+`doctoring.py`(环境诊断)、LLM 拆成 `providers/response_parser/stream_formatter`、Simulink 大改(`block_discovery`/`controller_io`/`matlab_runtime`/`pre_tuning_dialog` 等) |
+
+### 6.3 值得本项目借鉴的（按优先级）
+
+#### ① 一个可直接改的 bug：达标观察逻辑（最高优先）
+
+他们 #32 修的正是我们现在有的隐患。
+
+- **他们的修复**：某轮满足 `GOOD_ENOUGH_*` 阈值后，**保持当前 PID、不请求 LLM 新参数**，进入"观察轮"；连续 `REQUIRED_STABLE_ROUNDS`（默认 3）轮都稳定才停；观察期间劣化则清零稳定计数、恢复正常调参。
+- **我们的现状**：`pidTuningSession.mjs::registerTuningRound` 中，当 `acceptable.done` 为真但 `stableStreak < requiredStable` 时，decision 是 `'continue'`；而 `PidPanel.vue::runAutoTuning` 在 `continue` 分支会**继续生成并应用下一轮候选参数**——这就把刚达标的好的 PID 给改掉了，破坏了"连续稳定 N 轮才停"的本意。
+- **借鉴做法**：加一个 `'observe'` decision——达标但未达连续轮数时，保持当前 PID、不生成新候选，直接进下一轮观察；期间劣化则 `shouldRollbackToBest` 接管。改动小、收益明确。
+
+#### ② 分模式安全护栏（高优先）
+
+- **他们的做法**：限幅按模式分三套，关键洞察是**仿真植物的增益尺度跟硬件差几个数量级，用同一套限幅会撞天花板**。
+- **我们的现状**：`pidSafety.mjs` 的 `PID_LIMITS` 是 `Kp 0~20、Ki/Kd 0~10`，仿真和硬件通用。对需要大 Kp 的仿真对象（如倒立摆模型），自动调参时很可能被 Kp=20 卡死、搜不到解。
+- **借鉴做法**：`PID_LIMITS` 改为 `getPidLimits(mode)`，sim 模式放宽（如 Kp 0~500、Ki/Kd 0~100），hardware 模式收紧（保留现值），并允许策略注册表覆盖。
+
+#### ③ 硬件配置文件（中优先，契合现有待办）
+
+- **他们的做法**：`hw/profiles.py` 让用户选板子就能自动带出协议格式 / 控制器数 / 指令模板 / 视觉中心。
+- **借鉴做法**：对应我们"策略模板扩充（直立环/速度环/舵机环等更多竞赛系统预设）"的待办——但他们是按"板卡"分，我们是按"控制对象"分，两者可结合：**竞赛板卡预设（STM32/ESP32/STC51）× 控制对象预设（速度环/位置环/直立环）**，新手开箱即用。
+
+#### ④ 其他可参考的细节
+
+- **串级回退带 `secondary_pid`**：双控制器场景的回退同时恢复主/副环参数——我们串级 6 参数回退时可借鉴。
+- **运行时多目标值验证**：一个 setpoint 调好后换另一个再验——竞赛里多工况验证有用。
+- **PLC Modbus 适配器**：工业协议，对电赛/智能车场景相关性低，可作为未来"协议插件"的参考实现模式。
+- **调参会话数据类拆分**（State/RoundEvaluation/DecisionOutcome）：我们 `pidTuningSession.mjs` 已覆盖核心状态机，但他们的 `RoundEvaluation` 含 `good_enough_detail`、`best_result_updated` 等字段，日志可观测性更好，可按需补。
+- **i18n / 打包 / 环境诊断**：工程化打磨，优先级不高，按需取用。
+
+### 6.4 小结
+
+本次二刷最大的收获是两个**直接影响调参正确性**的点：
+1. **observe 观察 bug**（#32）——我们当前的 `continue` 分支会破坏达标观察，应加 `'observe'` decision。
+2. **分模式护栏**（#38）——仿真/硬件用同一套限幅会在仿真侧撞天花板，应分模式。
+
+两者都是改动小、收益明确的借鉴项。硬件配置文件（#35）则是中期可做、能显著降低上手门槛的功能，与我们已有的"策略模板扩充"待办天然契合。
+

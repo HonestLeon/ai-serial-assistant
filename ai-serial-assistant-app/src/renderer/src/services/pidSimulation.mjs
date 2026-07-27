@@ -84,7 +84,7 @@ export const PID_STRATEGIES = {
     description: 'J·dω/dt + B总·ω = Kt·i；被控量为转速，控制量为电流。',
     parameters: ['Kp', 'Ki', 'Kd'],
     defaultOrder: ['Kp', 'Ki', 'Kd'],
-    acceptance: { overshootLimit: 20, settlingBand: 0.05, oscillationLimit: 10 },
+    acceptance: { overshootLimit: 10, settlingBand: 0.05, oscillationLimit: 10 },
     defaults: {
       duration: 4,
       dt: 0.01,
@@ -94,12 +94,11 @@ export const PID_STRATEGIES = {
       B: 0.08,
       Kt: 0.5,
       outputLimit: 12,
-      // 默认参数推导：稳态 i=B·target/Kt=1.6A；τ=J/B=0.25s
-      // kp·10=10 < outputLimit=12，初始不饱和；ki 让积分稳态≈1.07（1.6/1.5）；
-      // kd=0.015 配合 derivative on measurement，提供阻尼且不爆 D 项
+      // 默认参数：从纯 P 开始（Ki=Kd=0），让分阶段调参策略自动从 P 阶段开始试探 Kp
+      // 稳态 i=B·target/Kt=1.6A；τ=J/B=0.25s；kp·10=10 < outputLimit=12，初始不饱和
       kp: 1.0,
-      ki: 1.5,
-      kd: 0.015
+      ki: 0,
+      kd: 0
     }
   },
   cascade_position: {
@@ -120,15 +119,15 @@ export const PID_STRATEGIES = {
       outputLimit: 12,
       speedLimit: 8,
       // 内环（速度环）与 motor_speed 同物理模型，参数保持一致
+      // 从纯 P 开始（Ki=Kd=0），让分阶段调参策略自动从 P 阶段开始
       speedKp: 1.0,
-      speedKi: 1.5,
-      speedKd: 0.015,
+      speedKi: 0,
+      speedKd: 0,
       // 外环（位置环）：被控量位置，输出速度目标。初始 error=1，
-      // positionKp=3 → P=3 未饱和 speedLimit=8；positionKi=0.5 慢消稳态误差；
-      // positionKd=0.02 配合 derivative on measurement 提供阻尼
+      // positionKp=3 → P=3 未饱和 speedLimit=8
       positionKp: 3,
-      positionKi: 0.5,
-      positionKd: 0.02
+      positionKi: 0,
+      positionKd: 0
     }
   },
   inverted_pendulum: {
@@ -149,8 +148,10 @@ export const PID_STRATEGIES = {
       g: 9.81,
       l: 0.25,
       outputLimit: 8,
+      // 倒立摆为开环不稳定系统，纯 P 必发散。这里保留 Kd=1.2 提供阻尼，
+      // 让仿真可运行；调参策略会从 PID 阶段开始微调。
       kp: 4,
-      ki: 0.15,
+      ki: 0,
       kd: 1.2
     }
   }
