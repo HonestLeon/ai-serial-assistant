@@ -67,6 +67,8 @@ typedef int16_t (*ZhichuanSerialReadFn)(void);
 #define ZHICHUAN_FF_GRAVITY     0x0040u   /* bit6  重力  m·g·l·sin(target)    */
 #define ZHICHUAN_FF_BIAS        0x0080u   /* bit7  偏置  Kff（常数）           */
 #define ZHICHUAN_FF_SIGN        0x0100u   /* bit8  符号  Kff·sign(target)     */
+#define ZHICHUAN_FF_TARGET_DERIV     0x0200u   /* bit9  目标一阶导  Kff·d(target)/dt    */
+#define ZHICHUAN_FF_TARGET_2ND_DERIV 0x0400u   /* bit10 目标二阶导  Kff·d²(target)/dt²  */
 
 #define ZHICHUAN_PARAM_FF_LINEAR      0x10u
 #define ZHICHUAN_PARAM_FF_QUADRATIC   0x11u
@@ -77,6 +79,8 @@ typedef int16_t (*ZhichuanSerialReadFn)(void);
 #define ZHICHUAN_PARAM_FF_GRAVITY     0x16u
 #define ZHICHUAN_PARAM_FF_BIAS        0x17u
 #define ZHICHUAN_PARAM_FF_SIGN        0x18u
+#define ZHICHUAN_PARAM_FF_TARGET_DERIV     0x19u
+#define ZHICHUAN_PARAM_FF_TARGET_2ND_DERIV 0x1Au
 
 /*
  * 前馈总掩码：由上位机根据勾选的前馈项自动生成并填入。

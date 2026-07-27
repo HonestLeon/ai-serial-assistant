@@ -1,9 +1,10 @@
 <script setup>
 import { computed, ref, reactive, onUnmounted, watch } from 'vue'
-import { ElMessageBox } from 'element-plus'
-import { Promotion, VideoPlay, VideoPause, DataAnalysis, Refresh } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Loading, Promotion, VideoPlay, VideoPause, DataAnalysis, Refresh } from '@element-plus/icons-vue'
 import {
   analyzeControlSamples,
+  buildFeedforwardSuggestion,
   buildPidSuggestion,
   historyToPromptText
 } from '../services/controlAnalysis.mjs'
@@ -87,7 +88,12 @@ const currentParamsOverview = computed(() => {
   const phase = (!pVal && !iVal && !dVal) || (pVal > eps && !iVal && !dVal) ? 'P'
     : (pVal > eps && iVal > eps && !dVal) ? 'PI'
     : 'PID'
-  return { pid, ffItems, phase }
+  // 中文 label → 英文 key 映射，供模板 isParamChanged 调用
+  const keyMap = cascade
+    ? { '速度环Kp': 'speedKp', '速度环Ki': 'speedKi', '速度环Kd': 'speedKd',
+        '位置环Kp': 'kp', '位置环Ki': 'ki', '位置环Kd': 'kd' }
+    : { Kp: 'kp', Ki: 'ki', Kd: 'kd' }
+  return { pid, ffItems, phase, keyMap }
 })
 
 // 参数变化高亮：记录上次参数值，AI 应用后对比并标记变化项
@@ -110,12 +116,30 @@ function isParamChanged(key) {
   return Date.now() - t < 5000
 }
 
+// 复制按钮反馈：复制后临时显示"已复制"，1.2s 后恢复
+const copyMaskState = ref('idle')  // idle | copied | failed
 function copyFeedforwardMask() {
   navigator.clipboard?.writeText(feedforwardMaskLiteral.value).then(
-    () => { simulationStatus.value = `已复制前馈掩码 ${feedforwardMaskLiteral.value} 到剪贴板` },
-    () => { simulationStatus.value = '复制失败，请手动选中掩码文本复制' }
+    () => {
+      copyMaskState.value = 'copied'
+      ElMessage.success(`已复制 ${feedforwardMaskLiteral.value} 到剪贴板`)
+      setTimeout(() => { copyMaskState.value = 'idle' }, 1200)
+    },
+    () => {
+      copyMaskState.value = 'failed'
+      ElMessage.error('复制失败，请手动选中掩码文本复制')
+      setTimeout(() => { copyMaskState.value = 'idle' }, 1200)
+    }
   )
 }
+
+// 步骤编号：仿真模式从 1 开始（无阶跃信号步骤），串口模式从 1 开始（含阶跃信号）
+const stepNumbers = computed(() => {
+  if (testMode.value === 'serial') {
+    return { step: 1, analysis: 2, output: 3 }
+  }
+  return { step: 0, analysis: 1, output: 2 }
+})
 const simulationFields = computed(() => {
   const common = [
     ['duration', '仿真时长 (s)'],
@@ -546,12 +570,24 @@ async function analyzeResponse() {
     proposedPid: null,
     source: '手动分析'
   })
+  // 前馈系数整定：当勾选了前馈项时，根据指标启发式微调前馈系数（与 PID 调参解耦）
+  let ffReasons = []
+  const ffIds = Object.keys(feedforwardSelection)
+  if (ffIds.length) {
+    const ffSuggestion = buildFeedforwardSuggestion(deterministicMetrics.value, { ...feedforwardSelection }, { strategyId: strategyId.value })
+    ffReasons = ffSuggestion.reasons
+    // 更新前馈系数（只更新发生了变化的项）
+    Object.keys(ffSuggestion.feedforward).forEach((id) => {
+      feedforwardSelection[id] = ffSuggestion.feedforward[id]
+    })
+  }
+
   const candidate = buildPidSuggestion(deterministicMetrics.value, testedPid, {
     tuningOrder: tuningOrder.value,
     lastGoodKp,
     lastBadKp
   })
-  localReasons.value = candidate.reasons
+  localReasons.value = [...ffReasons, ...candidate.reasons]
 
   if (!props.aiConfig.apiKey) {
     applyCanonicalPid(outputParams, candidate, isCascade.value)
@@ -877,6 +913,15 @@ async function runAutoTuning() {
       let thought = ''
       let source = '本地规则'
       let guardNotes = []
+      // 前馈系数整定：当勾选了前馈项时，根据本轮指标启发式微调前馈系数
+      let ffReasonsAuto = []
+      if (Object.keys(feedforwardSelection).length) {
+        const ffSuggestion = buildFeedforwardSuggestion(metrics, { ...feedforwardSelection }, { strategyId: strategyId.value })
+        ffReasonsAuto = ffSuggestion.reasons
+        Object.keys(ffSuggestion.feedforward).forEach((id) => {
+          feedforwardSelection[id] = ffSuggestion.feedforward[id]
+        })
+      }
       if (useAi) {
         const lastGoodKpAuto = extractLastGoodKp(tuningHistory.value, isCascade.value, strategy.value.acceptance.overshootLimit, !!strategy.value.unstable)
         const lastBadKpAuto = extractLastBadKp(tuningHistory.value, isCascade.value, strategy.value.acceptance.overshootLimit, !!strategy.value.unstable)
@@ -903,7 +948,7 @@ async function runAutoTuning() {
       snapshotAndHighlightChange()
       historyRecord.proposedPid = { ...proposedPid }
       historyRecord.source = source
-      historyRecord.thought = thought
+      historyRecord.thought = ffReasonsAuto.length ? `${ffReasonsAuto.join('；')}${thought ? ' | ' + thought : ''}` : thought
       historyRecord.analysis = `下一轮候选：${formatParamsForDisplay(proposedPid, isCascade.value)}`
       if (guardNotes.length) {
         historyRecord.analysis += `（护栏：${guardNotes.join('；')}）`
@@ -1110,31 +1155,36 @@ onUnmounted(() => {
                 v-for="(val, key) in currentParamsOverview.pid"
                 :key="key"
                 class="overview-param"
-                :class="{ 'param-changed': isParamChanged(key === '速度环Kp' ? 'speedKp' : key === '速度环Ki' ? 'speedKi' : key === '速度环Kd' ? 'speedKd' : key === '位置环Kp' ? 'kp' : key === '位置环Ki' ? 'ki' : key === '位置环Kd' ? 'kd' : key) }"
+                :class="{ 'param-changed': isParamChanged(currentParamsOverview.keyMap[key]) }"
               >
                 <span class="param-name">{{ key }}</span>
                 <span class="param-val">{{ val }}</span>
               </div>
             </div>
-            <div v-if="currentParamsOverview.ffItems.length" class="overview-ff">
+            <div class="overview-ff">
               <span class="ff-label">前馈:</span>
-              <span v-for="ff in currentParamsOverview.ffItems" :key="ff" class="ff-item">{{ ff }}</span>
+              <template v-if="currentParamsOverview.ffItems.length">
+                <span v-for="ff in currentParamsOverview.ffItems" :key="ff" class="ff-item">{{ ff }}</span>
+              </template>
+              <span v-else class="ff-none">无（纯 PID 模式）</span>
             </div>
           </div>
 
-          <template v-if="testMode === 'simulation'">
+          <transition name="mode-fade">
+          <div v-if="testMode === 'simulation'" class="sim-block">
             <!-- 运行/自动调参按钮：常驻可见 -->
-            <div class="action-row">
+            <div class="action-row action-row-wrap">
               <button
                 class="btn-primary"
                 :class="{ 'btn-running': simRunState === 'running', 'btn-paused': simRunState === 'paused' }"
                 @click="runSimulation"
               >
-                <el-icon size="13">
-                  <VideoPause v-if="simRunState === 'running'" />
+                <el-icon size="13" class="is-loading" v-if="simRunState === 'running'"><Loading /></el-icon>
+                <el-icon size="13" v-else>
+                  <VideoPause v-if="simRunState === 'paused'" />
                   <VideoPlay v-else />
                 </el-icon>
-                <span>{{ simRunState === 'running' ? '暂停' : (simRunState === 'paused' ? '继续' : '运行仿真并分析') }}</span>
+                <span>{{ simRunState === 'running' ? '运行中（点击暂停）' : (simRunState === 'paused' ? '继续' : '运行仿真并分析') }}</span>
               </button>
               <button
                 v-if="simRunState !== 'idle'"
@@ -1148,7 +1198,8 @@ onUnmounted(() => {
                 :disabled="testMode !== 'simulation' || simRunState !== 'idle'"
                 @click="runAutoTuning"
               >
-                <el-icon size="13"><Refresh /></el-icon>
+                <el-icon size="13" class="is-loading" v-if="autoTuning"><Loading /></el-icon>
+                <el-icon size="13" v-else><Refresh /></el-icon>
                 <span>自动调参</span>
               </button>
               <button
@@ -1156,7 +1207,7 @@ onUnmounted(() => {
                 class="btn-secondary btn-auto-tune-cancel"
                 @click="cancelAutoTuning"
               >取消自动调参</button>
-              <span class="data-count">{{ autoTuning ? autoTuneStatus : simulationStatus }}</span>
+              <span v-if="autoTuning || simulationStatus" class="status-badge" :class="{ 'status-active': autoTuning || simRunState === 'running' }">{{ autoTuning ? autoTuneStatus : simulationStatus }}</span>
             </div>
 
             <!-- 不变参数折叠：模型参数、播放速度、自动调参配置、前馈、调参顺序 -->
@@ -1211,7 +1262,8 @@ onUnmounted(() => {
                 未配置 AI API Key，本次会自动使用本地规则引擎，不影响闭环仿真。
               </div>
             </details>
-          </template>
+          </div>
+          </transition>
 
           <details class="collapse-section">
             <summary>前馈项（{{ Object.keys(feedforwardSelection).length }} 项已勾选）</summary>
@@ -1251,7 +1303,9 @@ onUnmounted(() => {
             <div class="ff-mask-row">
               <span class="ff-mask-label">前馈掩码（已自动写入导出的 .h；如需手动粘贴到已有工程可复制）：</span>
               <code class="ff-mask-value">{{ feedforwardMaskLiteral }}</code>
-              <button class="btn-secondary btn-mini" @click="copyFeedforwardMask">复制</button>
+              <button class="btn-secondary btn-mini" @click="copyFeedforwardMask">
+                {{ copyMaskState === 'copied' ? '已复制 ✓' : (copyMaskState === 'failed' ? '复制失败' : '复制') }}
+              </button>
             </div>
           </details>
 
@@ -1261,8 +1315,8 @@ onUnmounted(() => {
               <div v-for="(item, index) in tuningOrder" :key="item" class="order-item">
                 <span>{{ index + 1 }}. {{ item }}</span>
                 <div>
-                  <button :disabled="index === 0" @click="moveTuningStep(index, -1)">↑</button>
-                  <button :disabled="index === tuningOrder.length - 1" @click="moveTuningStep(index, 1)">↓</button>
+                  <button :disabled="index === 0" @click="moveTuningStep(index, -1)" aria-label="上移">↑</button>
+                  <button :disabled="index === tuningOrder.length - 1" @click="moveTuningStep(index, 1)" aria-label="下移">↓</button>
                 </div>
               </div>
             </div>
@@ -1273,10 +1327,11 @@ onUnmounted(() => {
 
       <!-- ============ 右栏：阶跃 + 分析 + AI 给参 + PID 下发 ============ -->
       <div class="pid-right">
-      <!-- 步骤 1: 阶跃信号配置 -->
+      <!-- 步骤 1: 阶跃信号配置（仅串口模式） -->
+      <transition name="mode-fade">
       <div v-if="testMode === 'serial'" class="step-card">
         <div class="step-header">
-          <div class="step-number">1</div>
+          <div class="step-number">{{ stepNumbers.step }}</div>
           <div class="step-title">阶跃信号发送</div>
           <el-tag v-if="collecting" type="warning" effect="dark" size="small">采集中</el-tag>
         </div>
@@ -1288,11 +1343,11 @@ onUnmounted(() => {
             </div>
             <div class="field">
               <label>幅值</label>
-              <el-input v-model="stepConfig.amplitude" size="small" :disabled="collecting" />
+              <el-input-number v-model="stepConfig.amplitude" :controls="false" size="small" :disabled="collecting" />
             </div>
             <div class="field">
               <label>采集时长 (ms)</label>
-              <el-input v-model.number="stepConfig.duration" type="number" size="small" :disabled="collecting" />
+              <el-input-number v-model="stepConfig.duration" :min="100" :step="100" :controls="false" size="small" :disabled="collecting" />
             </div>
             <div class="field">
               <label>反馈采集通道</label>
@@ -1308,27 +1363,30 @@ onUnmounted(() => {
               </el-select>
             </div>
           </div>
-          <div class="action-row">
+          <div class="action-row action-row-wrap">
             <button class="btn-primary" :disabled="!connected || collecting" @click="startStepTest">
               <el-icon size="13"><Promotion /></el-icon>
               <span>发送阶跃信号</span>
             </button>
             <button v-if="collecting" class="btn-danger" @click="stopCollection">停止采集</button>
-            <span v-if="response.length > 0" class="data-count">已采集 {{ response.length }} 点</span>
+            <span v-if="response.length > 0" class="status-badge">已采集 {{ response.length }} 点</span>
+            <span v-else-if="!connected" class="empty-hint">未连接串口，无法发送阶跃信号</span>
           </div>
         </div>
       </div>
+      </transition>
 
       <!-- 步骤 2: 确定性分析 + 可选 AI 解释 -->
       <div class="step-card">
         <div class="step-header">
-            <div class="step-number">2</div>
+            <div class="step-number">{{ stepNumbers.analysis }}</div>
             <div class="step-title">确定性分析 + AI 给参</div>
           </div>
         <div class="step-body">
-          <div class="action-row">
+          <div class="action-row action-row-wrap">
             <button class="btn-ai" :disabled="analyzing || response.length < 5" @click="analyzeResponse">
-              <el-icon size="13"><DataAnalysis /></el-icon>
+              <el-icon size="13" class="is-loading" v-if="analyzing"><Loading /></el-icon>
+              <el-icon size="13" v-else><DataAnalysis /></el-icon>
               <span>{{ analyzing ? '分析中...' : '分析响应并生成候选' }}</span>
             </button>
             <button class="btn-secondary" @click="clearAll">清空</button>
@@ -1340,6 +1398,9 @@ onUnmounted(() => {
             <div><span>上升时间</span><strong>{{ deterministicMetrics.riseTime ?? '--' }}s</strong></div>
             <div><span>稳定时间</span><strong>{{ deterministicMetrics.settlingTime ?? '未收敛' }}</strong></div>
             <div><span>均方根误差</span><strong>{{ deterministicMetrics.rmse }}</strong></div>
+          </div>
+          <div v-else-if="!analyzing && response.length < 5" class="empty-hint">
+            暂无分析结果，请先{{ testMode === 'simulation' ? '运行仿真' : '发送阶跃信号并采集响应' }}获取数据。
           </div>
           <ul v-if="localReasons.length" class="reason-list">
             <li v-for="reason in localReasons" :key="reason">{{ reason }}</li>
@@ -1375,7 +1436,7 @@ onUnmounted(() => {
       <!-- 步骤 3: PID 候选与参数下发 -->
       <div class="step-card">
         <div class="step-header">
-          <div class="step-number">3</div>
+          <div class="step-number">{{ stepNumbers.output }}</div>
           <div class="step-title">PID 候选与参数下发</div>
         </div>
         <div class="step-body">
@@ -1384,30 +1445,30 @@ onUnmounted(() => {
             <div class="param-grid">
               <div class="field">
                 <label>速度环 Kp</label>
-                <el-input v-model="outputParams.speedKp" size="small" placeholder="比例系数" />
+                <el-input-number v-model="outputParams.speedKp" :min="0" :max="20" :step="0.1" :controls="false" size="small" placeholder="比例系数" />
               </div>
               <div class="field">
                 <label>速度环 Ki</label>
-                <el-input v-model="outputParams.speedKi" size="small" placeholder="积分系数" />
+                <el-input-number v-model="outputParams.speedKi" :min="0" :max="10" :step="0.1" :controls="false" size="small" placeholder="积分系数" />
               </div>
               <div class="field">
                 <label>速度环 Kd</label>
-                <el-input v-model="outputParams.speedKd" size="small" placeholder="微分系数" />
+                <el-input-number v-model="outputParams.speedKd" :min="0" :max="10" :step="0.01" :controls="false" size="small" placeholder="微分系数" />
               </div>
             </div>
             <div class="subsection-title">位置环（外环）</div>
             <div class="param-grid">
               <div class="field">
                 <label>位置环 Kp</label>
-                <el-input v-model="outputParams.kp" size="small" placeholder="比例系数" />
+                <el-input-number v-model="outputParams.kp" :min="0" :max="20" :step="0.1" :controls="false" size="small" placeholder="比例系数" />
               </div>
               <div class="field">
                 <label>位置环 Ki</label>
-                <el-input v-model="outputParams.ki" size="small" placeholder="积分系数" />
+                <el-input-number v-model="outputParams.ki" :min="0" :max="10" :step="0.1" :controls="false" size="small" placeholder="积分系数" />
               </div>
               <div class="field">
                 <label>位置环 Kd</label>
-                <el-input v-model="outputParams.kd" size="small" placeholder="微分系数" />
+                <el-input-number v-model="outputParams.kd" :min="0" :max="10" :step="0.01" :controls="false" size="small" placeholder="微分系数" />
               </div>
             </div>
           </template>
@@ -1415,19 +1476,19 @@ onUnmounted(() => {
             <div class="param-grid">
               <div class="field">
                 <label>Kp</label>
-                <el-input v-model="outputParams.kp" size="small" placeholder="比例系数" />
+                <el-input-number v-model="outputParams.kp" :min="0" :max="20" :step="0.1" :controls="false" size="small" placeholder="比例系数" />
               </div>
               <div class="field">
                 <label>Ki</label>
-                <el-input v-model="outputParams.ki" size="small" placeholder="积分系数" />
+                <el-input-number v-model="outputParams.ki" :min="0" :max="10" :step="0.1" :controls="false" size="small" placeholder="积分系数" />
               </div>
               <div class="field">
                 <label>Kd</label>
-                <el-input v-model="outputParams.kd" size="small" placeholder="微分系数" />
+                <el-input-number v-model="outputParams.kd" :min="0" :max="10" :step="0.01" :controls="false" size="small" placeholder="微分系数" />
               </div>
             </div>
           </template>
-          <div class="action-row">
+          <div class="action-row action-row-wrap">
             <button class="btn-primary" :disabled="!connected && testMode !== 'simulation'" @click="sendParams">
               <el-icon size="13"><Promotion /></el-icon>
               <span>{{ testMode === 'simulation' ? '应用至仿真' : '下发 PID 参数' }}</span>
@@ -1436,9 +1497,9 @@ onUnmounted(() => {
             <el-checkbox v-if="testMode === 'serial'" v-model="autoSend" class="auto-send-cb" @change="onAutoSendChange">
               自动下发
             </el-checkbox>
-            <span class="safety-note">
-              边界：Kp 0~20，Ki/Kd 0~10；{{ testMode === 'simulation' ? '仿真不会写入硬件。' : (autoSend ? '已开启自动下发，无需二次确认。' : '点击后仍需二次确认。') }}
-            </span>
+          </div>
+          <div class="safety-note">
+            边界：Kp 0~20，Ki/Kd 0~10；{{ testMode === 'simulation' ? '仿真不会写入硬件。' : (autoSend ? '已开启自动下发，无需二次确认。' : '点击后仍需二次确认。') }}
           </div>
         </div>
       </div>
@@ -1484,6 +1545,22 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+}
+
+/* 窄屏响应式：960px 以下两栏折叠为单列 */
+@media (max-width: 960px) {
+  .pid-layout {
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+  .pid-left {
+    flex: 0 0 auto;
+    height: auto;
+    max-height: 50vh;
+  }
+  .pid-right {
+    height: auto;
+  }
 }
 
 .pid-left > .step-card,
@@ -1542,15 +1619,6 @@ onUnmounted(() => {
   padding-top: var(--space-3);
 }
 
-.pid-content {
-  max-width: 1040px;
-  width: 100%;
-  margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-}
-
 .step-card {
   background: var(--color-bg-secondary);
   border: 1px solid var(--color-border-default);
@@ -1565,6 +1633,9 @@ onUnmounted(() => {
   padding: var(--space-3) var(--space-4);
   border-bottom: 1px solid var(--color-border-default);
   background: var(--color-bg-tertiary);
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 
 .step-number {
@@ -1613,6 +1684,41 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+}
+
+/* action-row-wrap：按钮和状态文本自动换行，避免溢出被裁切 */
+.action-row-wrap {
+  flex-wrap: wrap;
+  row-gap: var(--space-2);
+}
+
+/* 状态徽章：比 data-count 更显眼，用于运行/调参状态显示 */
+.status-badge {
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  font-family: var(--font-family-mono);
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border-default);
+}
+
+.status-badge.status-active {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+  background: rgba(var(--color-primary-rgb, 64, 158, 255), 0.08);
+}
+
+/* 空状态提示：引导用户下一步操作 */
+.empty-hint {
+  margin-top: var(--space-2);
+  padding: var(--space-3);
+  text-align: center;
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  background: var(--color-bg-tertiary);
+  border: 1px dashed var(--color-border-default);
+  border-radius: var(--radius-sm);
 }
 
 .data-count {
@@ -1677,6 +1783,8 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  max-height: 400px;
+  overflow-y: auto;
 }
 .history-item {
   padding: var(--space-2);
@@ -1700,7 +1808,7 @@ onUnmounted(() => {
 }
 .history-metric {
   color: var(--color-text-tertiary);
-  font-size: 10px;
+  font-size: var(--text-xs);
   margin-top: 2px;
 }
 .history-thought,
@@ -1711,7 +1819,8 @@ onUnmounted(() => {
 
 .model-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(150px, 1fr));
+  /* 2 列布局适配左栏 380px 宽度，避免横向滚动 */
+  grid-template-columns: repeat(2, 1fr);
   gap: var(--space-2);
   margin-bottom: var(--space-3);
 }
@@ -1722,7 +1831,8 @@ onUnmounted(() => {
 
 .auto-tune-config {
   display: grid;
-  grid-template-columns: minmax(180px, 1.5fr) minmax(220px, 2fr) repeat(3, minmax(110px, 1fr));
+  /* 2 列布局适配左栏宽度，避免横向滚动 */
+  grid-template-columns: repeat(2, 1fr);
   gap: var(--space-2);
   margin-bottom: var(--space-2);
   padding: var(--space-2);
@@ -1744,9 +1854,16 @@ onUnmounted(() => {
 
 .subsection-title {
   margin: var(--space-3) 0 var(--space-2);
-  color: var(--color-text-secondary);
-  font-size: var(--text-xs);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--color-border-default);
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
   font-weight: 600;
+}
+/* 第一个 subsection-title 不需要上边框 */
+.subsection-title:first-child {
+  border-top: none;
+  padding-top: 0;
 }
 
 /* 当前参数总览栏 */
@@ -1769,7 +1886,7 @@ onUnmounted(() => {
   color: var(--color-text-secondary);
 }
 .phase-tag {
-  font-size: 10px;
+  font-size: var(--text-xs);
   padding: 1px 8px;
   border-radius: 10px;
   font-weight: 600;
@@ -1802,7 +1919,7 @@ onUnmounted(() => {
   transition: background 0.3s, border-color 0.3s;
 }
 .overview-param .param-name {
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--color-text-tertiary);
 }
 .overview-param .param-val {
@@ -1835,6 +1952,10 @@ onUnmounted(() => {
   font-family: var(--font-family-mono);
   color: var(--color-ai, #7c5cff);
 }
+.overview-ff .ff-none {
+  color: var(--color-text-tertiary);
+  font-style: italic;
+}
 
 .strategy-note {
   display: flex;
@@ -1852,7 +1973,7 @@ onUnmounted(() => {
 }
 
 .formula {
-  margin-top: calc(-1 * var(--space-2));
+  margin-top: var(--space-2);
   padding: 7px 10px;
   border-left: 3px solid var(--color-primary);
   background: var(--color-bg-tertiary);
@@ -1972,7 +2093,7 @@ onUnmounted(() => {
 
 .metric-strip {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: var(--space-2);
   margin-top: var(--space-3);
 }
@@ -1985,8 +2106,8 @@ onUnmounted(() => {
 
 .metric-strip span {
   display: block;
-  color: var(--color-text-tertiary);
-  font-size: 10px;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
 }
 
 .metric-strip strong {
@@ -2005,8 +2126,9 @@ onUnmounted(() => {
 }
 
 .safety-note {
-  color: var(--color-text-tertiary);
-  font-size: 10px;
+  margin-top: var(--space-2);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
 }
 
 .btn-primary {
@@ -2023,6 +2145,20 @@ onUnmounted(() => {
   font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
+  transition: filter 0.2s, opacity 0.2s, background-color 0.2s;
+}
+
+.btn-primary:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.btn-primary:active:not(:disabled) {
+  filter: brightness(0.95);
+}
+
+.btn-primary:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
 }
 
 .btn-primary:disabled {
@@ -2044,10 +2180,6 @@ onUnmounted(() => {
 .btn-primary.btn-auto-tune {
   background: var(--color-ai, #7c5cff);
 }
-.btn-primary.btn-auto-tune:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
 .btn-secondary.btn-auto-tune-cancel {
   border-color: var(--color-danger, #e5484d);
   color: var(--color-danger, #e5484d);
@@ -2067,6 +2199,20 @@ onUnmounted(() => {
   font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
+  transition: filter 0.2s, opacity 0.2s;
+}
+
+.btn-ai:hover:not(:disabled) {
+  filter: brightness(1.05);
+}
+
+.btn-ai:active:not(:disabled) {
+  filter: brightness(0.95);
+}
+
+.btn-ai:focus-visible {
+  outline: 2px solid var(--color-ai);
+  outline-offset: 2px;
 }
 
 .btn-ai:disabled {
@@ -2084,6 +2230,25 @@ onUnmounted(() => {
   font-size: var(--text-sm);
   font-weight: 600;
   cursor: pointer;
+  transition: filter 0.2s, opacity 0.2s;
+}
+
+.btn-danger:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.btn-danger:active:not(:disabled) {
+  filter: brightness(0.95);
+}
+
+.btn-danger:focus-visible {
+  outline: 2px solid var(--state-error);
+  outline-offset: 2px;
+}
+
+.btn-danger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .btn-secondary {
@@ -2096,6 +2261,56 @@ onUnmounted(() => {
   font-size: var(--text-sm);
   cursor: pointer;
   white-space: nowrap;
+  transition: filter 0.2s, opacity 0.2s, border-color 0.2s;
+}
+
+.btn-secondary:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.btn-secondary:active:not(:disabled) {
+  filter: brightness(0.95);
+}
+
+.btn-secondary:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.btn-secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 调参顺序上移/下移按钮的 hover/focus 状态 */
+.order-item button {
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.order-item button:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.order-item button:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
+
+/* 所有 el-input-number 宽度填满父容器 */
+.field :deep(.el-input-number) {
+  width: 100%;
+}
+
+/* 模式切换过渡动画 */
+.mode-fade-enter-active,
+.mode-fade-leave-active {
+  transition: opacity 0.2s;
+}
+.mode-fade-enter-from,
+.mode-fade-leave-to {
+  opacity: 0;
 }
 
 @media (max-width: 900px) {

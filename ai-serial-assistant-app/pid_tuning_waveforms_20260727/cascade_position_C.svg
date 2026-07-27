@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 480" font-family="monospace" font-size="12">
   <rect width="1000" height="480" fill="#ffffff"/>
-  <text x="60" y="20" font-size="14" font-weight="bold">cascade_position - C: 小惯量大阻尼</text>
+  <text x="60" y="20" font-size="14" font-weight="bold">cascade_position - C: 小惯量大阻尼 单阶跃</text>
   <text x="60" y="36" font-size="11" fill="#555">参数: speedKp=1.068 speedKi=0.3 speedKd=0 posKp=8 posKi=0.3 posKd=0</text>
   <text x="970" y="20" text-anchor="end" font-size="11" fill="#555">超调=1.65% | 稳态误差=-0.006 | 振荡=0.57%</text>
   <!-- axes -->

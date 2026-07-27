@@ -298,6 +298,201 @@ export function createSamplesFromChannels(channelHistory, mapping = {}, sampleIn
   }))
 }
 
+/**
+ * 多阶跃响应分析：将样本按 target 跳变点切分为多个单阶跃段，
+ * 对每段调用 analyzeControlSamples，综合所有段指标取最差值。
+ *
+ * 用途：验收测试中"换几个阶跃"的场景，确保不同幅值阶跃下响应一致。
+ *
+ * 综合指标（取所有段的最差值）：
+ *   - overshoot: 各段超调最大值
+ *   - steadyError: 各段稳态误差绝对值最大值
+ *   - oscillation: 各段稳态振幅最大值
+ *   - riseTime: 各段上升时间最大值
+ *   - settlingTime: 各段调节时间最大值
+ *   - hasSignificantOscillation: 任一段有显著震荡则为 true
+ *   - segments: 每段详细指标数组
+ *
+ * @param {Array} samples  统一格式样本 [{ t, target, feedback, output }]
+ * @param {object} options  验收限制（overshootLimit/oscillationLimit/settlingBand 等）
+ * @returns {object}  综合指标
+ */
+export function analyzeMultiStepSamples(samples, options = {}) {
+  if (!Array.isArray(samples) || samples.length < 8) {
+    return { valid: false, reason: '样本数不足', segments: [] }
+  }
+  // 1. 找 target 跳变点（相邻样本 target 差值 > 阶跃阈值）
+  const targets = samples.map((s) => finite(s.target, 0))
+  const targetRange = Math.max(...targets) - Math.min(...targets)
+  const stepThreshold = Math.max(targetRange * 0.1, 1e-6)
+  const jumpPoints = []
+  for (let i = 1; i < samples.length; i += 1) {
+    if (Math.abs(samples[i].target - samples[i - 1].target) > stepThreshold) {
+      jumpPoints.push(i)
+    }
+  }
+
+  // 2. 每个跳变点对应一段：[跳变前1个样本, 下一个跳变点前1个样本]
+  //    包含跳变前1个样本作为 baseline，让 analyzeControlSamples 能识别 stepSize
+  //    （若段内 target 恒定，findStep 找不到跳变，stepSize=0 会导致 overshoot 爆炸）
+  const segMetrics = []
+  for (let k = 0; k < jumpPoints.length; k += 1) {
+    const start = Math.max(0, jumpPoints[k] - 1)
+    const end = k + 1 < jumpPoints.length ? Math.max(start + 1, jumpPoints[k + 1] - 1) : samples.length
+    const seg = samples.slice(start, end)
+    if (seg.length < 8) continue
+    const m = analyzeControlSamples(seg, options)
+    if (m.valid) segMetrics.push({ index: k, metrics: m, start: seg[0].t, end: seg[seg.length - 1].t })
+  }
+
+  if (segMetrics.length === 0) {
+    return { valid: false, reason: '无有效阶跃段', segments: [] }
+  }
+
+  // 3. 取最差值（注意 riseTime/settlingTime 可能为 null）
+  const worst = (key, isMax = true) => {
+    const vals = segMetrics.map((s) => s.metrics[key]).filter((v) => v !== null && Number.isFinite(v))
+    if (vals.length === 0) return null
+    return isMax ? Math.max(...vals) : Math.min(...vals)
+  }
+
+  const overshoot = worst('overshoot', true)
+  const steadyErrorAbs = Math.max(...segMetrics.map((s) => Math.abs(finite(s.metrics.steadyError, 0))))
+  const oscillation = worst('oscillation', true)
+  const riseTime = worst('riseTime', true)
+  const settlingTime = worst('settlingTime', true)
+  const hasSigOsc = segMetrics.some((s) => s.metrics.hasSignificantOscillation)
+  const maxPeakAmp = worst('maxPeakAmplitudePct', true)
+
+  return {
+    valid: true,
+    segmentCount: segMetrics.length,
+    overshoot: fmt(overshoot, 2),
+    steadyError: fmt(steadyErrorAbs * (segMetrics[0].metrics.steadyError < 0 ? -1 : 1), 3),
+    steadyErrorAbs: fmt(steadyErrorAbs, 3),
+    oscillation: fmt(oscillation, 2),
+    riseTime: fmt(riseTime, 3),
+    settlingTime: fmt(settlingTime, 3),
+    hasSignificantOscillation: hasSigOsc,
+    maxPeakAmplitudePct: fmt(maxPeakAmp, 2),
+    segments: segMetrics.map((s) => ({
+      index: s.index,
+      start: s.start,
+      end: s.end,
+      overshoot: s.metrics.overshoot,
+      steadyError: s.metrics.steadyError,
+      oscillation: s.metrics.oscillation,
+      riseTime: s.metrics.riseTime,
+      settlingTime: s.metrics.settlingTime
+    }))
+  }
+}
+
+/**
+ * 正弦跟踪分析：计算反馈对正弦目标的跟踪误差。
+ *
+ * 用途：验收测试中"用正弦来测"的场景，评估动态跟踪能力与相位滞后。
+ *
+ * 指标：
+ *   - trackingErrorRms: 跟踪误差 RMS（target - feedback）
+ *   - trackingErrorPct: 跟踪误差 RMS / 振幅 × 100%（< 5% 为良好）
+ *   - phaseLag: 相位滞后（度），通过 feedback 与 target 的互相关峰值时延估算
+ *   - amplitudeRatio: feedback 振幅 / target 振幅（理想=1，<0.9 衰减、>1.1 放大）
+ *
+ * 排除起始瞬态：跳过前 10% 样本（让系统进入稳态跟踪）
+ *
+ * @param {Array} samples  统一格式样本 [{ t, target, feedback, output }]
+ * @param {object} options  { amplitude: 目标振幅（默认从 target 序列估算） }
+ * @returns {object}  跟踪指标
+ */
+export function analyzeSineTracking(samples, options = {}) {
+  if (!Array.isArray(samples) || samples.length < 16) {
+    return { valid: false, reason: '样本数不足' }
+  }
+  // 跳过起始瞬态（前 10%）
+  const skipCount = Math.floor(samples.length * 0.1)
+  const steady = samples.slice(skipCount)
+  if (steady.length < 8) {
+    return { valid: false, reason: '稳态段样本不足' }
+  }
+
+  const targets = steady.map((s) => finite(s.target, 0))
+  const feedbacks = steady.map((s) => finite(s.feedback, 0))
+  const ts = steady.map((s) => finite(s.t, 0))
+
+  // 振幅估算：target 的 (max-min)/2
+  const tMax = Math.max(...targets)
+  const tMin = Math.min(...targets)
+  const amplitude = Math.max(finite(options.amplitude, 0), (tMax - tMin) / 2, 1e-6)
+
+  // 跟踪误差 RMS
+  const errors = targets.map((t, i) => t - feedbacks[i])
+  const trackingRms = rms(errors)
+  const trackingPct = trackingRms / amplitude * 100
+
+  // 振幅比：feedback 振幅 / target 振幅
+  const fMax = Math.max(...feedbacks)
+  const fMin = Math.min(...feedbacks)
+  const fAmp = (fMax - fMin) / 2
+  const amplitudeRatio = fAmp / amplitude
+
+  // 相位滞后估算：互相关法
+  // 找 target 与 feedback 互相关最大的时延，换算为相位（假设信号为准正弦）
+  let phaseLag = null
+  const n = steady.length
+  const maxLag = Math.min(Math.floor(n / 4), 50)
+  let bestCorr = -Infinity
+  let bestLag = 0
+  for (let lag = 0; lag <= maxLag; lag += 1) {
+    let sum = 0
+    let count = 0
+    for (let i = 0; i < n - lag; i += 1) {
+      // 中心化后求点积
+      sum += (targets[i] - (tMax + tMin) / 2) * (feedbacks[i + lag] - (fMax + fMin) / 2)
+      count += 1
+    }
+    const corr = count > 0 ? sum / count : 0
+    if (corr > bestCorr) {
+      bestCorr = corr
+      bestLag = lag
+    }
+  }
+  // 时延 → 相位（度）：需要信号周期
+  // 估算周期：找 target 相邻过零点间隔 ×2
+  const center = (tMax + tMin) / 2
+  let zeroCrossings = []
+  for (let i = 1; i < n; i += 1) {
+    if ((targets[i - 1] - center) * (targets[i] - center) < 0) {
+      zeroCrossings.push(ts[i])
+    }
+  }
+  if (zeroCrossings.length >= 2) {
+    const intervals = []
+    for (let i = 1; i < zeroCrossings.length; i += 1) {
+      intervals.push(zeroCrossings[i] - zeroCrossings[i - 1])
+    }
+    const avgHalfPeriod = mean(intervals)
+    const period = avgHalfPeriod * 2
+    if (period > 0) {
+      const dt = ts[1] - ts[0]
+      const timeLag = bestLag * dt
+      phaseLag = (timeLag / period) * 360
+      // 限制在 0~180 度
+      phaseLag = Math.min(180, Math.max(0, phaseLag))
+    }
+  }
+
+  return {
+    valid: true,
+    trackingErrorRms: fmt(trackingRms, 4),
+    trackingErrorPct: fmt(trackingPct, 2),
+    amplitudeRatio: fmt(amplitudeRatio, 3),
+    phaseLag: fmt(phaseLag, 1),
+    amplitude: fmt(amplitude, 3),
+    sampleCount: n
+  }
+}
+
 // 参数角色与环路权重：外环/单环完整修正，内环（速度环）修正幅度衰减到 30%
 const PARAM_SPEC = {
   kp: { role: 'P', loop: 1, orderName: 'Kp' },
@@ -754,6 +949,92 @@ export function buildPidSuggestion(metrics, current = {}, options = {}) {
   result.reasons = reasons
   result.phase = phase
   return result
+}
+
+/**
+ * 前馈系数整定建议（启发式，不跑仿真）。
+ *
+ * 根据当前响应指标启发式微调前馈系数，与 PID 调参解耦。
+ * 调参逻辑：
+ *   - linear（Kf1·target）：稳态误差>0 → Kf1 太小，增大；<0 → 太大，减小
+ *   - targetDeriv（Kf2·d(target)/dt）：超调大 → Kf2 太大，减小；响应慢且无超调 → Kf2 太小，增大
+ *   - gravity（重力补偿）：超调大 → 补偿过度，减小；稳态误差大且无超调 → 补偿不足，增大
+ *   - targetSecondDeriv：与 targetDeriv 同向调整
+ *
+ * @param {object} metrics  当前响应指标
+ * @param {object} currentFF  当前前馈系数 { id: coeff }
+ * @param {object} opts  { strategyId, stepScale }
+ * @returns {{ feedforward: object, reasons: string[], phase: string }}
+ */
+export function buildFeedforwardSuggestion(metrics, currentFF = {}, opts = {}) {
+  const ff = { ...currentFF }
+  const reasons = []
+  const stepScale = opts.stepScale || 0.15  // 默认每次调整 15%
+
+  if (!metrics?.valid) {
+    return { feedforward: ff, reasons: ['指标无效，前馈系数保持不变'], phase: 'unknown' }
+  }
+
+  const steadyErr = finite(metrics.steadyError, 0)
+  const overshoot = finite(metrics.overshoot, 0)
+  const amplitude = Math.max(Math.abs(finite(metrics.stepSize, 1)), 1e-6)
+  const steadyErrRatio = Math.abs(steadyErr) / amplitude
+
+  // linear 前馈：根据稳态误差方向调整
+  //   稳态误差>0（反馈<目标）→ 前馈不足，增大 Kf1
+  //   稳态误差<0（反馈>目标）→ 前馈过度，减小 Kf1
+  if ('linear' in ff) {
+    if (steadyErr > amplitude * 0.01) {
+      ff.linear = ff.linear * (1 + stepScale)
+      reasons.push(`linear 前馈增大 ${Math.round(stepScale * 100)}%（稳态误差 ${steadyErr.toFixed(3)} > 0，前馈不足）`)
+    } else if (steadyErr < -amplitude * 0.01) {
+      ff.linear = ff.linear * (1 - stepScale)
+      reasons.push(`linear 前馈减小 ${Math.round(stepScale * 100)}%（稳态误差 ${steadyErr.toFixed(3)} < 0，前馈过度）`)
+    }
+  }
+
+  // targetDeriv 前馈：根据超调与响应速度调整
+  //   超调大 → 前馈过度（动态项太大），减小 Kf2
+  //   无超调且稳态误差大 → 响应慢，前馈不足，增大 Kf2
+  if ('targetDeriv' in ff) {
+    if (overshoot > 10) {
+      ff.targetDeriv = ff.targetDeriv * (1 - stepScale * 0.5)
+      reasons.push(`targetDeriv 前馈减小 ${Math.round(stepScale * 50)}%（超调 ${overshoot.toFixed(1)}% 偏大）`)
+    } else if (overshoot < 2 && steadyErrRatio > 0.02) {
+      ff.targetDeriv = ff.targetDeriv * (1 + stepScale)
+      reasons.push(`targetDeriv 前馈增大 ${Math.round(stepScale * 100)}%（超调 ${overshoot.toFixed(1)}% 小但稳态误差大，响应偏慢）`)
+    }
+  }
+
+  // gravity 前馈：根据超调与稳态误差调整
+  //   超调大 → 重力补偿过度，减小
+  //   稳态误差大且无超调 → 补偿不足，增大
+  if ('gravity' in ff) {
+    if (overshoot > 20) {
+      ff.gravity = ff.gravity * (1 - stepScale * 0.5)
+      reasons.push(`gravity 前馈减小 ${Math.round(stepScale * 50)}%（超调 ${overshoot.toFixed(1)}% 偏大，补偿过度）`)
+    } else if (overshoot < 5 && steadyErrRatio > 0.03) {
+      ff.gravity = ff.gravity * (1 + stepScale)
+      reasons.push(`gravity 前馈增大 ${Math.round(stepScale * 100)}%（稳态误差大且无超调，补偿不足）`)
+    }
+  }
+
+  // targetSecondDeriv 前馈：与 targetDeriv 同向调整
+  if ('targetSecondDeriv' in ff) {
+    if (overshoot > 15) {
+      ff.targetSecondDeriv = ff.targetSecondDeriv * (1 - stepScale * 0.5)
+      reasons.push(`targetSecondDeriv 前馈减小 ${Math.round(stepScale * 50)}%（超调 ${overshoot.toFixed(1)}% 偏大）`)
+    } else if (overshoot < 3 && steadyErrRatio > 0.02) {
+      ff.targetSecondDeriv = ff.targetSecondDeriv * (1 + stepScale)
+      reasons.push(`targetSecondDeriv 前馈增大 ${Math.round(stepScale * 100)}%（响应偏慢）`)
+    }
+  }
+
+  if (!reasons.length) {
+    reasons.push('前馈系数已接近最优，本轮不调整')
+  }
+
+  return { feedforward: ff, reasons, phase: 'FF' }
 }
 
 export function buildStructuredAiContext(metrics, suggestion, extra = {}) {
