@@ -360,10 +360,8 @@ function runMultiSceneValidation(strategyId, finalPid, modelOverrides, acceptanc
 
 function main() {
   const summary = []
-  // 使用带日期戳的新目录，体现"新建文件夹"
-  const today = new Date()
-  const dateStr = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}`
-  const waveformDir = path.resolve(fileURLToPath(import.meta.url), `../../pid_tuning_waveforms_${dateStr}`)
+  // 统一输出到 pid_waveforms/pure_pid/，保持工作区简洁
+  const waveformDir = path.resolve(fileURLToPath(import.meta.url), '../../pid_waveforms/pure_pid')
   fs.mkdirSync(waveformDir, { recursive: true })
 
   for (const [strategyId, cfg] of Object.entries(TEST_CASES)) {

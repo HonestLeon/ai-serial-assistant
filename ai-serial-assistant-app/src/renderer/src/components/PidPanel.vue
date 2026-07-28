@@ -175,6 +175,25 @@ const outputParams = reactive({
   speedKd: '0'
 })
 
+// I/D 启用开关：默认开启，关闭后强制 Ki=0 / Kd=0 并禁用对应输入框
+// 用户可选择只用 P / PI / PD 控制器（不影响仿真，仅约束调参与下发）
+const enableI = ref(true)
+const enableD = ref(true)
+
+// 当开关切换时立即同步参数（关闭 → 强制 0；开启 → 保持 0 让策略自行试探）
+watch(enableI, (on) => {
+  if (!on) {
+    outputParams.ki = '0'
+    outputParams.speedKi = '0'
+  }
+})
+watch(enableD, (on) => {
+  if (!on) {
+    outputParams.kd = '0'
+    outputParams.speedKd = '0'
+  }
+})
+
 const isCascade = computed(() => strategyId.value === 'cascade_position')
 
 const collecting = ref(false)
@@ -239,10 +258,51 @@ function clearFeedforward() {
   FEEDFORWARD_GROUPS.forEach((g) => { feedforwardSelectedByGroup[g.id] = [] })
 }
 
+// PID 参数名集合（用于区分 PID 项与前馈项）
+const pidParamNames = computed(() => [...strategy.value.defaultOrder])
+
+/**
+ * 重建调参顺序：前馈项默认在前（按勾选顺序），PID 项在后（按策略默认顺序）。
+ * 保留用户已调整的相对顺序：已在 tuningOrder 中的项保持原顺序，新增前馈项插到最前。
+ * - 前馈项用 id（如 'linear'）表示，PID 项用中文名（如 'Kp'）表示
+ * - 调参顺序仅影响 UI 展示与 AI 上下文；buildPidSuggestion 内部按 orderName 匹配，
+ *   未匹配的前馈 id 会被自动忽略，不影响 PID 算法
+ */
+function rebuildTuningOrder() {
+  const ffIds = Object.keys(feedforwardSelection)
+  const pidNames = pidParamNames.value
+  // 当前 tuningOrder 中仍在用的项（前馈仍勾选 + PID 项仍在策略中）
+  const keptItems = tuningOrder.value.filter((id) =>
+    ffIds.includes(id) || pidNames.includes(id)
+  )
+  // 新增的前馈项（在 tuningOrder 中不存在）——默认插到最前
+  const newFfIds = ffIds.filter((id) => !keptItems.includes(id))
+  // 缺失的 PID 项（策略切换后新出现的）——补到末尾
+  const missingPid = pidNames.filter((id) => !keptItems.includes(id))
+  tuningOrder.value = [...newFfIds, ...keptItems, ...missingPid]
+}
+
+// 前馈勾选变化时自动同步调参顺序（新增项默认置顶，取消勾选的项自动移除）
+watch(feedforwardSelection, () => {
+  rebuildTuningOrder()
+}, { deep: true })
+
+// 调参顺序项的显示名：前馈项显示「前馈·<简称>」，PID 项原样显示
+function formatTuningOrderItem(item) {
+  const ffItem = FEEDFORWARD_ITEMS_BY_ID[item]
+  if (ffItem) {
+    const shortName = ffItem.name.split(' ')[0]
+    return `前馈·${shortName}`
+  }
+  return item
+}
+
 function applyStrategyDefaults() {
   Object.keys(simulationConfig).forEach((key) => delete simulationConfig[key])
   Object.assign(simulationConfig, getStrategyConfig(strategyId.value))
+  // 先重置为纯 PID 顺序，再调用 rebuildTuningOrder 把已勾选的前馈项插到前面
   tuningOrder.value = [...strategy.value.defaultOrder]
+  rebuildTuningOrder()
   if (strategyId.value === 'cascade_position') {
     outputParams.kp = String(simulationConfig.positionKp)
     outputParams.ki = String(simulationConfig.positionKi)
@@ -285,15 +345,16 @@ function buildSimOverrides() {
   const overrides = { ...simulationConfig, feedforwardSelection: { ...feedforwardSelection } }
   if (strategyId.value === 'cascade_position') {
     overrides.positionKp = Number(outputParams.kp)
-    overrides.positionKi = Number(outputParams.ki)
-    overrides.positionKd = Number(outputParams.kd)
+    // I/D 关闭时强制 0，保证仿真与开关一致
+    overrides.positionKi = enableI.value ? Number(outputParams.ki) : 0
+    overrides.positionKd = enableD.value ? Number(outputParams.kd) : 0
     overrides.speedKp = Number(outputParams.speedKp)
-    overrides.speedKi = Number(outputParams.speedKi)
-    overrides.speedKd = Number(outputParams.speedKd)
+    overrides.speedKi = enableI.value ? Number(outputParams.speedKi) : 0
+    overrides.speedKd = enableD.value ? Number(outputParams.speedKd) : 0
   } else {
     overrides.kp = Number(outputParams.kp)
-    overrides.ki = Number(outputParams.ki)
-    overrides.kd = Number(outputParams.kd)
+    overrides.ki = enableI.value ? Number(outputParams.ki) : 0
+    overrides.kd = enableD.value ? Number(outputParams.kd) : 0
   }
   return overrides
 }
@@ -585,7 +646,10 @@ async function analyzeResponse() {
   const candidate = buildPidSuggestion(deterministicMetrics.value, testedPid, {
     tuningOrder: tuningOrder.value,
     lastGoodKp,
-    lastBadKp
+    lastBadKp,
+    unstable: !!strategy.value.unstable,
+    disableI: !enableI.value,
+    disableD: !enableD.value
   })
   localReasons.value = [...ffReasons, ...candidate.reasons]
 
@@ -642,14 +706,18 @@ async function callAiForPid(metrics, options = {}) {
   const currentParams = options.currentPid || readCanonicalPid(outputParams, cascade)
   const historyText = historyToPromptText(tuningHistory.value, 5)
 
-  // 推断当前调参阶段（与 buildPidSuggestion 一致）
+  // 推断当前调参阶段（与 buildPidSuggestion 一致），同时尊重 I/D 开关
+  //   enableI=false → 不允许 PI/PID 阶段（Ki 始终 0）
+  //   enableD=false → 不允许 PD/PID 阶段（Kd 始终 0）
   const eps = 1e-6
   const pVal = cascade ? currentParams.speedKp : currentParams.kp
   const iVal = cascade ? currentParams.speedKi : currentParams.ki
   const dVal = cascade ? currentParams.speedKd : currentParams.kd
   const phase = (!pVal && !iVal && !dVal) || (pVal > eps && !iVal && !dVal) ? 'P'
-    : (pVal > eps && iVal > eps && !dVal) ? 'PI'
-    : 'PID'
+    : (enableD.value && pVal > eps && iVal > eps && !dVal) ? 'PI'
+    : (enableI.value && pVal > eps && !iVal && dVal > eps) ? 'PD'
+    : (enableI.value && enableD.value) ? 'PID'
+    : (enableI.value ? 'PI' : (enableD.value ? 'PD' : 'P'))
   // 噪声判定
   const noisy = (metrics.oscillation ?? 0) > (metrics.limits?.oscillation ?? 10) * 1.2
 
@@ -697,6 +765,8 @@ async function callAiForPid(metrics, options = {}) {
     输出格式: formatSpec,
     当前参数: currentParams,
     当前阶段: phase,
+    启用积分项: enableI.value ? '是（Ki 可非 0）' : '否（Ki 必须为 0，仅 P/PD 模式）',
+    启用微分项: enableD.value ? '是（Kd 可非 0）' : '否（Kd 必须为 0，仅 P/PI 模式）',
     响应指标: {
       状态: metrics.status,
       超调率: metrics.overshoot,
@@ -721,8 +791,9 @@ async function callAiForPid(metrics, options = {}) {
     场景: testMode.value === 'simulation'
       ? `仿真测试；模型：${strategy.value.description}`
       : `真实串口阶跃测试；阶跃幅值 ${stepConfig.amplitude}`,
+    调参顺序: tuningOrder.value.map(formatTuningOrderItem),
     调参策略: phaseStrategy,
-    安全要求: '参数必须循序渐进，单步增幅不得超过 3 倍。借鉴历史中的 AI 思考，避免重复无效方向。'
+    安全要求: '参数必须循序渐进，单步增幅不得超过 3 倍。借鉴历史中的 AI 思考，避免重复无效方向。若"启用积分项/启用微分项"为否，对应 Ki/Kd 必须输出 0。'
   }, null, 2)
 
   const systemContent = `你是 PID 调参助手。只输出一个 JSON 对象表示新参数，禁止输出任何解释、说明、Markdown 代码块或额外文字。输出格式：${formatSpec}。所有数值必须在给定范围内。必须仔细阅读"调参历史"字段，避免重复无效方向。thought 字段限 100 字内简述调整思路，须说明当前阶段与本次调整方向。`
@@ -754,6 +825,15 @@ async function callAiForPid(metrics, options = {}) {
       const raw = data2.choices?.[0]?.message?.content || ''
       const parsed = parseAiParams(raw, cascade)
       if (!parsed) { lastError = '返回格式无法解析'; continue }
+      // I/D 开关强制约束：用户关闭 I/D 时，AI 输出必须强制 Ki/Kd=0（防御 AI 不听话）
+      if (!enableI.value) {
+        if (cascade) { parsed.speedKi = 0; parsed.positionKi = 0 }
+        else { parsed.ki = 0 }
+      }
+      if (!enableD.value) {
+        if (cascade) { parsed.speedKd = 0; parsed.positionKd = 0 }
+        else { parsed.kd = 0 }
+      }
       // 阶段约束后处理：P 阶段强制 Ki=Kd=0；PI 阶段强制 Kd=0；噪声大时强制 Kd=0
       if (phase === 'P') {
         if (cascade) { parsed.speedKi = 0; parsed.speedKd = 0; parsed.positionKi = 0; parsed.positionKd = 0 }
@@ -761,6 +841,10 @@ async function callAiForPid(metrics, options = {}) {
       } else if (phase === 'PI') {
         if (cascade) { parsed.speedKd = 0; parsed.positionKd = 0 }
         else { parsed.kd = 0 }
+      } else if (phase === 'PD') {
+        // PD 阶段强制 Ki=0（保留 Kd）
+        if (cascade) { parsed.speedKi = 0; parsed.positionKi = 0 }
+        else { parsed.ki = 0 }
       }
       if (noisy) {
         if (cascade) { parsed.speedKd = 0; parsed.positionKd = 0 }
@@ -1310,10 +1394,10 @@ onUnmounted(() => {
           </details>
 
           <details class="collapse-section">
-            <summary>调参顺序（由用户决定）</summary>
+            <summary>调参顺序（由用户决定；前馈项默认在前）</summary>
             <div class="order-list">
               <div v-for="(item, index) in tuningOrder" :key="item" class="order-item">
-                <span>{{ index + 1 }}. {{ item }}</span>
+                <span>{{ index + 1 }}. {{ formatTuningOrderItem(item) }}</span>
                 <div>
                   <button :disabled="index === 0" @click="moveTuningStep(index, -1)" aria-label="上移">↑</button>
                   <button :disabled="index === tuningOrder.length - 1" @click="moveTuningStep(index, 1)" aria-label="下移">↓</button>
@@ -1438,6 +1522,17 @@ onUnmounted(() => {
         <div class="step-header">
           <div class="step-number">{{ stepNumbers.output }}</div>
           <div class="step-title">PID 候选与参数下发</div>
+          <div class="pid-mode-switches">
+            <label class="pid-mode-switch" :title="enableI ? '点击关闭积分项（仅 P/PD 模式）' : '点击启用积分项'">
+              <input type="checkbox" v-model="enableI" />
+              <span>I</span>
+            </label>
+            <label class="pid-mode-switch" :title="enableD ? '点击关闭微分项（仅 P/PI 模式）' : '点击启用微分项'">
+              <input type="checkbox" v-model="enableD" />
+              <span>D</span>
+            </label>
+            <span class="pid-mode-tag">{{ (!enableI && !enableD) ? 'P' : (!enableI) ? 'PD' : (!enableD) ? 'PI' : 'PID' }} 模式</span>
+          </div>
         </div>
         <div class="step-body">
           <template v-if="isCascade">
@@ -1449,11 +1544,11 @@ onUnmounted(() => {
               </div>
               <div class="field">
                 <label>速度环 Ki</label>
-                <el-input-number v-model="outputParams.speedKi" :min="0" :max="10" :step="0.1" :controls="false" size="small" placeholder="积分系数" />
+                <el-input-number v-model="outputParams.speedKi" :min="0" :max="10" :step="0.1" :controls="false" size="small" :disabled="!enableI" placeholder="积分系数" />
               </div>
               <div class="field">
                 <label>速度环 Kd</label>
-                <el-input-number v-model="outputParams.speedKd" :min="0" :max="10" :step="0.01" :controls="false" size="small" placeholder="微分系数" />
+                <el-input-number v-model="outputParams.speedKd" :min="0" :max="10" :step="0.01" :controls="false" size="small" :disabled="!enableD" placeholder="微分系数" />
               </div>
             </div>
             <div class="subsection-title">位置环（外环）</div>
@@ -1464,11 +1559,11 @@ onUnmounted(() => {
               </div>
               <div class="field">
                 <label>位置环 Ki</label>
-                <el-input-number v-model="outputParams.ki" :min="0" :max="10" :step="0.1" :controls="false" size="small" placeholder="积分系数" />
+                <el-input-number v-model="outputParams.ki" :min="0" :max="10" :step="0.1" :controls="false" size="small" :disabled="!enableI" placeholder="积分系数" />
               </div>
               <div class="field">
                 <label>位置环 Kd</label>
-                <el-input-number v-model="outputParams.kd" :min="0" :max="10" :step="0.01" :controls="false" size="small" placeholder="微分系数" />
+                <el-input-number v-model="outputParams.kd" :min="0" :max="10" :step="0.01" :controls="false" size="small" :disabled="!enableD" placeholder="微分系数" />
               </div>
             </div>
           </template>
@@ -1480,11 +1575,11 @@ onUnmounted(() => {
               </div>
               <div class="field">
                 <label>Ki</label>
-                <el-input-number v-model="outputParams.ki" :min="0" :max="10" :step="0.1" :controls="false" size="small" placeholder="积分系数" />
+                <el-input-number v-model="outputParams.ki" :min="0" :max="10" :step="0.1" :controls="false" size="small" :disabled="!enableI" placeholder="积分系数" />
               </div>
               <div class="field">
                 <label>Kd</label>
-                <el-input-number v-model="outputParams.kd" :min="0" :max="10" :step="0.01" :controls="false" size="small" placeholder="微分系数" />
+                <el-input-number v-model="outputParams.kd" :min="0" :max="10" :step="0.01" :controls="false" size="small" :disabled="!enableD" placeholder="微分系数" />
               </div>
             </div>
           </template>

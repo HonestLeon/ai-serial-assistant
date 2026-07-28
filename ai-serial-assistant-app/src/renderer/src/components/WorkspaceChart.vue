@@ -25,6 +25,8 @@ const isDark = ref(document.documentElement.classList.contains('dark'))
 const MAX_POINTS = 2000
 let sampleIndex = 0
 let chart = null
+// ResizeObserver：监听 echarts 容器尺寸变化（拖动分隔条、窗口缩放均可触发）
+let resizeObserver = null
 
 const channelCount = computed(() =>
   Math.min(8, simulationMode.value
@@ -250,7 +252,9 @@ function handleThemeChange(event) {
 onMounted(() => {
   chart = echarts.init(chartRef.value)
   refreshChart(true)
-  window.addEventListener('resize', handleResize)
+  // 用 ResizeObserver 监听容器尺寸变化：拖动上下分隔条、窗口缩放都能触发 chart.resize()
+  resizeObserver = new ResizeObserver(() => chart?.resize())
+  resizeObserver.observe(chartRef.value)
   window.addEventListener('theme-change', handleThemeChange)
 })
 
@@ -270,7 +274,8 @@ watch([normalizeDrawing, yAuto, yMin, yMax], () => refreshChart())
 
 onUnmounted(() => {
   chart?.dispose()
-  window.removeEventListener('resize', handleResize)
+  resizeObserver?.disconnect()
+  resizeObserver = null
   window.removeEventListener('theme-change', handleThemeChange)
 })
 </script>

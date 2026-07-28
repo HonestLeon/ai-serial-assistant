@@ -9,7 +9,7 @@ import PidPanel from './components/PidPanel.vue'
 import WorkspaceChart from './components/WorkspaceChart.vue'
 import WorkspaceAnalysis from './components/WorkspaceAnalysis.vue'
 
-const activeTab = ref('stream')
+const activeTab = ref('data')
 const topPanePercent = ref(Number(localStorage.getItem('workspace_top_percent')) || 52)
 const pidSimulationSamples = ref([])
 let resizing = false
@@ -118,9 +118,7 @@ function pushSerialContext(payload) {
 }
 
 const tabs = [
-  { key: 'stream', label: '数据流', icon: Monitor },
-  { key: 'table', label: '数据表', icon: Monitor },
-  { key: 'analysis', label: '数据分析', icon: Operation },
+  { key: 'data', label: '数据', icon: Monitor },
   { key: 'ai', label: 'AI 助手', icon: ChatDotRound },
   { key: 'pid', label: 'PID 调参', icon: Operation }
 ]
@@ -212,7 +210,7 @@ function toggleHex() {
         <span class="app-version">v1.1.0</span>
       </div>
 
-      <div class="header-context">实时波形持续可见 · 拖动分隔条调整上下区域</div>
+      <div class="header-context">实时波形持续可见 · 下方切换 数据 / AI 助手 / PID 调参</div>
 
       <div class="header-right">
         <div class="window-dot" style="background: var(--state-error);"></div>
@@ -274,25 +272,30 @@ function toggleHex() {
               </button>
             </nav>
             <div class="lower-panel">
-              <DataMonitor
-                v-show="activeTab === 'stream' || activeTab === 'table'"
-                :active-view="activeTab"
-                :show-view-tabs="false"
-                :connected="connected"
-                :show-hex="showHex"
-                :recording="recording"
-                @data="onData"
-                @send="onSend"
-                @start-recording="startRecording"
-                @stop-recording="stopRecording"
-                @clear-recording="clearRecording"
-              />
-              <WorkspaceAnalysis
-                v-show="activeTab === 'analysis'"
-                :serial-context="serialContext"
-                :ai-config="aiConfig"
-                :channel-count="detectedChannelCount"
-              />
+              <!-- 数据标签：左侧数据流/数据表（可切换），右侧数据分析 -->
+              <div v-show="activeTab === 'data'" class="data-split">
+                <div class="data-split-left">
+                  <DataMonitor
+                    active-view="stream"
+                    :show-view-tabs="true"
+                    :connected="connected"
+                    :show-hex="showHex"
+                    :recording="recording"
+                    @data="onData"
+                    @send="onSend"
+                    @start-recording="startRecording"
+                    @stop-recording="stopRecording"
+                    @clear-recording="clearRecording"
+                  />
+                </div>
+                <div class="data-split-right">
+                  <WorkspaceAnalysis
+                    :serial-context="serialContext"
+                    :ai-config="aiConfig"
+                    :channel-count="detectedChannelCount"
+                  />
+                </div>
+              </div>
               <AiPanel
                 v-show="activeTab === 'ai'"
                 :connected="connected"
@@ -555,5 +558,38 @@ function toggleHex() {
   width: 100%;
   height: 100%;
   min-height: 0;
+}
+
+/* 数据标签：左右分栏（左数据流/表，右数据分析） */
+.data-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1px;
+  width: 100%;
+  height: 100%;
+  background: var(--color-border-default);
+}
+
+.data-split-left,
+.data-split-right {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--color-bg-primary);
+}
+
+.data-split-left > *,
+.data-split-right > * {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+/* 窄屏响应式：左右分栏折叠为上下 */
+@media (max-width: 1100px) {
+  .data-split {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  }
 }
 </style>

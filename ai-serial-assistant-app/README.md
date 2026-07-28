@@ -21,7 +21,7 @@
 
 ## 架构总览
 
-采用 Electron 标准三进程模型，渲染进程经 Preload 桥接与主进程通信：
+采用 Electron 标准三进程模型，渲染进程经 Preload 桥接与主进程通信。渲染进程工作区上下分栏：**上方实时波形持续可见**（可拖动分隔条调整高度），**下方三个标签页切换**：数据（左侧数据流/数据表切换，右侧数据分析）、AI 助手、PID 调参：
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -55,11 +55,19 @@ ai-serial-assistant-app/
 ├── electron.vite.config.mjs   # electron-vite 配置（注意是 .mjs）
 ├── package.json
 ├── scripts/
-│   └── dev.js                 # 开发启动：清 ELECTRON_RUN_AS_NODE 后 electron-vite dev
+│   └── dev.js                 # 开发启动：设置 Electron 镜像环境变量 + electron-vite dev
+├── docs/                      # 开发文档
+│   ├── llm-pid-tuner-analysis.md          #   llm-pid-tuner 开源项目分析
+│   └── pid-tuning-strategy-and-ai-prompt.md #   PID 本地策略与 AI 提示词组织详解
+├── pid_waveforms/             # PID 调参波形（测试脚本生成）
+│   ├── pure_pid/              #   纯 PID 调参波形（step/multiStep/sine 三种信号）
+│   └── with_feedforward/      #   含前馈对比波形（pure_pid / with_feedforward / comparison）
 ├── tests/                     # 对应 npm run test:analysis
 │   ├── control-analysis.mjs   #   控制指标计算
 │   ├── ai-data-context.mjs    #   AI 上下文打包
 │   ├── pid-simulation.mjs     #   PID 候选生成
+│   ├── feedforward-tuning-trial.mjs  # 前馈调参验收（输出到 pid_waveforms/with_feedforward/）
+│   ├── full-tuning-trial.mjs         # 纯 PID 调参验收（输出到 pid_waveforms/pure_pid/）
 │   └── vue-sfc-compile.cjs    #   Vue SFC 编译校验
 └── src/
     ├── main/
@@ -98,11 +106,11 @@ ai-serial-assistant-app/
 | 组件 | 职责 |
 |------|------|
 | `SerialPanel` | 串口参数、协议引擎选择（raw / justfloat）、AI 配置（model / baseUrl / apiKey）、DTR / RTS 控制 |
-| `DataMonitor` | 数据收发展示、数据表（I0–I7）、自动发送、录制/回放、**控制响应模拟** |
-| `WorkspaceChart` | 实时波形绘制：滑动窗口缓冲（MAX_POINTS=2000）、八通道解析、通道显隐、归一化、X 缩放平移、Y 自动/手动、主题联动、CSV/JSON 导出（详见下方「波形分析模块」章节） |
-| `WorkspaceAnalysis` | 通道特征统计（EDA）+ 确定性响应分析（上升/稳定时间、超调率、稳态误差、RMSE、稳态波动）+ 高级判定标准 + AI 结构化解释 + 报告导出；`analyzeControlSamples` 与调参模块共用（详见下方「波形分析模块」章节） |
+| `DataMonitor` | 数据收发展示、数据表（I0–I7）、自动发送、录制/回放、**控制响应模拟**；在「数据」标签内左侧显示（自带数据流/数据表切换） |
+| `WorkspaceChart` | 实时波形绘制：滑动窗口缓冲（MAX_POINTS=2000）、八通道解析、通道显隐、归一化、X 缩放平移、Y 自动/手动、主题联动、CSV/JSON 导出；工作区上方常驻（详见下方「波形分析模块」章节） |
+| `WorkspaceAnalysis` | 通道特征统计（EDA）+ 确定性响应分析（上升/稳定时间、超调率、稳态误差、RMSE、稳态波动）+ 高级判定标准 + AI 结构化解释 + 报告导出；在「数据」标签内右侧显示（详见下方「波形分析模块」章节） |
 | `AiPanel` | 对话 + 快捷操作（数据分析/异常诊断/协议解析）+ 异常检测（3σ + stuck）+ 协议启发式识别 |
-| `PidPanel` | 调参流程编排与 UI（步骤 0 策略/1 阶跃/2 分析/3 下发，含「自动调参」闭环 `runAutoTuning`）；算法全部外置到 `services/`（详见下方「PID 辅助调参」章节） |
+| `PidPanel` | 调参流程编排与 UI（步骤 0 策略/1 阶跃/2 分析/3 下发，含「自动调参」闭环 `runAutoTuning`）；支持 **I/D 开关**（P/PI/PD/PID 模式切换）、**前馈项加入调参顺序**（默认在前）、前馈系数整定；算法全部外置到 `services/`（详见下方「PID 辅助调参」章节） |
 | `StatusBar` | 连接状态、Rx/Tx 计数、HEX 切换、主题切换 |
 
 > ⚠ **未挂载组件提醒**：`ChartPanel.vue` / `AnalysisPanel.vue` 为早期版本遗留，`ChannelPanel.vue` 为新增的「数据通道」面板，三者当前均未被 `App.vue` 挂载——活动图表/分析组件是 `WorkspaceChart.vue` / `WorkspaceAnalysis.vue`，通道数值由 `DataMonitor` 的「数据表」承担。新增功能请勿引用这些未接入组件，建议后续清理。
@@ -271,6 +279,8 @@ ai-serial-assistant-app/
 ## PID 辅助调参：算法与数据流详解
 
 > 本节面向二次开发者，解释「AI 辅助调参」背后的实现细节。设计原则是：**确定性算法跑本地、AI 只做解释、参数必须人工确认下发**。这样既保证离线可用、结果可复现，也避免了「AI 直接控制硬件」的安全风险。
+>
+> 📖 **本地策略与 AI 提示词的完整组织方式详见 [`docs/pid-tuning-strategy-and-ai-prompt.md`](docs/pid-tuning-strategy-and-ai-prompt.md)**，涵盖分阶段调参、Kp 二分法、前馈整定、提示词字段设计、自动调参闭环、安全护栏等。
 
 ### 总体数据流
 
@@ -323,7 +333,8 @@ motor_speed: {
 ```
 
 - **`acceptance`**：该策略的验收阈值，被 `analyzeControlSamples` 用来判定 `risks`（超调/稳态波动是否越界）。新增竞赛系统（直立环/舵机环）时，只需在此登记一项即可接入整套调参链路。
-- **`defaultOrder`**：调参顺序（如倒立摆把 `Kd` 前置）。`PidPanel.moveTuningStep()` 让用户用 ↑/↓ 调整顺序，`buildPidSuggestion` 会按顺序对修正幅度做指数衰减（排第 0 位完整修正，后续按 `0.5^pos` 衰减），真正落地「调参顺序由用户决定」。
+- **`defaultOrder`**：调参顺序（如倒立摆把 `Kd` 前置）。`PidPanel.moveTuningStep()` 让用户用 ↑/↓ 调整顺序，`buildPidSuggestion` 会按顺序对修正幅度做指数衰减（排第 0 位完整修正，后续按 `0.5^pos` 衰减），真正落地「调参顺序由用户决定」。**前馈项加入调参顺序**：勾选的前馈项 id 会自动出现在调参顺序中（默认置顶），UI 显示为「前馈·<简称>」，可 ↑/↓ 调整；调参顺序同步到 AI 上下文，让 AI 知道用户的调参优先级。
+- **I/D 开关**：用户可在 PID 候选步骤用复选框关闭 I 或 D（默认均开启），选择 P / PI / PD / PID 模式。关闭时：① 强制对应 Ki/Kd=0 并禁用输入框；② 仿真时强制对应项为 0；③ 本地策略 `buildPidSuggestion` 的 `disableI`/`disableD` 选项约束阶段推断（不允许进入含禁用项的阶段）；④ AI 提示词中标注「启用积分项/启用微分项」为否，并在安全要求中强调对应项必须输出 0。
 - **`FEEDFORWARD_LIBRARY`**：前馈项库，分三栏（多项式 / 三角函数 / 其他），每栏内多项可勾选、可多选、可跨栏组合，对应规格里的 `F = f_pid(error) + Σ f_ff(target)`：
   - **多项式**：线性 `Kff·target`、二次 `Kff·target²`、三次 `Kff·target³`
   - **三角函数**：sin `Kff·sin(target)`、cos `Kff·cos(target)`、tan `Kff·tan(target)`
@@ -499,6 +510,8 @@ MVP 自测脚本直接 import 上述 `services` 中的纯函数，保证「算�
 - `pid-safety.mjs`：验证 `applyPidGuardrails` 的边界裁剪与单步增幅限制、`buildFallbackSuggestion` 按 status 的乘性修正、`scoreMetrics` / `maybeUpdateBestResult`（仅 STABLE 更新）/ `shouldRollbackToBest`（双阈值劣化）/ `isMetricsAcceptable` 的判定。
 - `pid-tuning-session.mjs`：验证会话状态机——`registerTuningRound` 的五种 decision（continue/rollback/complete/stagnated/max-rounds）、best 跟踪、取消时恢复最佳参数。
 - `vue-sfc-compile.cjs`：用 `@vue/compiler-sfc` 编译所有 `.vue` 组件，捕获模板/脚本语法错误（兼容 npm 与 pnpm 安装环境）。
+- `full-tuning-trial.mjs`：纯 PID 调参验收，跑三个策略（电机/串级/倒立摆）× 三组参数 × 三种信号（step/multiStep/sine），输出波形到 `pid_waveforms/pure_pid/`。
+- `feedforward-tuning-trial.mjs`：前馈调参验收，对比纯 PID / 含前馈 / 仅前馈三种模式的响应，输出波形到 `pid_waveforms/with_feedforward/`。
 
 运行：`npm run test:analysis`。
 
@@ -516,10 +529,10 @@ MVP 自测脚本直接 import 上述 `services` 中的纯函数，保证「算�
 
 | 命令 | 作用 |
 |------|------|
-| `npm run dev` | 经 `scripts/dev.js` 启动：先删除 `ELECTRON_RUN_AS_NODE`（避免 Electron 以纯 Node 模式运行导致 `require('electron')` 异常），再 `electron-vite dev` |
+| `npm run dev` | 经 `scripts/dev.js` 启动：设置 Electron 镜像环境变量（`ELECTRON_MIRROR` / `ELECTRON_BUILDER_BINARIES_MIRROR`）+ 按平台选择 spawn 方式（Windows 用 shell 命令字符串规避 DEP0190 警告），再 `electron-vite dev` |
 | `npm run build` | `electron-vite build`，产物到 `out/`（out/main、out/preload、out/renderer） |
 | `npm run dist` | `electron-vite build && electron-builder`，生成安装包 |
-| `npm run test:analysis` | 跑 `tests/` 下 6 个脚本：控制指标计算、AI 上下文、PID 仿真、PID 安全护栏、自动调参会话、Vue SFC 编译 |
+| `npm run test:analysis` | 跑 `tests/` 下脚本：控制指标计算、AI 上下文、PID 仿真、PID 安全护栏、自动调参会话、Vue SFC 编译、前馈调参验收、纯 PID 调参验收 |
 
 > 调试：`npm run dev` 启动时 `isDev` 为真（`electron-vite dev` 设了 `ELECTRON_RENDERER_URL`），`src/main/index.js` 会在 `ready-to-show` 时自动 `openDevTools({ mode: 'detach' })`；生产构建不会开。随时也可手动 `Ctrl+Shift+I`（macOS `Cmd+Option+I`）开关。主进程日志看终端。
 
@@ -527,7 +540,8 @@ MVP 自测脚本直接 import 上述 `services` 中的纯函数，保证「算�
 
 ## 开发须知
 
-- **`.npmrc`**：已配置 Electron 国内镜像，安装 electron / electron-builder 二进制更快；必要时设 `ELECTRON_MIRROR`。
+- **`.npmrc`**：仅保留 `registry=https://registry.npmmirror.com`。Electron 二进制镜像通过环境变量 `ELECTRON_MIRROR` / `ELECTRON_BUILDER_BINARIES_MIRROR` 在 `scripts/dev.js` 中设置（npm 7+ 不再支持 `.npmrc` 中的 `electron_mirror` / `electron_builder_binaries_mirror` 自定义键，会报 warn）。
+- **DEP0190 警告**：`scripts/dev.js` 中 Windows 平台用 `spawn('npx electron-vite dev', { shell: true })`（整条命令字符串），其他平台用 `spawn('npx', ['electron-vite', 'dev'])`（args 数组 + shell:false），规避 Node.js 的「args 数组 + shell:true」安全警告。
 - **vue-router**：`package.json` 含 `vue-router` 依赖，但当前 App **未使用路由**（单页 + 标签页切换），属冗余依赖，可移除。
 - **遗留组件**：`ChartPanel` / `AnalysisPanel` 未被挂载，别在新功能里引用。
 - **logger 暂禁用**：`main.js` 中 `setupLogger()`（转发 `console` 到主进程）被注释，为排查 el-select 下拉问题时关闭；恢复需验证。
@@ -541,17 +555,22 @@ MVP 自测脚本直接 import 上述 `services` 中的纯函数，保证「算�
 ### 已完成 ✅
 
 - 三进程骨架、IPC 桥接、亮/暗双主题
+- 工作区上下分栏：上方实时波形持续可见（可拖动调整高度），下方三标签切换：**数据**（左数据流/表切换，右数据分析）/ **AI 助手** / **PID 调参**
 - 串口全参数配置、DTR/RTS、Raw / JustFloat 解析
 - 数据流/数据表、自动发送、录制回放、控制响应模拟
 - ECharts 多通道波形（缩放/平移/显隐/标准化/导出）
 - AI 助手（OpenAI 兼容接入、上下文注入、异常检测、协议识别）
 - 确定性响应分析、PID 辅助调参（本地候选 + AI 给参 + 人工确认/自动下发）
 - 策略注册表（多系统 / 多控制结构差异化调参，含仿真 / 真实串口测试来源与验收指标）
+- **I/D 开关**：用户可选择 P / PI / PD / PID 模式，关闭时强制对应项为 0 并约束调参策略与 AI 提示词
+- **前馈项加入调参顺序**：勾选的前馈项自动出现在调参顺序中，默认置顶，可 ↑/↓ 调整，并同步到 AI 上下文
+- **前馈系数整定**（`buildFeedforwardSuggestion`）：与 PID 调参解耦，根据稳态误差/超调启发式微调前馈系数
 - 参数安全限制（Kp 0~20、Ki/Kd 0~10 边界 + 单步增幅限制 + 二次确认下发，防异常参数损坏硬件）
 - **自动调参闭环（仿真模式）**：会话状态机 + best 跟踪 + 自动回退 + 停止判定（complete/stagnated/max-rounds），hybrid（AI+护栏）/ local（规则兜底）双引擎，离线可用
 - LLM 失败规则兜底（`buildFallbackSuggestion`，按 status 保守修正，流程不中断）
 - 嵌入式集成（一键导出 `.c/.h` 通信层，函数指针注入式）
-- MVP 自测（`tests/` 6 脚本）
+- npm 警告修复（`.npmrc` 移除无效键 + `dev.js` 环境变量设置镜像 + DEP0190 警告规避）
+- MVP 自测（`tests/` 脚本）
 
 ### 进行中 🚧
 

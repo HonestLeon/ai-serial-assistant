@@ -548,14 +548,24 @@ export function buildPidSuggestion(metrics, current = {}, options = {}) {
   // unstable 选项：用于不稳定系统（倒立摆/平衡车），必须有 Kd 提供阻尼
   // 不稳定系统不走纯 P 阶段，从 PD 起步（Kp=0 也有 Kd），调好 Kp 后直接加 Ki 进 PID
   const unstable = !!options.unstable
+  // 用户显式禁用 I/D：对应阶段不允许出现
+  //   disableI=true → 不允许 PI/PID（Ki 永远 0）
+  //   disableD=true → 不允许 PD/PID（Kd 永远 0）
+  //   两者都禁 → 只允许 P
+  const disableI = !!options.disableI
+  const disableD = !!options.disableD
   let phase
   if (unstable) {
-    if (!iOn) phase = 'PD'        // 起始/调Kp阶段：Kd 保留，Ki=0
+    if (!iOn || disableI) phase = 'PD'        // 起始/调Kp阶段：Kd 保留，Ki=0
     else phase = 'PID'            // 加 Ki 阶段
   } else if (!pOn && !iOn && !dOn) phase = 'P'        // 初始：从纯 P 开始
   else if (pOn && !iOn && !dOn) phase = 'P'    // 纯 P 阶段
   else if (pOn && iOn && !dOn) phase = 'PI'    // PI 阶段
   else phase = 'PID'                            // 完整 PID 阶段
+  // 显式开关约束：覆盖推断结果
+  if (disableI && disableD) phase = 'P'
+  else if (disableI && (phase === 'PI' || phase === 'PID')) phase = (dOn || unstable) ? 'PD' : 'P'
+  else if (disableD && (phase === 'PD' || phase === 'PID')) phase = 'PI'
 
   // 噪声约束：稳态振荡大或输出峰值高 → 不加 D（不稳定系统例外，Kd 是必需阻尼）
   const noisy = !unstable && (

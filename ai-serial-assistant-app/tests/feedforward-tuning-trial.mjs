@@ -565,9 +565,8 @@ function renderComparisonSvg(samplesBaseline, samplesFF, strategyId, label, mBas
 // ====== 主入口 ======
 
 function main() {
-  const today = new Date()
-  const dateStr = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}`
-  const waveformDir = path.resolve(fileURLToPath(import.meta.url), `../../pid_with_feedforward_waveforms_${dateStr}`)
+  // 统一输出到 pid_waveforms/with_feedforward/，保持工作区简洁
+  const waveformDir = path.resolve(fileURLToPath(import.meta.url), '../../pid_waveforms/with_feedforward')
   fs.mkdirSync(waveformDir, { recursive: true })
 
   const summary = []
