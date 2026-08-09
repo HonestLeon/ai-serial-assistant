@@ -5,8 +5,7 @@ import { Loading, Promotion, VideoPlay, VideoPause, DataAnalysis, Refresh } from
 import {
   analyzeControlSamples,
   buildFeedforwardSuggestion,
-  buildPidSuggestion,
-  historyToPromptText
+  buildPidSuggestion
 } from '../services/controlAnalysis.mjs'
 import {
   applyPidGuardrails,
@@ -18,6 +17,17 @@ import {
   readCanonicalPid,
   registerTuningRound
 } from '../services/pidTuningSession.mjs'
+import {
+  PID_PROMPT_VERSION,
+  buildPidJsonSchema,
+  buildPidRepairMessage,
+  buildPidSystemPrompt,
+  buildStructuredPidHistory,
+  buildStructuredResponseFormat,
+  downsamplePidWaveform,
+  parsePidAiResponse,
+  pickSuccessfulPidExamples
+} from '../services/pidPrompt.mjs'
 import {
   FEEDFORWARD_GROUPS,
   FEEDFORWARD_ITEMS_BY_ID,
@@ -505,32 +515,6 @@ function onSerialData(payload) {
   }
 }
 
-// AI 参数安全边界（与 sendParams 一致）
-const PARAM_BOUNDS = { kp: 20, ki: 10, kd: 10, speedKp: 20, speedKi: 10, speedKd: 10, positionKp: 20, positionKi: 10, positionKd: 10 }
-
-// 从 AI 文本响应中解析 JSON 参数；解析或越界失败返回 null
-function parseAiParams(text, cascade) {
-  if (!text) return null
-  let s = String(text).trim().replace(/```(?:json)?/gi, '').replace(/```/g, '').trim()
-  const first = s.indexOf('{')
-  const last = s.lastIndexOf('}')
-  if (first < 0 || last < 0 || last <= first) return null
-  let obj
-  try { obj = JSON.parse(s.slice(first, last + 1)) } catch { return null }
-  const keys = cascade
-    ? ['speedKp', 'speedKi', 'speedKd', 'positionKp', 'positionKi', 'positionKd']
-    : ['kp', 'ki', 'kd']
-  const out = {}
-  for (const k of keys) {
-    const v = Number(obj[k])
-    if (!Number.isFinite(v)) return null
-    out[k] = Math.min(PARAM_BOUNDS[k], Math.max(0, v))
-  }
-  // thought 字段可选，限 200 字
-  if (typeof obj.thought === 'string') out.thought = obj.thought.slice(0, 200)
-  return out
-}
-
 function formatParamsForDisplay(params, cascade) {
   if (!params) return ''
   if (cascade) {
@@ -683,7 +667,10 @@ async function analyzeResponse() {
     aiResult.value += `\n安全护栏：${result.guardNotes.join('；')}`
   }
   if (result.thought) {
-    aiResult.value += `\nAI 思考：${result.thought}`
+    aiResult.value += `\n工程依据：${result.thought}`
+  }
+  if (result.selfCheck) {
+    aiResult.value += `\n输出自检：${result.selfCheck}`
   }
 
   // 自动下发：已连接串口时直接写入设备，无需人工确认
@@ -701,10 +688,12 @@ async function analyzeResponse() {
 async function callAiForPid(metrics, options = {}) {
   const cascade = isCascade.value
   const formatSpec = cascade
-    ? '{"speedKp":<0-20>,"speedKi":<0-10>,"speedKd":<0-10>,"positionKp":<0-20>,"positionKi":<0-10>,"positionKd":<0-10>,"thought":"<简短思考>"}'
-    : '{"kp":<0-20>,"ki":<0-10>,"kd":<0-10>,"thought":"<简短思考>"}'
+    ? '{"speedKp":<0-20>,"speedKi":<0-10>,"speedKd":<0-10>,"positionKp":<0-20>,"positionKi":<0-10>,"positionKd":<0-10>,"analysis_summary":"<工程依据摘要>","self_check":"<边界与阶段自检>"}'
+    : '{"kp":<0-20>,"ki":<0-10>,"kd":<0-10>,"analysis_summary":"<工程依据摘要>","self_check":"<边界与阶段自检>"}'
   const currentParams = options.currentPid || readCanonicalPid(outputParams, cascade)
-  const historyText = historyToPromptText(tuningHistory.value, 5)
+  const structuredHistory = buildStructuredPidHistory(tuningHistory.value, 3200)
+  const successfulExamples = pickSuccessfulPidExamples(tuningHistory.value, 2)
+  const waveform = downsamplePidWaveform(response.value, 30)
 
   // 推断当前调参阶段（与 buildPidSuggestion 一致），同时尊重 I/D 开关
   //   enableI=false → 不允许 PI/PID 阶段（Ki 始终 0）
@@ -761,8 +750,9 @@ async function callAiForPid(metrics, options = {}) {
   }
 
   const userContent = JSON.stringify({
-    任务: '根据响应指标、当前参数、调参历史和当前阶段，给出新的 PID 参数。只输出一个 JSON 对象，禁止任何解释、Markdown 或额外文字。',
-    输出格式: formatSpec,
+    提示词版本: PID_PROMPT_VERSION,
+    任务: '根据模型事实、响应指标、时序波形、已验证历史和当前阶段，提出下一轮待仿真验证的 PID 参数。',
+    输出JSONSchema: buildPidJsonSchema(cascade),
     当前参数: currentParams,
     当前阶段: phase,
     启用积分项: enableI.value ? '是（Ki 可非 0）' : '否（Ki 必须为 0，仅 P/PD 模式）',
@@ -787,44 +777,84 @@ async function callAiForPid(metrics, options = {}) {
       验收标准: `${fmtPct(overshootLimit)}%`,
       可接受上限: `${fmtPct(overshootMargin)}%（P 阶段允许达到此值以最大化 Kp）`
     },
-    调参历史: historyText || '（暂无历史，这是第一轮）',
+    时序波形_均匀下采样: waveform,
+    调参历史_按字符预算裁剪: structuredHistory,
+    已验证成功案例: successfulExamples,
     场景: testMode.value === 'simulation'
       ? `仿真测试；模型：${strategy.value.description}`
       : `真实串口阶跃测试；阶跃幅值 ${stepConfig.amplitude}`,
+    已知模型参数: testMode.value === 'simulation' ? { ...simulationConfig } : null,
+    前馈上下文: {
+      已启用: Object.keys(feedforwardSelection),
+      当前系数: { ...feedforwardSelection },
+      约束: '本次 AI 只输出 PID 参数；前馈由独立确定性策略调整，禁止用 PID 同时补偿前馈。'
+    },
     调参顺序: tuningOrder.value.map(formatTuningOrderItem),
     调参策略: phaseStrategy,
     安全要求: '参数必须循序渐进，单步增幅不得超过 3 倍。借鉴历史中的 AI 思考，避免重复无效方向。若"启用积分项/启用微分项"为否，对应 Ki/Kd 必须输出 0。'
   }, null, 2)
 
-  const systemContent = `你是 PID 调参助手。只输出一个 JSON 对象表示新参数，禁止输出任何解释、说明、Markdown 代码块或额外文字。输出格式：${formatSpec}。所有数值必须在给定范围内。必须仔细阅读"调参历史"字段，避免重复无效方向。thought 字段限 100 字内简述调整思路，须说明当前阶段与本次调整方向。`
+  const systemContent = buildPidSystemPrompt({
+    cascade,
+    phase,
+    formatSpec,
+    hasFeedforward: Object.keys(feedforwardSelection).length > 0
+  })
+  const messages = [
+    { role: 'system', content: systemContent },
+    { role: 'user', content: userContent }
+  ]
 
   // 5 次指数退避重试
   const delays = [0, 2, 4, 8, 16]
   let lastError = ''
+  let structuredOutputEnabled = true
+
+  async function requestCompletion(useStructuredOutput) {
+    const body = {
+      model: props.aiConfig.model,
+      temperature: 0.2,
+      messages,
+      stream: false
+    }
+    if (useStructuredOutput) {
+      body.response_format = buildStructuredResponseFormat(cascade)
+    }
+    return fetch(`${props.aiConfig.baseUrl.replace(/\/$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${props.aiConfig.apiKey}`
+      },
+      body: JSON.stringify(body)
+    })
+  }
+
   for (let attempt = 0; attempt < delays.length; attempt += 1) {
     if (delays[attempt] > 0) await new Promise((r) => setTimeout(r, delays[attempt] * 1000))
     try {
-      const res = await fetch(`${props.aiConfig.baseUrl.replace(/\/$/, '')}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${props.aiConfig.apiKey}`
-        },
-        body: JSON.stringify({
-          model: props.aiConfig.model,
-          temperature: 0.2,
-          messages: [
-            { role: 'system', content: systemContent },
-            { role: 'user', content: userContent }
-          ],
-          stream: false
-        })
-      })
-      if (!res.ok) { lastError = `HTTP ${res.status}`; continue }
+      let res = await requestCompletion(structuredOutputEnabled)
+      if (!res.ok && structuredOutputEnabled && [400, 404, 422].includes(res.status)) {
+        // OpenAI 兼容后端对 json_schema 支持不一致：自动回退为普通 JSON 提示词，不要求用户手工配置。
+        structuredOutputEnabled = false
+        res = await requestCompletion(false)
+      }
+      if (!res.ok) {
+        const detail = (await res.text()).slice(0, 240)
+        lastError = `HTTP ${res.status}${detail ? `：${detail}` : ''}`
+        continue
+      }
       const data2 = await res.json()
       const raw = data2.choices?.[0]?.message?.content || ''
-      const parsed = parseAiParams(raw, cascade)
-      if (!parsed) { lastError = '返回格式无法解析'; continue }
+      const parsedResult = parsePidAiResponse(raw, cascade)
+      if (!parsedResult.ok) {
+        lastError = parsedResult.error
+        // Instructor 风格自修复：让模型看到自己的错误输出和明确校验反馈。
+        messages.push({ role: 'assistant', content: raw.slice(0, 2000) })
+        messages.push({ role: 'user', content: buildPidRepairMessage(parsedResult.error, formatSpec) })
+        continue
+      }
+      const parsed = { ...parsedResult.params }
       // I/D 开关强制约束：用户关闭 I/D 时，AI 输出必须强制 Ki/Kd=0（防御 AI 不听话）
       if (!enableI.value) {
         if (cascade) { parsed.speedKi = 0; parsed.positionKi = 0 }
@@ -884,9 +914,11 @@ async function callAiForPid(metrics, options = {}) {
       return {
         ok: true,
         params: guard.params,
-        thought: parsed.thought || '',
+        thought: parsedResult.analysisSummary,
+        selfCheck: parsedResult.selfCheck,
         guardNotes: guard.notes,
-        phase
+        phase,
+        structuredOutput: structuredOutputEnabled
       }
     } catch (e) {
       lastError = e.message || String(e)
@@ -1012,7 +1044,10 @@ async function runAutoTuning() {
         const resultAi = await callAiForPid(metrics, { currentPid: testedPid, lastGoodKp: lastGoodKpAuto, lastBadKp: lastBadKpAuto, unstable: !!strategy.value.unstable })
         if (resultAi.ok) {
           proposedPid = resultAi.params
-          thought = resultAi.thought || ''
+          thought = [
+            resultAi.thought,
+            resultAi.selfCheck ? `自检：${resultAi.selfCheck}` : ''
+          ].filter(Boolean).join('；')
           source = 'AI + 安全护栏'
           guardNotes = resultAi.guardNotes || []
         } else {
