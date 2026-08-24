@@ -84,7 +84,7 @@ async function toggleConnection() {
       })
     }
   } catch (e) {
-    emit('error', e)
+    emit('error', e.message || (connected.value ? '关闭串口失败' : '打开串口失败'))
   } finally {
     loading.value = false
   }
@@ -108,7 +108,7 @@ async function toggleRts() {
     await window.electronAPI.serial.setRts(rtsState.value)
   } catch (e) {
     rtsState.value = !rtsState.value
-    emit('error', e.message || e)
+    emit('error', e.message || '设置 RTS 失败')
   }
 }
 
@@ -168,7 +168,7 @@ onMounted(() => {
       </div>
       <div class="field">
         <label>数据接口</label>
-        <el-select size="small" disabled>
+        <el-select size="small" disabled title="当前仅支持串口数据接口">
           <el-option label="串口" value="serial" />
         </el-select>
       </div>
@@ -189,7 +189,7 @@ onMounted(() => {
             <el-select v-model="config.path" :disabled="connected" size="small">
               <el-option v-for="p in ports" :key="p.path" :label="p.path" :value="p.path" />
             </el-select>
-            <el-button :icon="Refresh" size="small" :disabled="connected" @click="refreshPorts" />
+            <el-button :icon="Refresh" size="small" title="刷新串口列表" :disabled="connected" @click="refreshPorts" />
           </div>
         </div>
         <div class="field">

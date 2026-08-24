@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue'
 import { DataLine, Grid, VideoPause, VideoPlay, Delete, Refresh, Cpu } from '@element-plus/icons-vue'
+import { ElMessageBox } from 'element-plus'
 
 const props = defineProps({
   connected: Boolean,
@@ -17,6 +18,10 @@ const activeSubTab = ref(props.activeView === 'table' ? 'table' : 'stream')
 const messages = ref([])
 const tableRows = ref([])
 const MAX_TABLE_ROWS = 1000
+const MAX_MESSAGES = 5000
+
+// 消息自增 id，用于稳定的 v-for key
+let messageId = 0
 
 // 滚动容器引用
 const messageListRef = ref(null)
@@ -127,6 +132,7 @@ async function send() {
     await window.electronAPI.serial.send(input.value, encoding.value)
     const len = input.value.length
     messages.value.unshift({
+      id: ++messageId,
       type: 'send',
       text: input.value,
       time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
@@ -135,12 +141,14 @@ async function send() {
     emit('send', len)
     input.value = ''
   } catch (e) {
-    messages.value.unshift({ type: 'error', text: e, time: '--:--:--', ms: '000' })
+    messages.value.unshift({ id: ++messageId, type: 'error', text: e, time: '--:--:--', ms: '000' })
   }
 }
 
 function startAutoSend() {
   if (!props.connected || !input.value.trim()) return
+  // 钳制间隔下限，避免过小的间隔导致的性能问题
+  if (autoSendInterval.value < 100) autoSendInterval.value = 100
   autoSendEnabled.value = true
   const doSend = async () => {
     if (!props.connected || !autoSendEnabled.value) return
@@ -174,7 +182,17 @@ watch(() => props.activeView, (view) => {
   }
 })
 
-function clear() {
+// 清空数据流/数据表属不可逆操作，二次确认防止误触
+async function clear() {
+  try {
+    await ElMessageBox.confirm('将清空数据流与数据表的全部记录，且不可恢复。', '清空数据', {
+      type: 'warning',
+      confirmButtonText: '清空',
+      cancelButtonText: '取消'
+    })
+  } catch {
+    return // 用户取消
+  }
   messages.value = []
   tableRows.value = []
 }
@@ -199,11 +217,15 @@ function parseToNumbers(raw) {
 function onSerialData(payload) {
   const { t, ms } = formatTime(payload)
   messages.value.unshift({
+    id: ++messageId,
     type: 'receive',
     text: props.showHex ? payload.hex : payload.raw,
     time: t,
     ms
   })
+  if (messages.value.length > MAX_MESSAGES) {
+    messages.value.length = MAX_MESSAGES
+  }
 
   // 数据表
   const nums = parseToNumbers(payload.raw)
@@ -227,17 +249,37 @@ function toggleRecording() {
   }
 }
 
-function clearRecording() {
+async function clearRecording() {
+  try {
+    await ElMessageBox.confirm('将清空已录制的全部数据帧，且不可恢复。', '清空录制', {
+      type: 'warning',
+      confirmButtonText: '清空',
+      cancelButtonText: '取消'
+    })
+  } catch {
+    return // 用户取消
+  }
   emit('clear-recording')
 }
 
 async function replayRecording() {
   if (props.recording.data.length === 0 || replaying.value) return
+  // 回放会中断当前串口通信，必须在动作发生前向用户确认
   if (props.connected) {
+    try {
+      await ElMessageBox.confirm(
+        '回放将自动关闭当前串口连接（避免实时数据与回放数据混合），回放期间无法进行实时收发。是否继续？',
+        '开始回放',
+        { confirmButtonText: '关闭串口并回放', cancelButtonText: '取消', type: 'warning' }
+      )
+    } catch {
+      return // 用户取消
+    }
     stopAutoSend()
     try {
       await window.electronAPI.serial.close()
       messages.value.unshift({
+        id: ++messageId,
         type: 'system',
         text: '开始回放前已自动关闭串口，避免实时数据与回放数据混合',
         time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
@@ -245,6 +287,7 @@ async function replayRecording() {
       })
     } catch (error) {
       messages.value.unshift({
+        id: ++messageId,
         type: 'error',
         text: `关闭串口失败，已取消回放：${error.message || error}`,
         time: '--:--:--',
@@ -263,6 +306,7 @@ async function replayRecording() {
     const timer = setTimeout(() => {
       const { t, ms } = formatTime(item)
       messages.value.unshift({
+        id: ++messageId,
         type: 'receive',
         text: `[回放] ${props.showHex ? item.hex : item.raw}`,
         time: t,
@@ -349,23 +393,25 @@ onUnmounted(() => {
     </div>
 
     <!-- 数据流视图 -->
-    <div
-      v-show="activeSubTab === 'stream'"
-      ref="messageListRef"
-      class="message-list"
-      @scroll="onScroll"
-    >
+    <div v-show="activeSubTab === 'stream'" class="message-list-container">
+      <button v-if="!autoScroll" class="resume-follow" @click="scrollToTop">已暂停跟随 · 回到最新</button>
       <div
-        v-for="(msg, idx) in messages"
-        :key="idx"
-        class="message-row"
-        :class="{ alt: idx % 2 === 1, [msg.type]: true }"
+        ref="messageListRef"
+        class="message-list"
+        @scroll="onScroll"
       >
-        <span class="timestamp">[{{ msg.time }}.{{ msg.ms }}]</span>
-        <span class="direction" :class="msg.type">{{ msg.type === 'send' ? 'Tx:' : msg.type === 'receive' ? 'Rx:' : 'Er:' }}</span>
-        <span class="payload">{{ msg.text }}</span>
+        <div
+          v-for="(msg, idx) in messages"
+          :key="msg.id"
+          class="message-row"
+          :class="{ alt: idx % 2 === 1, [msg.type]: true }"
+        >
+          <span class="timestamp">[{{ msg.time }}.{{ msg.ms }}]</span>
+          <span class="direction" :class="msg.type">{{ msg.type === 'send' ? 'Tx:' : msg.type === 'receive' ? 'Rx:' : msg.type === 'system' ? 'Sy:' : 'Er:' }}</span>
+          <span class="payload">{{ msg.text }}</span>
+        </div>
+        <div v-if="messages.length === 0" class="empty">等待串口数据...</div>
       </div>
-      <div v-if="messages.length === 0" class="empty">等待串口数据...</div>
     </div>
 
     <!-- 数据表视图 -->
@@ -409,7 +455,7 @@ onUnmounted(() => {
           <el-option label="HEX" value="hex" />
         </el-select>
         <button class="btn-secondary" :disabled="!connected" @click="encoding = encoding === 'hex' ? 'utf8' : 'hex'">HEX</button>
-        <button class="btn-primary" :disabled="!connected || autoSendEnabled" @click="send">发送(S)</button>
+        <button class="btn-primary" :disabled="!connected || autoSendEnabled" @click="send">发送</button>
         <button class="btn-secondary" @click="clear">清空</button>
         <div class="auto-send-group">
           <input
@@ -445,8 +491,9 @@ onUnmounted(() => {
 
 .sub-tabs {
   display: flex;
+  flex-wrap: wrap; /* 窄窗口下录制/回放控制组换行而非溢出裁切 */
   align-items: center;
-  height: 32px;
+  min-height: 32px; /* 换行发生时高度自适应（原固定 height: 32px） */
   border-bottom: 1px solid var(--color-border-default);
   padding: 0 var(--space-4);
   flex-shrink: 0;
@@ -502,7 +549,7 @@ onUnmounted(() => {
 .rec-btn.recording {
   border-color: var(--state-error);
   color: var(--state-error);
-  background: rgba(248, 81, 73, 0.08);
+  background: var(--state-error-muted);
 }
 
 .rec-btn.stop {
@@ -526,8 +573,40 @@ onUnmounted(() => {
   font-family: var(--font-family-mono);
 }
 
+/* 数据流视图外层容器：接管 flex 伸展与最小高度约束，为悬浮按钮提供定位上下文 */
+.message-list-container {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+/* 暂停跟随时悬浮于列表顶部的恢复按钮 */
+.resume-follow {
+  position: absolute;
+  top: var(--space-2);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-xs);
+  font-family: var(--font-family-display);
+  color: var(--color-primary);
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border-active);
+  border-radius: var(--radius-full, 999px);
+  box-shadow: var(--el-box-shadow-light, 0 2px 12px rgba(0, 0, 0, 0.2));
+  cursor: pointer;
+}
+
+.resume-follow:hover {
+  background: var(--color-primary-muted);
+}
+
 .message-list {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: var(--space-2) 0;
   font-family: var(--font-family-mono);
@@ -559,6 +638,7 @@ onUnmounted(() => {
 
 .direction.receive { color: var(--color-ai); }
 .direction.send { color: var(--color-primary); }
+.direction.system { color: var(--color-text-secondary); }
 .direction.error { color: var(--state-error); }
 
 .payload {
@@ -631,12 +711,14 @@ onUnmounted(() => {
 
 .send-row {
   display: flex;
+  flex-wrap: wrap; /* 窄窗口下控件换行而非压缩输入框 */
   align-items: center;
   gap: var(--space-2);
 }
 
 .send-row .el-input {
   flex: 1;
+  min-width: 160px; /* 防止固定宽度控件（约 380-400px）把输入框压至不可用 */
 }
 
 .auto-send-group {

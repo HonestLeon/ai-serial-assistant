@@ -29,7 +29,7 @@ function toggleTheme() {
 <template>
   <footer class="status-bar">
     <div class="status-left">
-      <button class="hex-toggle" :class="{ active: showHex }" @click="emit('toggle-hex')">HEX</button>
+      <button class="hex-toggle" :class="{ active: showHex }" title="切换接收数据的 HEX 显示（仅影响查看，不影响发送编码）" @click="emit('toggle-hex')">HEX</button>
       <div class="connection">
         <div class="status-dot" :style="{ background: connected ? 'var(--state-success)' : 'var(--color-text-tertiary)' }"></div>
         <span class="status-text">{{ statusText }}</span>
@@ -38,7 +38,7 @@ function toggleTheme() {
 
     <div class="status-center">
       <span>UTF-8</span>
-      <span class="mono">\\n</span>
+      <span class="mono" v-pre>\n</span>
     </div>
 
     <div class="status-right">

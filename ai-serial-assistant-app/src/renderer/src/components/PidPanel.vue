@@ -215,6 +215,11 @@ const autoSend = ref(false)  // 自动下发：AI 给参后直接写入设备，
 const deterministicMetrics = ref(null)
 const localReasons = ref([])
 const error = ref('')
+const success = ref('')
+// 新错误出现时清除旧的成功提示，避免过期成功信息与新错误同屏误导
+watch(error, (v) => {
+  if (v) success.value = ''
+})
 
 // 调参历史（借鉴 llm-pid-tuner）：每轮 { round, pid, metrics, analysis, thought }
 // 用作 LLM 上下文，让 AI 借鉴历史、避免重复无效方向
@@ -1085,6 +1090,8 @@ async function runAutoTuning() {
     }
   } finally {
     autoTuning.value = false
+    // 调参结束后清零轮次，避免「第 N/N 轮」徽章在结束后残留（进行中状态由 autoTuning 表达）
+    autoTuneRound.value = 0
   }
 }
 
@@ -1159,7 +1166,7 @@ async function sendParams() {
     const cmdPreview = cascade
       ? `PID ${values.speedKp} ${values.speedKi} ${values.speedKd} ${values.positionKp} ${values.positionKi} ${values.positionKd}`
       : `PID ${values.kp} ${values.ki} ${values.kd}`
-    error.value = `已应用至仿真：${cmdPreview}（点击“运行仿真”验证）`
+    success.value = `已应用至仿真：${cmdPreview}（点击“运行仿真”验证）`
     return
   }
   const cmdParts = cascade
@@ -1178,14 +1185,14 @@ async function sendParams() {
         type: 'warning'
       })
     } catch {
-      error.value = '已取消下发，设备参数未改变'
+      success.value = '已取消下发，设备参数未改变'
       return
     }
   }
   try {
     await window.electronAPI.serial.send(cmd, 'utf8')
     emit('send', cmd.length)
-    error.value = `已下发: ${cmd}`
+    success.value = `已下发: ${cmd}`
   } catch (e) {
     error.value = `下发失败: ${e.message || e}`
   }
@@ -1199,6 +1206,7 @@ function clearAll() {
   deterministicMetrics.value = null
   localReasons.value = []
   error.value = ''
+  success.value = ''
   firstResponseTime = null
   tuningHistory.value = []
   tuningSession = null
@@ -1327,6 +1335,7 @@ onUnmounted(() => {
                 @click="cancelAutoTuning"
               >取消自动调参</button>
               <span v-if="autoTuning || simulationStatus" class="status-badge" :class="{ 'status-active': autoTuning || simRunState === 'running' }">{{ autoTuning ? autoTuneStatus : simulationStatus }}</span>
+              <el-tag v-if="autoTuneRound > 0" size="small" type="info">第 {{ autoTuneRound }}/{{ autoTuneSettings.maxRounds }} 轮</el-tag>
             </div>
 
             <!-- 不变参数折叠：模型参数、播放速度、自动调参配置、前馈、调参顺序 -->
@@ -1511,6 +1520,7 @@ onUnmounted(() => {
             <button class="btn-secondary" @click="clearAll">清空</button>
           </div>
           <div v-if="error" class="error-msg">{{ error }}</div>
+          <div v-if="success" class="success-msg">{{ success }}</div>
           <div v-if="deterministicMetrics?.valid" class="metric-strip">
             <div><span>状态</span><strong>{{ deterministicMetrics.status }}</strong></div>
             <div><span>超调率</span><strong>{{ deterministicMetrics.overshoot }}%</strong></div>
@@ -1570,6 +1580,9 @@ onUnmounted(() => {
           </div>
         </div>
         <div class="step-body">
+          <!-- 校验错误与 PID 输入框同卡展示，便于对照修正（与步骤 2 共用同一个 error/success） -->
+          <div v-if="error" class="error-msg">{{ error }}</div>
+          <div v-if="success" class="success-msg">{{ success }}</div>
           <template v-if="isCascade">
             <div class="subsection-title">速度环（内环）</div>
             <div class="param-grid">
@@ -1659,8 +1672,9 @@ onUnmounted(() => {
 }
 
 .pid-left {
-  flex: 0 0 380px;
-  min-width: 0;
+  /* 允许在窄窗口收缩（原 flex: 0 0 380px 固定不缩导致 1024px 下右栏被压至约 305px） */
+  flex: 0 1 380px;
+  min-width: 320px;
   height: 100%;
   overflow-y: auto;
   display: flex;
@@ -1788,6 +1802,48 @@ onUnmounted(() => {
   color: var(--color-text-primary);
 }
 
+/* I/D 模式开关：等宽文字、间距与选中态，贴合现有设计语言 */
+.pid-mode-switches {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+.pid-mode-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-family: var(--font-family-mono);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.2s, color 0.2s, background 0.2s;
+}
+.pid-mode-switch:hover {
+  color: var(--color-text-primary);
+  border-color: var(--color-border-active);
+}
+.pid-mode-switch:has(input:checked) {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+  background: var(--color-primary-muted);
+}
+.pid-mode-switch input {
+  accent-color: var(--color-primary);
+  cursor: pointer;
+}
+.pid-mode-tag {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--color-ai);
+}
+
 .step-body {
   padding: var(--space-4);
 }
@@ -1836,7 +1892,7 @@ onUnmounted(() => {
 .status-badge.status-active {
   color: var(--color-primary);
   border-color: var(--color-primary);
-  background: rgba(var(--color-primary-rgb, 64, 158, 255), 0.08);
+  background: var(--color-primary-muted);
 }
 
 /* 空状态提示：引导用户下一步操作 */
@@ -1860,10 +1916,21 @@ onUnmounted(() => {
 .error-msg {
   margin-top: var(--space-2);
   padding: var(--space-2);
-  background: rgba(248, 81, 73, 0.08);
-  border: 1px solid rgba(248, 81, 73, 0.2);
+  background: var(--state-error-muted);
+  border: 1px solid var(--state-error-muted);
   border-radius: var(--radius-sm);
   color: var(--state-error);
+  font-size: var(--text-xs);
+}
+
+/* 成功消息：与错误提示区分，绿色 AI 色基调 */
+.success-msg {
+  margin-top: var(--space-2);
+  padding: var(--space-2);
+  background: var(--color-ai-subtle);
+  border: 1px solid var(--color-ai-muted);
+  border-radius: var(--radius-sm);
+  color: var(--state-success);
   font-size: var(--text-xs);
 }
 
@@ -1978,7 +2045,7 @@ onUnmounted(() => {
 
 .engine-note {
   margin: 0 0 var(--space-2);
-  color: var(--color-warning, #f5a623);
+  color: var(--state-warning);
   font-size: var(--text-xs);
 }
 
@@ -2022,16 +2089,16 @@ onUnmounted(() => {
   font-weight: 600;
 }
 .phase-tag.phase-p {
-  background: rgba(229, 72, 77, 0.12);
-  color: var(--color-danger, #e5484d);
+  background: var(--state-error-muted);
+  color: var(--state-error);
 }
 .phase-tag.phase-pi {
-  background: rgba(245, 166, 35, 0.15);
-  color: var(--color-warning, #f5a623);
+  background: var(--state-warning-muted);
+  color: var(--state-warning);
 }
 .phase-tag.phase-pid {
-  background: rgba(0, 168, 112, 0.12);
-  color: var(--color-success, #00a870);
+  background: var(--state-success-muted);
+  color: var(--state-success);
 }
 .overview-params {
   display: flex;
@@ -2060,8 +2127,8 @@ onUnmounted(() => {
 }
 /* 参数变化高亮：AI 应用后该参数背景闪绿 */
 .overview-param.param-changed {
-  background: rgba(0, 168, 112, 0.15);
-  border-color: var(--color-success, #00a870);
+  background: var(--state-success-muted);
+  border-color: var(--state-success);
 }
 .overview-ff {
   display: flex;
@@ -2298,12 +2365,12 @@ onUnmounted(() => {
 
 /* 仿真运行中：按钮变红，提示再点按即暂停 */
 .btn-primary.btn-running {
-  background: var(--color-danger, #e5484d);
+  background: var(--state-error);
 }
 
 /* 仿真暂停中：按钮变橙，提示再点按即继续 */
 .btn-primary.btn-paused {
-  background: var(--color-warning, #f5a623);
+  background: var(--state-warning);
 }
 
 /* 自动调参按钮：紫色调，与普通仿真按钮区分 */
@@ -2311,8 +2378,8 @@ onUnmounted(() => {
   background: var(--color-ai, #7c5cff);
 }
 .btn-secondary.btn-auto-tune-cancel {
-  border-color: var(--color-danger, #e5484d);
-  color: var(--color-danger, #e5484d);
+  border-color: var(--state-error);
+  color: var(--state-error);
 }
 
 .btn-ai {
@@ -2441,11 +2508,5 @@ onUnmounted(() => {
 .mode-fade-enter-from,
 .mode-fade-leave-to {
   opacity: 0;
-}
-
-@media (max-width: 900px) {
-  .model-grid {
-    grid-template-columns: 1fr 1fr;
-  }
 }
 </style>

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import { Avatar, Histogram, Warning, Document, Promotion } from '@element-plus/icons-vue'
 import {
   computeChannelStatistics,
@@ -51,6 +51,8 @@ const messages = ref([
 ])
 const input = ref('')
 const loading = ref(false)
+let abortController = null
+const chatListRef = ref(null)
 const commandInput = ref('')
 const detectedProtocol = ref(null)
 const detectedAnomaly = ref(null)
@@ -124,6 +126,8 @@ ${formatContext()}`
 async function callAi(customMessages) {
   saveConfig()
   loading.value = true
+  abortController = new AbortController()
+  const timer = setTimeout(() => abortController.abort(), 60000)
   try {
     const baseUrl = String(props.aiConfig.baseUrl || '').replace(/\/+$/, '')
     const response = await fetch(`${baseUrl}/chat/completions`, {
@@ -136,19 +140,31 @@ async function callAi(customMessages) {
         model: props.aiConfig.model,
         messages: customMessages,
         stream: false
-      })
+      }),
+      signal: abortController.signal
     })
 
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
 
     const data = await response.json()
-    return data.choices?.[0]?.message?.content || '（无返回内容）'
+    return { ok: true, content: data.choices?.[0]?.message?.content || '（无返回内容）' }
   } catch (e) {
-    return `请求失败：${e.message}`
+    const reason = abortController.signal.aborted ? '请求超时（60s）' : (e.message || '未知错误')
+    return { ok: false, error: reason }
   } finally {
+    clearTimeout(timer)
     loading.value = false
+    abortController = null
   }
 }
+
+// 新消息产生后自动滚动到底部，跟随最新对话
+watch(() => messages.value.length, async () => {
+  await nextTick()
+  if (chatListRef.value) {
+    chatListRef.value.scrollTop = chatListRef.value.scrollHeight
+  }
+})
 
 async function sendMessage() {
   if (!input.value.trim()) return
@@ -161,7 +177,11 @@ async function sendMessage() {
     ...messages.value.slice(-10).map(m => ({ role: m.role, content: m.content }))
   ]
   const reply = await callAi(msgs)
-  messages.value.push({ role: 'assistant', content: reply })
+  if (reply.ok) {
+    messages.value.push({ role: 'assistant', content: reply.content })
+  } else {
+    messages.value.push({ role: 'assistant', content: `请求失败：${reply.error}`, isError: true })
+  }
 }
 
 function runProtocolRecognition() {
@@ -292,7 +312,11 @@ async function handleQuickAction(action) {
     { role: 'user', content: userPrompt }
   ]
   const reply = await callAi(msgs)
-  messages.value.push({ role: 'assistant', content: reply })
+  if (reply.ok) {
+    messages.value.push({ role: 'assistant', content: reply.content })
+  } else {
+    messages.value.push({ role: 'assistant', content: `请求失败：${reply.error}`, isError: true })
+  }
 }
 </script>
 
@@ -389,7 +413,7 @@ async function handleQuickAction(action) {
 
     <!-- Chat Area -->
     <section class="chat-area">
-      <div class="chat-list">
+      <div ref="chatListRef" class="chat-list">
         <div
           v-for="(msg, idx) in messages"
           :key="idx"
@@ -399,7 +423,7 @@ async function handleQuickAction(action) {
           <div v-if="msg.role === 'assistant'" class="ai-avatar">
             <el-icon size="14" color="var(--color-ai)"><Avatar /></el-icon>
           </div>
-          <div class="message-bubble" :class="msg.role">
+          <div class="message-bubble" :class="[msg.role, { 'message-error': msg.isError }]">
             {{ msg.content }}
           </div>
         </div>
@@ -506,7 +530,7 @@ async function handleQuickAction(action) {
   gap: var(--space-2);
   padding: var(--space-2);
   background: var(--color-ai-subtle);
-  border: 1px solid rgba(63, 185, 80, 0.15);
+  border: 1px solid var(--color-ai-muted);
   border-radius: var(--radius-sm);
   font-size: var(--text-xs);
   color: var(--color-ai);
@@ -590,7 +614,7 @@ async function handleQuickAction(action) {
 .quick-btn:first-child {
   background: var(--color-ai-muted);
   color: var(--color-ai);
-  border-color: rgba(63, 185, 80, 0.2);
+  border-color: var(--color-ai-glow);
 }
 
 .command-box {
@@ -636,7 +660,7 @@ async function handleQuickAction(action) {
   height: 28px;
   border-radius: 50%;
   background: var(--color-ai-muted);
-  border: 1px solid rgba(63, 185, 80, 0.25);
+  border: 1px solid var(--color-ai-glow);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -651,6 +675,7 @@ async function handleQuickAction(action) {
   font-size: var(--text-sm);
   line-height: 1.6;
   white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .message-bubble.user {
@@ -663,6 +688,12 @@ async function handleQuickAction(action) {
   color: var(--color-text-primary);
   border-left: 3px solid var(--color-ai);
   max-width: 70%;
+}
+
+/* 请求失败标记：置于 assistant 规则之后，确保同优先级下覆盖其底色/左边框 */
+.message-bubble.message-error {
+  border-left: 2px solid var(--state-error);
+  background: var(--message-alt-bg);
 }
 
 .config-bar {

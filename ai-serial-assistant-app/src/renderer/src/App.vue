@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, reactive, onUnmounted } from 'vue'
 import { Cpu, Monitor, ChatDotRound, Operation } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 import SerialPanel from './components/SerialPanel.vue'
 import DataMonitor from './components/DataMonitor.vue'
 import AiPanel from './components/AiPanel.vue'
@@ -10,7 +11,9 @@ import WorkspaceChart from './components/WorkspaceChart.vue'
 import WorkspaceAnalysis from './components/WorkspaceAnalysis.vue'
 
 const activeTab = ref('data')
-const topPanePercent = ref(Number(localStorage.getItem('workspace_top_percent')) || 52)
+// 启动时对持久化的分隔位置做与拖拽一致的 28~72 区间钳制，防止异常存储值破坏布局
+const storedTopPercent = Number(localStorage.getItem('workspace_top_percent')) || 52
+const topPanePercent = ref(Math.max(28, Math.min(72, storedTopPercent)))
 const pidSimulationSamples = ref([])
 let resizing = false
 const connected = ref(false)
@@ -145,6 +148,12 @@ function stopResize() {
   window.removeEventListener('pointermove', resizeWorkspace)
 }
 
+// 键盘调节波形区与工作区高度（分隔条可访问性，与指针拖拽共用同一区间约束）
+function resizeWorkspaceByDelta(delta) {
+  topPanePercent.value = Math.max(28, Math.min(72, topPanePercent.value + delta))
+  localStorage.setItem('workspace_top_percent', String(topPanePercent.value))
+}
+
 function onPidSimulationData(samples) {
   pidSimulationSamples.value = [...samples]
 }
@@ -168,7 +177,8 @@ function onStatusChange(s) {
 }
 
 function onError(msg) {
-  // 状态栏处理连接错误
+  // 注意：ElMessage.error(message, appContext) 的第二参数并非 options，duration 需以对象形式传入
+  ElMessage.error({ message: typeof msg === 'string' ? msg : (msg?.message || '串口操作失败'), duration: 4000 })
 }
 
 function onData(payload) {
@@ -253,17 +263,24 @@ function toggleHex() {
 
           <div
             class="workspace-resizer"
+            role="separator"
+            aria-orientation="horizontal"
+            tabindex="0"
             title="上下拖动调整波形区与工作区高度"
             @pointerdown="beginResize"
+            @keydown.up.prevent="resizeWorkspaceByDelta(3)"
+            @keydown.down.prevent="resizeWorkspaceByDelta(-3)"
           >
             <span />
           </div>
 
           <section class="lower-workspace">
-            <nav class="lower-tabs">
+            <nav class="lower-tabs" role="tablist">
               <button
                 v-for="tab in tabs"
                 :key="tab.key"
+                role="tab"
+                :aria-selected="activeTab === tab.key ? 'true' : 'false'"
                 :class="{ active: activeTab === tab.key, ai: tab.key === 'ai' }"
                 @click="activeTab = tab.key"
               >
@@ -389,43 +406,9 @@ function toggleHex() {
   font-family: var(--font-family-mono);
 }
 
-.header-tabs {
-  display: flex;
-  align-items: center;
-  height: 100%;
-}
-
 .header-context {
   color: var(--color-text-tertiary);
   font-size: var(--text-xs);
-}
-
-.tab-item {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  height: 100%;
-  padding: 0 var(--space-4);
-  font-size: var(--text-sm);
-  color: var(--color-text-secondary);
-  border-bottom: 2px solid transparent;
-  cursor: pointer;
-  transition: all 150ms ease;
-}
-
-.tab-item:hover {
-  color: var(--color-text-primary);
-}
-
-.tab-item.active {
-  color: var(--color-primary);
-  border-bottom-color: var(--color-primary);
-  font-weight: 500;
-}
-
-.tab-item.active.ai {
-  color: var(--color-ai);
-  border-bottom-color: var(--color-ai);
 }
 
 .header-right {
@@ -535,12 +518,18 @@ function toggleHex() {
   color: var(--color-text-secondary);
   font-size: var(--text-xs);
   cursor: pointer;
+  transition: color 150ms ease, border-bottom-color 150ms ease;
 }
 
-.lower-tabs button:hover,
+/* hover 仅变色，不加下划线；active 才有下划线 + 字重，二者可区分 */
+.lower-tabs button:hover {
+  color: var(--color-primary);
+}
+
 .lower-tabs button.active {
   color: var(--color-primary);
   border-bottom-color: var(--color-primary);
+  font-weight: var(--weight-medium);
 }
 
 .lower-tabs button.active.ai {

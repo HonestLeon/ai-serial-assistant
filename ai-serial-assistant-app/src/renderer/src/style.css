@@ -3,6 +3,11 @@
    Light theme (default) + Dark theme (.dark on <html>)
    ================================================================ */
 
+/* 响应式断点约定（媒体查询不支持 CSS 变量，各组件 @media 取值必须从此三档选取）：
+   ≤720px  单列堆叠（内部网格折叠）
+   ≤960px  PID 双栏折叠为单列
+   ≤1100px data-split 左右分栏折叠为上下堆叠 */
+
 /* === Shared Tokens (theme-independent) === */
 :root {
   --font-family-display: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
@@ -16,13 +21,14 @@
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
+  --space-8: 32px;
 
   --radius-sm: 4px;
   --radius-md: 8px;
   --radius-lg: 12px;
+  --radius-full: 999px;
 
   --sidebar-width: 260px;
-  --right-panel-width: 220px;
   --header-height: 40px;
   --statusbar-height: 28px;
 
@@ -33,6 +39,7 @@
 
 /* === Light Theme (default) === */
 :root {
+  color-scheme: light;
   --color-bg-primary: #ffffff;
   --color-bg-secondary: #f5f7fa;
   --color-bg-tertiary: #ebeef5;
@@ -45,7 +52,8 @@
 
   --color-text-primary: #1f2328;
   --color-text-secondary: #656d76;
-  --color-text-tertiary: #8b949e;
+  /* 原 #8b949e（Primer 暗色次级灰，误用于浅色）对比度 2.65~3.08:1 不达 WCAG AA，改用 Primer 浅色 tertiary 档 */
+  --color-text-tertiary: #57606a;
   --color-text-inverse: #ffffff;
 
   --color-primary: #0969da;
@@ -63,10 +71,15 @@
   --state-warning: #9a6700;
   --state-error: #cf222e;
   --state-info: #0969da;
+  /* muted 档：状态色的低透明度背景/边框，随主题切换（替代组件内硬编码 rgba） */
+  --state-error-muted: rgba(207, 34, 46, 0.10);
+  --state-warning-muted: rgba(154, 103, 0, 0.12);
+  --state-success-muted: rgba(26, 127, 55, 0.10);
 
   --color-channel-0: #e6007e;
   --color-channel-1: #0969da;
-  --color-channel-2: #218bff;
+  /* I2 原为亮蓝 #218bff，与 I1 蓝色色相差过小导致曲线不可辨，改为青色系（与全部 8 色可区分） */
+  --color-channel-2: #1f9eba;
   --color-channel-3: #9a6700;
   --color-channel-4: #8250df;
   --color-channel-5: #1a7f37;
@@ -78,6 +91,7 @@
 
 /* === Dark Theme === */
 :root.dark {
+  color-scheme: dark;
   --color-bg-primary: #0d1117;
   --color-bg-secondary: #161b22;
   --color-bg-tertiary: #1c2333;
@@ -89,8 +103,11 @@
   --color-border-active: #58a6ff;
 
   --color-text-primary: #e6edf3;
-  --color-text-secondary: #8b949e;
-  --color-text-tertiary: #6e7681;
+  /* 原 #8b949e 与修正后的 tertiary 撞值导致层级消失，提亮为 #adbac7 恢复层级
+     （primary #e6edf3 > secondary #adbac7 > tertiary #8b949e），对比度 7.7~8.6:1 达标 */
+  --color-text-secondary: #adbac7;
+  /* 原 #6e7681 与浅色档疑似对调，暗色档统一为 #8b949e */
+  --color-text-tertiary: #8b949e;
   --color-text-inverse: #0d1117;
 
   --color-primary: #58a6ff;
@@ -108,10 +125,14 @@
   --state-warning: #d29922;
   --state-error: #f85149;
   --state-info: #58a6ff;
+  /* muted 档：状态色的低透明度背景/边框，随主题切换（替代组件内硬编码 rgba） */
+  --state-error-muted: rgba(248, 81, 73, 0.10);
+  --state-warning-muted: rgba(210, 153, 34, 0.15);
+  --state-success-muted: rgba(63, 185, 80, 0.12);
 
   --color-channel-0: #f778ba;
   --color-channel-1: #58a6ff;
-  --color-channel-2: #79c0ff;
+  --color-channel-2: #39c5cf;
   --color-channel-3: #d29922;
   --color-channel-4: #bc8cff;
   --color-channel-5: #3fb950;
@@ -127,6 +148,10 @@
 :root {
   --el-color-primary: var(--color-primary);
   --el-color-primary-light-3: var(--color-primary-hover);
+  --el-color-primary-light-5: #84b4ed;
+  --el-color-primary-light-7: #b5d2f4;
+  --el-color-primary-light-8: #cee1f8;
+  --el-color-primary-light-9: #e6f0fb;
   --el-color-primary-dark-2: #0550ae;
   --el-color-success: var(--state-success);
   --el-color-warning: var(--state-warning);
@@ -163,6 +188,7 @@
   --el-color-primary-light-5: rgba(88, 166, 255, 0.25);
   --el-color-primary-light-7: rgba(88, 166, 255, 0.12);
   --el-color-primary-light-9: rgba(88, 166, 255, 0.04);
+  --el-color-primary-light-8: rgba(88, 166, 255, 0.10);
   --el-color-primary-dark-2: #4090e0;
 
   --el-color-success: var(--state-success);
@@ -241,6 +267,12 @@ body {
   --el-button-text-color: #ffffff;
   --el-button-hover-bg-color: var(--color-ai-hover);
   --el-button-hover-border-color: var(--color-ai-hover);
+}
+
+/* 暗色主题：#3fb950 属高亮度绿，配白字对比度仅 2.54:1，改用 GitHub 深色 success 绿 #238636（白字约 4.7:1 达标） */
+:root.dark .el-button--success {
+  --el-button-bg-color: #238636;
+  --el-button-border-color: #238636;
 }
 
 .el-button--danger {
@@ -354,4 +386,41 @@ body {
 
 .el-select__popper.el-select__popper .el-select-dropdown {
   min-width: 120px;
+}
+
+/* === 自定义原生按钮统一交互状态（全局规则可命中 scoped 组件类名；
+   组件内已有 hover 规则者以其 scoped 规则优先） === */
+.btn-primary, .btn-secondary, .btn-auto, .rec-btn, .small-btn,
+.sub-tab, .hex-toggle, .channel-button, .auto-button,
+.export-button, .clear-button, .resume-follow {
+  transition: background-color 150ms ease, border-color 150ms ease,
+              color 150ms ease, opacity 150ms ease;
+}
+/* 主按钮：悬停变亮、按下变深 */
+.btn-primary:hover:not(:disabled) { background: var(--color-primary-hover); }
+.btn-primary:active:not(:disabled) { background: var(--el-color-primary-dark-2); }
+/* 次级按钮：悬停背景升一档、边框激活、文字提亮；按下背景再升一档 */
+.btn-secondary:hover:not(:disabled), .btn-auto:hover:not(:disabled),
+.small-btn:hover:not(:disabled), .rec-btn:hover:not(:disabled),
+.export-button:hover:not(:disabled), .clear-button:hover:not(:disabled),
+.auto-button:hover:not(:disabled) {
+  background: var(--color-bg-elevated);
+  border-color: var(--color-border-active);
+  color: var(--color-text-primary);
+}
+.btn-secondary:active:not(:disabled), .btn-auto:active:not(:disabled) {
+  background: var(--color-bg-surface);
+}
+/* tab 类：悬停仅提亮文字（active 态由组件 scoped 规则定义） */
+.sub-tab:hover { color: var(--color-text-primary); }
+/* 状态栏小切换：悬停边框激活 */
+.hex-toggle:hover:not(.active) {
+  border-color: var(--color-border-active);
+  color: var(--color-text-secondary);
+}
+
+/* 全局键盘焦点可见性 */
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
 }

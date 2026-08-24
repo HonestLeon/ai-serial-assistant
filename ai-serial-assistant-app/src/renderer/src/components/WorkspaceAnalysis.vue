@@ -20,6 +20,7 @@ const sampleIntervalMs = ref(50)
 const metrics = ref(null)
 const aiExplanation = ref('')
 const aiLoading = ref(false)
+const aiError = computed(() => aiExplanation.value.startsWith('AI解释不可用'))
 const settingsVisible = ref(false)
 const analyzedAt = ref('')
 const standards = reactive({
@@ -302,9 +303,12 @@ function exportReport() {
             <section class="analysis-card">
               <div class="card-title">
                 <strong>AI 结构化解释（可选）</strong>
-                <el-button type="success" size="small" :icon="MagicStick" :loading="aiLoading" @click="requestAiExplanation">解释</el-button>
+                <div class="card-actions">
+                  <el-button v-if="aiError" type="danger" size="small" :icon="Refresh" :loading="aiLoading" @click="requestAiExplanation">重试</el-button>
+                  <el-button type="success" size="small" :icon="MagicStick" :loading="aiLoading" @click="requestAiExplanation">解释</el-button>
+                </div>
               </div>
-              <p v-if="aiExplanation" class="ai-text">{{ aiExplanation }}</p>
+              <p v-if="aiExplanation" class="ai-text" :class="{ 'ai-text-error': aiError }">{{ aiExplanation }}</p>
               <p v-else>AI仅解释指标和风险；本页不生成PID参数。</p>
             </section>
           </template>
@@ -341,14 +345,14 @@ function exportReport() {
 
 <style scoped>
 .workspace-analysis { display: flex; height: 100%; min-height: 0; flex-direction: column; color: var(--color-text-primary); background: var(--color-bg-secondary); }
-.analysis-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--color-border-default); }.analysis-header div:first-child { display: flex; flex-direction: column; }.analysis-header strong { font-size: 14px; }.analysis-header span { color: var(--color-text-tertiary); font-size: 10px; }
+.analysis-header { display: flex; align-items: center; justify-content: space-between; padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--color-border-default); }.analysis-header div:first-child { display: flex; flex-direction: column; }.analysis-header strong { font-size: var(--text-sm); font-weight: var(--weight-semibold); }.analysis-header span { color: var(--color-text-tertiary); font-size: var(--text-xs); }
 .header-actions { display: flex; gap: 5px; }.analysis-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; }
 .feature-section,.response-section { padding: 12px; border: 1px solid var(--color-border-default); border-radius: var(--radius-md); background: var(--color-bg-primary); }
 .response-section { margin-top: 10px; }
 .section-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 .section-title > div { display: flex; flex-direction: column; gap: 2px; }
 .section-title strong { font-size: 13px; }
-.section-title span { color: var(--color-text-tertiary); font-size: 10px; }
+.section-title span { color: var(--color-text-tertiary); font-size: var(--text-xs); }
 .feature-table-wrap { max-width: 100%; overflow-x: auto; }
 .feature-table { width: 100%; min-width: 820px; border-collapse: collapse; font-family: var(--font-family-mono); font-size: 11px; }
 .feature-table th,.feature-table td { padding: 7px 9px; border-bottom: 1px solid var(--color-border-default); text-align: right; white-space: nowrap; }
@@ -358,11 +362,11 @@ function exportReport() {
 .feature-table tbody tr:hover { background: var(--color-bg-tertiary); }
 .feature-table td strong { color: var(--color-primary); }
 .empty-features { margin: 16px 0; color: var(--color-text-tertiary); font-size: 11px; text-align: center; }
-.mapping-grid { display: grid; grid-template-columns: repeat(2, minmax(140px, 1fr)); gap: 8px; }.mapping-grid label, .sample-field { display: flex; flex-direction: column; gap: 4px; color: var(--color-text-secondary); font-size: 10px; }
+.mapping-grid { display: grid; grid-template-columns: repeat(2, minmax(140px, 1fr)); gap: 8px; }.mapping-grid label, .sample-field { display: flex; flex-direction: column; gap: 4px; color: var(--color-text-secondary); font-size: var(--text-xs); }
 .sample-field { position: relative; margin-top: 8px; }.sample-field > span { position: absolute; right: 8px; bottom: 7px; color: var(--color-text-tertiary); }
 .primary-action { width: 100%; margin-top: 12px; padding: 8px; border: 0; border-radius: var(--radius-sm); background: var(--color-primary); color: var(--color-text-inverse); cursor: pointer; font-weight: 600; }
-.health-card { display: flex; flex-direction: column; margin-top: 12px; padding: 12px; border: 1px solid rgba(239,68,68,.4); border-radius: var(--radius-md); background: var(--color-bg-primary); }.health-card.good { border-color: rgba(34,197,94,.5); }.health-card span,.health-card small { color: var(--color-text-tertiary); font-size: 10px; }.health-card strong { margin: 3px 0; color: var(--state-warning); font-size: 20px; }.health-card.good strong { color: var(--state-success); }
-.metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 8px; }.metric { padding: 9px; border: 1px solid var(--color-border-default); border-radius: var(--radius-sm); background: var(--color-bg-primary); }.metric span { display: block; color: var(--color-text-tertiary); font-size: 10px; }.metric strong { display: block; margin-top: 4px; font: 600 14px var(--font-family-mono); }.metric.danger strong { color: var(--state-error); }
-.analysis-card { margin-top: 8px; padding: 11px; border: 1px solid var(--color-border-default); border-radius: var(--radius-md); background: var(--color-bg-primary); }.analysis-card > strong,.card-title strong { font-size: 12px; }.analysis-card p,.analysis-card li { color: var(--color-text-secondary); font-size: 10px; line-height: 1.55; }.analysis-card ul { padding-left: 17px; color: var(--state-error); }.analysis-card .safe { color: var(--state-success); }.card-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }.ai-text { white-space: pre-wrap; }
+.health-card { display: flex; flex-direction: column; margin-top: 12px; padding: 12px; border: 1px solid rgba(239,68,68,.4); border-radius: var(--radius-md); background: var(--color-bg-primary); }.health-card.good { border-color: rgba(34,197,94,.5); }.health-card span,.health-card small { color: var(--color-text-tertiary); font-size: var(--text-xs); }.health-card strong { margin: 3px 0; color: var(--state-warning); font-size: 20px; }.health-card.good strong { color: var(--state-success); }
+.metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 8px; }.metric { padding: 9px; border: 1px solid var(--color-border-default); border-radius: var(--radius-sm); background: var(--color-bg-primary); }.metric span { display: block; color: var(--color-text-tertiary); font-size: var(--text-xs); }.metric strong { display: block; margin-top: 4px; font: 600 14px var(--font-family-mono); }.metric.danger strong { color: var(--state-error); }
+.analysis-card { margin-top: 8px; padding: 11px; border: 1px solid var(--color-border-default); border-radius: var(--radius-md); background: var(--color-bg-primary); }.analysis-card > strong,.card-title strong { font-size: 12px; }.analysis-card p,.analysis-card li { color: var(--color-text-secondary); font-size: var(--text-sm); line-height: 1.55; }.analysis-card ul { padding-left: 17px; color: var(--state-error); }.analysis-card .safe { color: var(--state-success); }.card-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }.card-actions { display: flex; gap: 5px; }.ai-text { white-space: pre-wrap; }.ai-text-error { color: var(--state-error); }
 .advanced-form { display: grid; gap: 14px; }.advanced-form label { display: grid; grid-template-columns: 1fr 160px; align-items: center; gap: 10px; }.advanced-form small { grid-column: 1 / -1; color: var(--color-text-tertiary); }
 </style>

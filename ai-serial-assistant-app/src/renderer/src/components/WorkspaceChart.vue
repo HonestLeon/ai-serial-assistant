@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import * as echarts from 'echarts'
+import { ElMessageBox } from 'element-plus'
 import { Download, Hide, View } from '@element-plus/icons-vue'
 
 const props = defineProps({
@@ -23,6 +24,7 @@ const yMax = ref('')
 const simulationMode = ref(false)
 const isDark = ref(document.documentElement.classList.contains('dark'))
 const MAX_POINTS = 2000
+const hasExportData = computed(() => seriesData.value.some((series) => series.length > 0))
 let sampleIndex = 0
 let chart = null
 // ResizeObserver：监听 echarts 容器尺寸变化（拖动分隔条、窗口缩放均可触发）
@@ -37,7 +39,8 @@ const channelCount = computed(() =>
 const themeChannelColors = [
   { light: '#e6007e', dark: '#f778ba' },
   { light: '#0969da', dark: '#58a6ff' },
-  { light: '#218bff', dark: '#79c0ff' },
+  /* I2 原亮蓝 #218bff/#79c0ff 与 I1 蓝色色相差过小，曲线不可辨，改为青色系（与 style.css --color-channel-2 同步） */
+  { light: '#1f9eba', dark: '#39c5cf' },
   { light: '#9a6700', dark: '#d29922' },
   { light: '#8250df', dark: '#bc8cff' },
   { light: '#1a7f37', dark: '#3fb950' },
@@ -102,17 +105,19 @@ function tooltipFormatter(params) {
     </div>`
   }).join('')
   return `<div style="font-size:12px"><div style="margin-bottom:5px">采样点 ${params[0].axisValue}</div>${rows}
-    ${normalizeDrawing.value ? '<div style="margin-top:5px;color:#8b949e">曲线已归一化至 -100~100，以上为原始值</div>' : ''}
+    ${normalizeDrawing.value ? `<div style="margin-top:5px;color:${isDark.value ? '#8b949e' : '#57606a'}">曲线已归一化至 -100~100，以上为原始值</div>` : ''}
   </div>`
 }
 
 function chartOption() {
+  const axisTextColor = isDark.value ? '#8b949e' : '#57606a'
+  const hasData = seriesData.value.some((series) => series.length > 0)
   const yAxis = {
     type: 'value',
     name: normalizeDrawing.value ? '归一化值' : '',
     splitLine: { show: true, lineStyle: { color: isDark.value ? '#21262d' : '#e4e7ed' } },
     axisLine: { lineStyle: { color: isDark.value ? '#30363d' : '#dcdfe6' } },
-    axisLabel: { color: isDark.value ? '#6e7681' : '#8b949e', fontSize: 10 }
+    axisLabel: { color: axisTextColor, fontSize: 11 }
   }
   if (!yAuto.value) {
     const min = Number(yMin.value)
@@ -124,6 +129,17 @@ function chartOption() {
   return {
     animation: false,
     backgroundColor: 'transparent',
+    // title 恒定传入（show 控制显隐）：setOption merge 模式下传 undefined 不会移除已渲染组件，
+    // 会导致首批数据到达后空状态文字残留，与波形叠加显示
+    title: {
+      show: !hasData,
+      text: '等待串口数据…',
+      subtext: '发送 FireWater 格式数据（如 ch1:1.23, ch2:4.56）即可绘制波形',
+      left: 'center',
+      top: 'middle',
+      textStyle: { color: axisTextColor, fontSize: 13 },
+      subtextStyle: { color: axisTextColor, fontSize: 11 }
+    },
     grid: { top: 28, right: 18, bottom: 28, left: 48 },
     tooltip: {
       trigger: 'axis',
@@ -135,7 +151,9 @@ function chartOption() {
       xAxisIndex: 0,
       filterMode: 'none',
       zoomOnMouseWheel: true,
-      moveOnMouseMove: true,
+      // ECharts inside dataZoom 的 moveOnMouseMove 默认为 true（悬停移动即平移），
+      // 必须显式关闭，否则与「按住拖动平移」提示文案及 axis tooltip 悬停读值冲突
+      moveOnMouseMove: false,
       moveOnMouseWheel: false,
       preventDefaultMouseMove: true
     }],
@@ -144,7 +162,7 @@ function chartOption() {
       boundaryGap: false,
       data: sampleLabels.value,
       axisLine: { lineStyle: { color: isDark.value ? '#30363d' : '#dcdfe6' } },
-      axisLabel: { color: isDark.value ? '#6e7681' : '#8b949e', fontSize: 10 }
+      axisLabel: { color: isDark.value ? '#8b949e' : '#57606a', fontSize: 11 }
     },
     yAxis,
     series: buildSeries()
@@ -196,7 +214,17 @@ function toggleChannel(index) {
   refreshChart()
 }
 
-function clear() {
+// 清空波形属不可逆操作，二次确认防止误触丢失整段采集数据
+async function clear() {
+  try {
+    await ElMessageBox.confirm('将清空全部已采集的波形数据，且不可恢复。', '清空波形', {
+      type: 'warning',
+      confirmButtonText: '清空',
+      cancelButtonText: '取消'
+    })
+  } catch {
+    return // 用户取消
+  }
   seriesData.value = []
   sampleLabels.value = []
   visibleChannels.value = []
@@ -317,8 +345,8 @@ onUnmounted(() => {
       </div>
 
       <div class="setting-divider" />
-      <button class="export-button" @click="exportData('csv')"><el-icon><Download /></el-icon>CSV</button>
-      <button class="export-button" @click="exportData('json')"><el-icon><Download /></el-icon>JSON</button>
+      <button class="export-button" :disabled="!hasExportData" @click="exportData('csv')"><el-icon><Download /></el-icon>CSV</button>
+      <button class="export-button" :disabled="!hasExportData" @click="exportData('json')"><el-icon><Download /></el-icon>JSON</button>
     </aside>
 
     <section class="chart-main">
@@ -341,6 +369,10 @@ onUnmounted(() => {
 .chart-settings { width: 158px; min-width: 158px; padding: 10px; overflow-y: auto; background: var(--color-bg-secondary); border-right: 1px solid var(--color-border-default); }
 .settings-title { margin-bottom: 8px; color: var(--color-text-secondary); font-size: 11px; font-weight: 700; letter-spacing: .05em; }
 .channel-list { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+/* 158px 侧栏两列时每列约 67px，容不下中文通道名（约 84px），窄屏折叠为单列 */
+@media (max-width: 1100px) {
+  .channel-list { grid-template-columns: 1fr; }
+}
 .channel-button { display: flex; align-items: center; gap: 5px; min-width: 0; padding: 4px 6px; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--color-text-primary); cursor: pointer; font: 11px var(--font-family-mono); }
 .channel-button:hover { background: var(--color-bg-tertiary); }.channel-button.muted { opacity: .45; }
 .channel-button i { width: 7px; height: 7px; border-radius: 50%; }.waiting { color: var(--color-text-tertiary); font-size: 11px; }
@@ -351,7 +383,7 @@ onUnmounted(() => {
 .range-row { display: flex; align-items: center; gap: 3px; }.range-row input { width: 52px; min-width: 0; padding: 3px; border: 1px solid var(--color-border-default); border-radius: var(--radius-sm); background: var(--color-bg-primary); color: var(--color-text-primary); font-size: 10px; }
 .export-button { display: inline-flex; align-items: center; gap: 3px; margin: 0 4px 4px 0; padding: 4px 7px; border: 1px solid var(--color-border-default); border-radius: var(--radius-sm); background: var(--color-bg-tertiary); color: var(--color-text-secondary); font-size: 10px; cursor: pointer; }
 .chart-main { display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; padding: 8px 10px 10px; }
-.chart-header { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }.chart-header div { display: flex; flex-direction: column; }.chart-header strong { font-size: 13px; }.chart-header span { color: var(--color-text-tertiary); font-size: 9px; }
+.chart-header { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }.chart-header div { display: flex; flex-direction: column; }.chart-header strong { font-size: 13px; }.chart-header span { color: var(--color-text-tertiary); font-size: var(--text-xs); }
 .clear-button { margin-left: auto; padding: 3px 8px; border: 1px solid var(--color-border-default); border-radius: var(--radius-sm); background: var(--color-bg-tertiary); color: var(--color-text-secondary); cursor: pointer; font-size: 10px; }
 .chart-canvas { flex: 1; min-height: 0; border: 1px solid var(--color-border-default); border-radius: var(--radius-md); background: var(--color-bg-primary); }
 </style>
