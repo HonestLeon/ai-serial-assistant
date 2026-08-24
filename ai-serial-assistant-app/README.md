@@ -62,13 +62,17 @@ ai-serial-assistant-app/
 ├── pid_waveforms/             # PID 调参波形（测试脚本生成）
 │   ├── pure_pid/              #   纯 PID 调参波形（step/multiStep/sine 三种信号）
 │   └── with_feedforward/      #   含前馈对比波形（pure_pid / with_feedforward / comparison）
-├── tests/                     # 对应 npm run test:analysis
+├── tests/                     # 算法自测（npm run test:analysis）+ 独立调参验收脚本
 │   ├── control-analysis.mjs   #   控制指标计算
 │   ├── ai-data-context.mjs    #   AI 上下文打包
 │   ├── pid-simulation.mjs     #   PID 候选生成
-│   ├── feedforward-tuning-trial.mjs  # 前馈调参验收（输出到 pid_waveforms/with_feedforward/）
-│   ├── full-tuning-trial.mjs         # 纯 PID 调参验收（输出到 pid_waveforms/pure_pid/）
-│   └── vue-sfc-compile.cjs    #   Vue SFC 编译校验
+│   ├── pid-safety.mjs         #   安全护栏
+│   ├── pid-tuning-session.mjs #   自动调参会话状态机
+│   ├── pid-prompt.mjs         #   PID 提示词 / Schema / 解析
+│   ├── pid-tuner-engine.mjs   #   自动调参引擎闭环回归（无 Vue 可运行 / AI stub / 取消）
+│   ├── vue-sfc-compile.cjs    #   Vue SFC 编译校验
+│   ├── feedforward-tuning-trial.mjs  # 前馈调参验收（独立运行，输出到 pid_waveforms/with_feedforward/）
+│   └── full-tuning-trial.mjs         # 纯 PID 调参验收（独立运行，输出到 pid_waveforms/pure_pid/）
 └── src/
     ├── main/
     │   ├── index.js           # 入口：建窗、注册 IPC、生命周期
@@ -82,10 +86,17 @@ ai-serial-assistant-app/
             ├── App.vue        # 根组件：布局、全局 AI 配置与录制状态、主题 provide
             ├── style.css      # 设计系统（亮/暗双主题 CSS 变量 + Element Plus 覆盖）
             ├── services/      # 纯算法层（无 Vue 依赖，供组件与 tests/ 共用）
-            │   ├── controlAnalysis.mjs   #   确定性分析 + 候选生成 + AI 上下文打包
+            │   ├── aiDataContext.mjs     #   串口行解析 + 通道统计 + 波形上下文预处理
+            │   ├── controlAnalysis.mjs   #   确定性分析 + 候选生成 + 前馈整定 + AI 上下文打包
             │   ├── pidSimulation.mjs     #   策略注册表 + 物理仿真 + 嵌入式代码生成
             │   ├── pidSafety.mjs         #   安全护栏 + 兜底策略 + 评分 + 最佳记录 + 回退判定
-            │   └── pidTuningSession.mjs  #   自动调参会话状态机（轮次编排/停止判定/回退）
+            │   ├── pidTuningSession.mjs  #   自动调参会话状态机（轮次编排/停止判定/回退）
+            │   ├── pidTuningEngine.mjs   #   自动调参编排引擎（无 Vue，闭环可独立运行，支持 AI 客户端注入）
+            │   ├── pidAiClient.mjs       #   AI 客户端（提示词/退避/schema 协商/护栏，无 Vue）
+            │   ├── pidPrompt.mjs         #   PID 提示词 / JSON Schema / 响应解析 / 历史与波形打包
+            │   └── embedded-templates/   #   嵌入式调参通信层 .c/.h 模板（zhichuan_pid.c / zhichuan_pid.h）
+            ├── composables/
+            │   └── usePidTuning.mjs      #   调参共享状态管理层（Vue 适配层，桥接引擎/AI 客户端到 UI）
             └── components/
                 ├── SerialPanel.vue       # 串口配置 + AI 设置 + 协议引擎 + DTR/RTS
                 ├── DataMonitor.vue       # 数据流/数据表 + 自动发送 + 录制回放 + 控制响应模拟
@@ -93,10 +104,7 @@ ai-serial-assistant-app/
                 ├── WorkspaceAnalysis.vue # 响应指标 + 高级判定 + 报告（当前使用）
                 ├── AiPanel.vue           # AI 对话 + 快捷操作 + 异常检测 + 协议识别
                 ├── PidPanel.vue           # PID 阶跃采集 → 本地分析 → 人工确认下发
-                ├── StatusBar.vue         # 状态栏 + 主题/HEX 切换 + 计数
-                ├── ChartPanel.vue        # ⚠ 历史遗留，未被 App.vue 引用
-                ├── AnalysisPanel.vue      # ⚠ 历史遗留，未被 App.vue 引用
-                └── ChannelPanel.vue       # ⚠ 新增「数据通道」面板，当前未被 App.vue 挂载（数据表由 DataMonitor 承担）
+                └── StatusBar.vue         # 状态栏 + 主题/HEX 切换 + 计数
 ```
 
 ---
@@ -110,10 +118,8 @@ ai-serial-assistant-app/
 | `WorkspaceChart` | 实时波形绘制：滑动窗口缓冲（MAX_POINTS=2000）、八通道解析、通道显隐、归一化、X 缩放平移、Y 自动/手动、主题联动、CSV/JSON 导出；工作区上方常驻（详见下方「波形分析模块」章节） |
 | `WorkspaceAnalysis` | 通道特征统计（EDA）+ 确定性响应分析（上升/稳定时间、超调率、稳态误差、RMSE、稳态波动）+ 高级判定标准 + AI 结构化解释 + 报告导出；在「数据」标签内右侧显示（详见下方「波形分析模块」章节） |
 | `AiPanel` | 对话 + 快捷操作（数据分析/异常诊断/协议解析）+ 异常检测（3σ + stuck）+ 协议启发式识别 |
-| `PidPanel` | 调参流程编排与 UI（步骤 0 策略/1 阶跃/2 分析/3 下发，含「自动调参」闭环 `runAutoTuning`）；支持 **I/D 开关**（P/PI/PD/PID 模式切换）、**前馈项加入调参顺序**（默认在前）、前馈系数整定；算法全部外置到 `services/`（详见下方「PID 辅助调参」章节） |
+| `PidPanel` | UI 薄壳：步骤 0 策略/1 阶跃/2 分析/3 下发、仿真播放、串口采集下发；**I/D 开关**（P/PI/PD/PID 模式切换）、**前馈项加入调参顺序**（默认在前）、前馈系数整定、自动调参风险确认（闭环由 `services/pidTuningEngine.mjs` 引擎执行）；调参算法与共享状态外置到 `services/` 与 `composables/usePidTuning.mjs`（详见下方「PID 辅助调参」章节） |
 | `StatusBar` | 连接状态、Rx/Tx 计数、HEX 切换、主题切换 |
-
-> ⚠ **未挂载组件提醒**：`ChartPanel.vue` / `AnalysisPanel.vue` 为早期版本遗留，`ChannelPanel.vue` 为新增的「数据通道」面板，三者当前均未被 `App.vue` 挂载——活动图表/分析组件是 `WorkspaceChart.vue` / `WorkspaceAnalysis.vue`，通道数值由 `DataMonitor` 的「数据表」承担。新增功能请勿引用这些未接入组件，建议后续清理。
 
 ---
 
@@ -308,11 +314,14 @@ ai-serial-assistant-app/
 
 | 文件 | 职责 |
 |------|------|
-| `components/PidPanel.vue` | 流程编排与 UI（步骤 0 策略/1 阶跃/2 分析/3 下发），不含算法 |
+| `components/PidPanel.vue` | UI 薄壳：步骤 0 策略/1 阶跃/2 分析/3 下发、仿真播放、串口采集下发、风险确认弹窗；调参算法/状态外置 |
 | `services/controlAnalysis.mjs` | 确定性分析 `analyzeControlSamples`、候选生成 `buildPidSuggestion`、AI 上下文打包 `buildStructuredAiContext` |
 | `services/pidSimulation.mjs` | 策略注册表 `PID_STRATEGIES`、物理仿真 `simulatePidStrategy`、嵌入式代码生成 `generateEmbeddedControllerFiles` |
 | `services/pidSafety.mjs` | 安全护栏 `applyPidGuardrails`、兜底 `buildFallbackSuggestion`、评分 `scoreMetrics`、最佳记录 `maybeUpdateBestResult`、回退判定 `shouldRollbackToBest`、达标判定 `isMetricsAcceptable` |
 | `services/pidTuningSession.mjs` | 自动调参会话状态机 `createTuningSession` / `registerTuningRound`（轮次编排、best 跟踪、停止判定 complete/stagnated/max-rounds） |
+| `services/pidTuningEngine.mjs` | 自动调参编排引擎 `runAutoTuning`（无 Vue，闭环可独立运行；支持 `aiClient` 注入与取消） |
+| `services/pidAiClient.mjs` | AI HTTP 客户端 `callAiForPid`（提示词组装/指数退避/schema 协商/解析护栏，无 Vue） |
+| `composables/usePidTuning.mjs` | 调参共享状态管理层：持有参数/前馈/历史/分析状态，桥接引擎回调与 UI |
 
 > ⚠ 注意：`analyzeControlSamples` 同时被 `WorkspaceAnalysis.vue`（波形分析模块）与 `PidPanel.vue`（调参模块）调用——这正是「先做波形分析、再做调参」架构依赖的落点：调参的指标计算直接复用波形分析的能力。
 
@@ -488,11 +497,11 @@ if (响应保守)                    { P:1.10 /* 小幅提比例 */ }
 
 会话同时维护 `bestStable`（仅 STABLE 记录）与 `bestObserved`（任意最低分），取消时也会恢复最佳。
 
-**`PidPanel.vue::runAutoTuning()`（仿真模式闭环）**：
+**自动调参闭环（`services/pidTuningEngine.mjs`，仿真模式）**：
 
-仅在 `testMode === 'simulation'` 可用。点击「开始自动调参」后：
+`PidPanel.runAutoTuning`（薄壳）做风险确认后，调用 `composables/usePidTuning.startAutoTuning`，由**无 Vue 的引擎** `runAutoTuning` 独立执行循环；每轮经 `onRound` 回调把「采样/参数/历史/状态文本」推回 UI 并写回。仅 `testMode === 'simulation'` 可用：
 1. 风险确认对话框（说明轮次/回退/停止规则）。
-2. 引擎选择：`hybrid`（有 API Key 则 AI 给参 + 安全护栏，AI 失败自动切本地规则）或 `local`（纯 `buildFallbackSuggestion` + 护栏，**离线可用**）。
+2. 引擎选择：`hybrid`（有 API Key 则经 `pidAiClient.callAiForPid` 给参 + 安全护栏，AI 失败自动切本地规则）或 `local`（纯 `buildFallbackSuggestion` + 护栏，**离线可用**）。
 3. 循环 `maxRounds` 轮：① `simulatePidStrategy` 跑仿真 → ② `analyzeControlSamples` 算指标 → ③ `registerTuningRound` 评价（决定 continue/rollback/complete/stagnated/max-rounds）→ ④ 若未终止，生成下一轮候选（hybrid 走 AI，否则规则兜底 + `applyPidGuardrails`）→ 应用 → 下一轮。
 4. 终止/取消时恢复 `bestStable || bestObserved` 的参数。
 
@@ -509,11 +518,16 @@ MVP 自测脚本直接 import 上述 `services` 中的纯函数，保证「算�
 - `pid-simulation.mjs`：验证 `simulatePidStrategy` 三个策略的采样有效性；验证 `generateEmbeddedControllerFiles` 生成的是通信层（含 `zhichuan_periodic_send`/`zhichuan_parse_command`、不含 PID 计算逻辑）、前馈掩码按勾选正确生成（如 linear+gravity → 0x0041u、全选 → 0x01FFu、无勾选 → 0x0000u）。
 - `pid-safety.mjs`：验证 `applyPidGuardrails` 的边界裁剪与单步增幅限制、`buildFallbackSuggestion` 按 status 的乘性修正、`scoreMetrics` / `maybeUpdateBestResult`（仅 STABLE 更新）/ `shouldRollbackToBest`（双阈值劣化）/ `isMetricsAcceptable` 的判定。
 - `pid-tuning-session.mjs`：验证会话状态机——`registerTuningRound` 的五种 decision（continue/rollback/complete/stagnated/max-rounds）、best 跟踪、取消时恢复最佳参数。
+- `pid-prompt.mjs`：验证 `pidPrompt.mjs` 的 JSON Schema / 结构化输出格式、`parsePidAiResponse` 解析、历史与波形打包、成功案例挑选。
+- `pid-tuner-engine.mjs`：验证自动调参引擎——无 Vue 依赖（源码级）、local 闭环可复现、hybrid 注入 AI stub（成功/失败回退）、首轮取消、onRound 回调状态完整性。
 - `vue-sfc-compile.cjs`：用 `@vue/compiler-sfc` 编译所有 `.vue` 组件，捕获模板/脚本语法错误（兼容 npm 与 pnpm 安装环境）。
+
+运行：`npm run test:analysis`（上述 8 个自测脚本；`full-tuning-trial` / `feedforward-tuning-trial` 不在此命令内，作为独立调参验收脚本单独运行）。
+
+> **独立调参验收脚本**（不进入 `test:analysis`，手动运行以生成波形）：
+
 - `full-tuning-trial.mjs`：纯 PID 调参验收，跑三个策略（电机/串级/倒立摆）× 三组参数 × 三种信号（step/multiStep/sine），输出波形到 `pid_waveforms/pure_pid/`。
 - `feedforward-tuning-trial.mjs`：前馈调参验收，对比纯 PID / 含前馈 / 仅前馈三种模式的响应，输出波形到 `pid_waveforms/with_feedforward/`。
-
-运行：`npm run test:analysis`。
 
 ---
 
@@ -532,7 +546,7 @@ MVP 自测脚本直接 import 上述 `services` 中的纯函数，保证「算�
 | `npm run dev` | 经 `scripts/dev.js` 启动：设置 Electron 镜像环境变量（`ELECTRON_MIRROR` / `ELECTRON_BUILDER_BINARIES_MIRROR`）+ 按平台选择 spawn 方式（Windows 用 shell 命令字符串规避 DEP0190 警告），再 `electron-vite dev` |
 | `npm run build` | `electron-vite build`，产物到 `out/`（out/main、out/preload、out/renderer） |
 | `npm run dist` | `electron-vite build && electron-builder`，生成安装包 |
-| `npm run test:analysis` | 跑 `tests/` 下脚本：控制指标计算、AI 上下文、PID 仿真、PID 安全护栏、自动调参会话、Vue SFC 编译、前馈调参验收、纯 PID 调参验收 |
+| `npm run test:analysis` | 跑 `tests/` 下算法自测：控制指标计算、AI 上下文、PID 仿真、PID 安全护栏、自动调参会话、PID 提示词、自动调参引擎回归、Vue SFC 编译（不含波形生成验收脚本） |
 
 > 调试：`npm run dev` 启动时 `isDev` 为真（`electron-vite dev` 设了 `ELECTRON_RENDERER_URL`），`src/main/index.js` 会在 `ready-to-show` 时自动 `openDevTools({ mode: 'detach' })`；生产构建不会开。随时也可手动 `Ctrl+Shift+I`（macOS `Cmd+Option+I`）开关。主进程日志看终端。
 
@@ -543,7 +557,6 @@ MVP 自测脚本直接 import 上述 `services` 中的纯函数，保证「算�
 - **`.npmrc`**：仅保留 `registry=https://registry.npmmirror.com`。Electron 二进制镜像通过环境变量 `ELECTRON_MIRROR` / `ELECTRON_BUILDER_BINARIES_MIRROR` 在 `scripts/dev.js` 中设置（npm 7+ 不再支持 `.npmrc` 中的 `electron_mirror` / `electron_builder_binaries_mirror` 自定义键，会报 warn）。
 - **DEP0190 警告**：`scripts/dev.js` 中 Windows 平台用 `spawn('npx electron-vite dev', { shell: true })`（整条命令字符串），其他平台用 `spawn('npx', ['electron-vite', 'dev'])`（args 数组 + shell:false），规避 Node.js 的「args 数组 + shell:true」安全警告。
 - **vue-router**：`package.json` 含 `vue-router` 依赖，但当前 App **未使用路由**（单页 + 标签页切换），属冗余依赖，可移除。
-- **遗留组件**：`ChartPanel` / `AnalysisPanel` 未被挂载，别在新功能里引用。
 - **logger 暂禁用**：`main.js` 中 `setupLogger()`（转发 `console` 到主进程）被注释，为排查 el-select 下拉问题时关闭；恢复需验证。
 - **配置文件名**：是 `electron.vite.config.mjs`（**不是** `.js`）。
 - **无 `demo/` 目录**：旧文档提到的 `demo/index.html` 离线演示页已不存在，离线体验请用应用内「控制响应模拟」。
