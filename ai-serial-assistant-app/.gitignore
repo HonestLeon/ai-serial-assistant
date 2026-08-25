@@ -4,6 +4,9 @@ out
 release
 *.log
 
+# electron-builder 本地缓存（NSIS 工具链，可安全忽略）
+.cache
+
 # Editor
 .vscode/*
 !.vscode/extensions.json
