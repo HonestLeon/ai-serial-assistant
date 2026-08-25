@@ -75,4 +75,22 @@ const customStandards = analyzeControlSamples(createResponse(), {
 assert.equal(customStandards.limits.settlingBand, 0.03)
 assert.equal(customStandards.limits.steadyErrorRatio, 0.02)
 
+// P0 防护：目标恒定（stepSize ≈ 0）→ 判定无效，绝不产出归一化爆炸数值
+// （此前 amplitude 兜底 1e-6，会把微小 stepSize 放大成亿级 overshoot/oscillation）
+{
+  const noStep = Array.from({ length: 200 }, (_, i) => ({
+    t: i * 0.05, target: 50, feedback: 50, output: 0
+  }))
+  const r = analyzeControlSamples(noStep, { overshootLimit: 20, oscillationLimit: 10 })
+  assert.equal(r.valid, false, '目标恒定无阶跃应判定无效')
+  assert.ok(String(r.reason).includes('阶跃'), 'reason 应说明未检测到阶跃')
+
+  // 极小步进（1e-5 < minStepSize=1e-4）同样不应产出指标
+  const tiny = Array.from({ length: 200 }, (_, i) => ({
+    t: i * 0.05, target: i === 0 ? 0 : 1e-5, feedback: i < 100 ? 0 : 1e-5, output: 0
+  }))
+  const rt = analyzeControlSamples(tiny, { overshootLimit: 20, oscillationLimit: 10 })
+  assert.equal(rt.valid, false, 'stepSize 低于 minStepSize 应判定无效')
+}
+
 console.log('control-analysis: all assertions passed')

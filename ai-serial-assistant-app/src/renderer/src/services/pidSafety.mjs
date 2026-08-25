@@ -35,6 +35,15 @@ const PID_LIMITS = {
 }
 
 /**
+ * 劣化判定的「绝对增量」最小阈值（单位：各指标自身量纲）。
+ * 用于 shouldRollbackToBest 的双阈值判定，避免把噪声级波动误判成劣化：
+ *   - overshoot 为百分比（量纲 pp），相对验收线（默认 20%）小于 2pp 的变化视为噪声级，
+ *     实测 0 → 0.61% 即属此类（原统一 0.5 阈值导致假回退，浪费有效探索）；
+ *   - rmse / steadyError 为工程原值量纲，维持 0.5。
+ */
+const ROLLBACK_MIN_ABS_DELTA = { rmse: 0.5, steadyError: 0.5, overshoot: 2.0 }
+
+/**
  * 安全护栏：先按 min/max 裁剪，再按 maxIncreaseRatio 限制单步增幅。
  * 例如当前 Kp=2、LLM 给 Kp=10，则裁到 min(20, 2*3)=6，并在 notes 中记录。
  *
@@ -271,6 +280,29 @@ export function shouldRollbackToBest(best, currentMetrics) {
   if (!best || !best.metrics || !currentMetrics?.valid) {
     return { shouldRollback: false, reason: '' }
   }
+  // 0. 跨工作点豁免：两次比较的阶跃条件不一致时，指标差异不可比（换目标 ≠ 参数变差）。
+  //    以 stepSize 为准、finalTarget 兜底（两者在 analyzeControlSamples 中为格式化字符串，统一转数值）。
+  //    相对差 > 20% 视为跨工作点 → 跳过状态退化与量化劣化回退；
+  //    超调/振荡的「硬超限」回退不在此函数内，由调用方 overOvershoot / overOscillation 独立负责，
+  //    因此跨工作点下真正失稳仍会被硬回退。
+  const absNum = (value) => {
+    const n = Number(value)
+    return Number.isFinite(n) ? Math.abs(n) : NaN
+  }
+  const bestStep = absNum(best.metrics.stepSize)
+  const curStep = absNum(currentMetrics.stepSize)
+  const bestTarget = absNum(best.metrics.finalTarget)
+  const curTarget = absNum(currentMetrics.finalTarget)
+  let crossWorkpoint = false
+  if (Number.isFinite(bestStep) && Number.isFinite(curStep) && bestStep > 1e-9) {
+    crossWorkpoint = Math.abs(curStep - bestStep) / bestStep > 0.2
+  } else if (Number.isFinite(bestTarget) && Number.isFinite(curTarget) && bestTarget > 1e-9) {
+    crossWorkpoint = Math.abs(curTarget - bestTarget) / bestTarget > 0.2
+  }
+  if (crossWorkpoint) {
+    return { shouldRollback: false, reason: '跨工作点（阶跃条件不同），跳过退化回退' }
+  }
+
   // 1. best STABLE 且 current 非 STABLE → 立即回退
   if (best.metrics.status === 'STABLE' && currentMetrics.status !== 'STABLE') {
     return {
@@ -287,8 +319,10 @@ export function shouldRollbackToBest(best, currentMetrics) {
   for (const c of checks) {
     const b = finite(c.best, 0)
     const cur = finite(c.cur, 0)
-    // 双阈值：相对劣化 > 1.3 倍 且 绝对增量 > 0.5
-    if (cur > b * 1.3 && cur - b > 0.5) {
+    // 双阈值：相对劣化 > 1.3 倍 且 绝对增量超过该指标量纲的最小阈值
+    // （overshoot 放宽到 2pp，避免 0→0.61% 这类噪声级波动误触发回退）
+    const minDelta = ROLLBACK_MIN_ABS_DELTA[c.name] ?? 0.5
+    if (cur > b * 1.3 && cur - b > minDelta) {
       return {
         shouldRollback: true,
         reason: `${c.name} 由 ${b.toFixed(3)} 劣化到 ${cur.toFixed(3)}，回退到最佳参数`

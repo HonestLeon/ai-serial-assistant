@@ -21,13 +21,13 @@
 
 ## 架构总览
 
-采用 Electron 标准三进程模型，渲染进程经 Preload 桥接与主进程通信。渲染进程工作区上下分栏：**上方实时波形持续可见**（可拖动分隔条调整高度），**下方三个标签页切换**：数据（左侧数据流/数据表切换，右侧数据分析）、AI 助手、PID 调参：
+采用 Electron 标准三进程模型，渲染进程经 Preload 桥接与主进程通信。渲染进程工作区上下分栏：**上方实时波形持续可见**（可拖动分隔条调整高度），**下方两个标签页切换**：数据（左侧数据流/数据表切换，右侧数据分析）、PID 调参（对话式调参智能体，原「AI 助手」能力已合并于此）：
 
 ```
 ┌─────────────────────────────────────────────────────┐
 │  渲染进程 (Renderer) — Vue 3 + Element Plus          │
 │    SerialPanel / DataMonitor / WorkspaceChart /       │
-│    WorkspaceAnalysis / AiPanel / PidPanel / StatusBar  │
+│    WorkspaceAnalysis / PidAgentPanel / StatusBar       │
 │            │  window.electronAPI.serial.*             │
 └────────────┼──────────────────────────────────────────┘
              │ IPC
@@ -65,11 +65,15 @@ ai-serial-assistant-app/
 ├── tests/                     # 算法自测（npm run test:analysis）+ 独立调参验收脚本
 │   ├── control-analysis.mjs   #   控制指标计算
 │   ├── ai-data-context.mjs    #   AI 上下文打包
-│   ├── pid-simulation.mjs     #   PID 候选生成
+│   ├── pid-simulation.mjs     #   PID 仿真 + 嵌入式代码生成
 │   ├── pid-safety.mjs         #   安全护栏
-│   ├── pid-tuning-session.mjs #   自动调参会话状态机
 │   ├── pid-prompt.mjs         #   PID 提示词 / Schema / 解析
-│   ├── pid-tuner-engine.mjs   #   自动调参引擎闭环回归（无 Vue 可运行 / AI stub / 取消）
+│   ├── pid-agent-buffer.mjs   #   智能体消息工厂/用户配置校验 + 数据环形缓冲
+│   ├── pid-agent-llm.mjs      #   智能体 LLM 客户端（convertToLlm 翻译 + callLlm 协议）
+│   ├── pid-agent-tools.mjs    #   智能体 5 工具（护栏校验 / 错误喂回 / 双模式分流）
+│   ├── pid-agent-loop.mjs     #   智能体双层循环（steer/followUp 队列 / maxTurns 兜底）
+│   ├── pid-agent-safety-compact.mjs  # 智能体安全兜底 + 上下文压缩
+│   ├── pid-agent-utils.mjs    #   智能体参数形态转换 / 仿真 overrides 组装
 │   ├── vue-sfc-compile.cjs    #   Vue SFC 编译校验
 │   ├── feedforward-tuning-trial.mjs  # 前馈调参验收（独立运行，输出到 pid_waveforms/with_feedforward/）
 │   └── full-tuning-trial.mjs         # 纯 PID 调参验收（独立运行，输出到 pid_waveforms/pure_pid/）
@@ -90,20 +94,26 @@ ai-serial-assistant-app/
             │   ├── controlAnalysis.mjs   #   确定性分析 + 候选生成 + 前馈整定 + AI 上下文打包
             │   ├── pidSimulation.mjs     #   策略注册表 + 物理仿真 + 嵌入式代码生成
             │   ├── pidSafety.mjs         #   安全护栏 + 兜底策略 + 评分 + 最佳记录 + 回退判定
-            │   ├── pidTuningSession.mjs  #   自动调参会话状态机（轮次编排/停止判定/回退）
-            │   ├── pidTuningEngine.mjs   #   自动调参编排引擎（无 Vue，闭环可独立运行，支持 AI 客户端注入）
-            │   ├── pidAiClient.mjs       #   AI 客户端（提示词/退避/schema 协商/护栏，无 Vue）
             │   ├── pidPrompt.mjs         #   PID 提示词 / JSON Schema / 响应解析 / 历史与波形打包
+            │   ├── pidAgent/             #   PID 调参智能体核心层（参考 Pi-agent，纯 JS 可独立测试）
+            │   │   ├── types.mjs         #     消息工厂（user/assistant/toolResult + kind 标记）+ UserConfig 校验
+            │   │   ├── dataBuffer.mjs    #     带时间戳通道环形缓冲（按时间段 query/stats）
+            │   │   ├── llm.mjs           #     OpenAI 兼容 tools 协议调用 callLlm + 消息翻译 convertToLlm
+            │   │   ├── systemPrompt.mjs  #     动态系统提示词 buildSystemPrompt（<user_config> 包裹用户配置）
+            │   │   ├── tools/index.mjs   #     5 个调参工具 createPidAgentTools（四要素 + 错误喂回协议）
+            │   │   ├── agentLoop.mjs     #     双层循环 runAgentLoop + steer/followUp 两阶段消息队列
+            │   │   ├── safety.mjs        #     安全兜底 createSafetyGuard（bestStable 回退 + [安全机制] 通知）
+            │   │   ├── compaction.mjs    #     上下文压缩 measureDataBytes/compactIfNeeded（仅压缩数据块）
+            │   │   └── utils.mjs         #     参数形态转换 readCanonicalPid/applyCanonicalPid + buildSimOverrides
             │   └── embedded-templates/   #   嵌入式调参通信层 .c/.h 模板（zhichuan_pid.c / zhichuan_pid.h）
             ├── composables/
-            │   └── usePidTuning.mjs      #   调参共享状态管理层（Vue 适配层，桥接引擎/AI 客户端到 UI）
+            │   └── usePidAgent.mjs       #   调参智能体 Vue 适配层（事件→refs、steer/followUp/startAgent/stopAgent/串口数据流入）
             └── components/
                 ├── SerialPanel.vue       # 串口配置 + AI 设置 + 协议引擎 + DTR/RTS
                 ├── DataMonitor.vue       # 数据流/数据表 + 自动发送 + 录制回放 + 控制响应模拟
                 ├── WorkspaceChart.vue    # 动态通道 + 缩放平移 + 标准化绘图（当前使用）
                 ├── WorkspaceAnalysis.vue # 响应指标 + 高级判定 + 报告（当前使用）
-                ├── AiPanel.vue           # AI 对话 + 快捷操作 + 异常检测 + 协议识别
-                ├── PidPanel.vue           # PID 阶跃采集 → 本地分析 → 人工确认下发
+                ├── PidAgentPanel.vue     # 对话式调参智能体面板（左栏调参前配置 + 右栏消息流）
                 └── StatusBar.vue         # 状态栏 + 主题/HEX 切换 + 计数
 ```
 
@@ -117,8 +127,7 @@ ai-serial-assistant-app/
 | `DataMonitor` | 数据收发展示、数据表（I0–I7）、自动发送、录制/回放、**控制响应模拟**；在「数据」标签内左侧显示（自带数据流/数据表切换） |
 | `WorkspaceChart` | 实时波形绘制：滑动窗口缓冲（MAX_POINTS=2000）、八通道解析、通道显隐、归一化、X 缩放平移、Y 自动/手动、主题联动、CSV/JSON 导出；工作区上方常驻（详见下方「波形分析模块」章节） |
 | `WorkspaceAnalysis` | 通道特征统计（EDA）+ 确定性响应分析（上升/稳定时间、超调率、稳态误差、RMSE、稳态波动）+ 高级判定标准 + AI 结构化解释 + 报告导出；在「数据」标签内右侧显示（详见下方「波形分析模块」章节） |
-| `AiPanel` | 对话 + 快捷操作（数据分析/异常诊断/协议解析）+ 异常检测（3σ + stuck）+ 协议启发式识别 |
-| `PidPanel` | UI 薄壳：步骤 0 策略/1 阶跃/2 分析/3 下发、仿真播放、串口采集下发；**I/D 开关**（P/PI/PD/PID 模式切换）、**前馈项加入调参顺序**（默认在前）、前馈系数整定、自动调参风险确认（闭环由 `services/pidTuningEngine.mjs` 引擎执行）；调参算法与共享状态外置到 `services/` 与 `composables/usePidTuning.mjs`（详见下方「PID 辅助调参」章节） |
+| `PidAgentPanel` | 对话式调参智能体面板：左栏（320px）调参前四类配置（PID 初始值/范围、信号安全范围、前馈「+」自定义添加、场景提示词）+ 仿真策略/测试来源切换 + 当前参数总览（变化高亮）+ 上下文用量指示器 + 开始/停止；右栏对话消息流（用户消息 / steer 中途插入 / 助手思考打字机流式 / 工具调用单行 / 安全警示块 / 上下文压缩条）+ 输入框（空闲时输入 = 发起调参任务或自由提问——原「AI 助手」能力合并于此；运行中输入 = 中途纠偏）；调参编排详见下方「PID 调参智能体（Agent）」章节 |
 | `StatusBar` | 连接状态、Rx/Tx 计数、HEX 切换、主题切换 |
 
 ---
@@ -251,7 +260,7 @@ ai-serial-assistant-app/
 7. **稳态误差** `finalTarget - finalFeedback`、**RMSE**（对 `target - feedback` 误差序列）、**稳态波动** `oscillationAmplitude(tail) / amplitude * 100`。
 8. **风险判定**：超调/波动超 `limits`、稳态误差超比、窗口内未稳定，分别 push 到 `risks`；据此给 `health`：良好 / 需关注 / 高风险。
 
-> 输出 `metrics` 含 `sampleRate`、`outputPeak` 等，全部 `fmt` 四舍五入。`valid` 为 `false` 时返回 `reason` 供 UI 提示。这一份确定性结果是调参模块 `buildPidSuggestion` 的输入——**波形分析在前，调参在后，依赖的就是这个共享函数**。
+> 输出 `metrics` 含 `sampleRate`、`outputPeak` 等，全部 `fmt` 四舍五入。`valid` 为 `false` 时返回 `reason` 供 UI 提示。这一份确定性结果同时被调参智能体复用（`get_channel_stats` 的阶跃指标与安全兜底检测都调用它）——**波形分析在前，调参在后，依赖的就是这个共享函数**。
 
 ### 采样对齐（createSamplesFromChannels）
 
@@ -267,7 +276,7 @@ ai-serial-assistant-app/
 - 先确保 `metrics.valid`（否则跑一次 `runAnalysis`）。
 - 无 `apiKey` → `ElMessage.warning('未配置 API Key；确定性响应分析仍可离线使用')` 并 return——**确定性分析完全不依赖网络**。
 - 有 Key：`buildStructuredAiContext(metrics, null, { system, scenario })` 生成结构化上下文，附带 `analysisStandard`（稳定性描述、稳态误差阈值、最少采样点），POST 到 `${baseUrl}/chat/completions`。
-- system prompt：`'你是控制响应解释助手。只解释固定算法给出的指标、判定标准、风险和下一步实验，不生成或下发PID参数。'`——与调参侧同源的安全约束。
+- system prompt：`'你是控制响应解释助手。只解释固定算法给出的指标、判定标准、风险和下一步实验，不生成或下发PID参数。'`——解释侧「不越权」的安全约束（调参智能体侧则经护栏化工具改参，见下一节）。
 - 离线/失败：`aiExplanation.value = 'AI解释不可用：…。确定性指标不受影响。'`，UI 照常显示确定性结果。
 
 ### 响应分析报告导出（exportReport）
@@ -276,164 +285,167 @@ ai-serial-assistant-app/
 
 ### 设计要点小结
 
-- **波形在前、调参在后**：`WorkspaceChart` 打通数据回路，`WorkspaceAnalysis` 的 `analyzeControlSamples` 既是用户看指标的依据，也是 `buildPidSuggestion` 的输入——两套功能共用同一确定性内核，避免重复实现与结果不一致。
+- **波形在前、调参在后**：`WorkspaceChart` 打通数据回路，`WorkspaceAnalysis` 的 `analyzeControlSamples` 既是用户看指标的依据，也被调参智能体的数据缓冲统计与安全兜底调用——两套功能共用同一确定性内核，避免重复实现与结果不一致。
 - **离线优先**：EDA 统计、`analyzeControlSamples`、报告导出全部本地；AI 仅叠加解释层，缺失不影响核心。
-- **安全一致性**：波形分析与调参的 AI 提示词都禁止「声称控制硬件 / 下发参数」，与产品「辅助式、人工确认」定位一致。
+- **安全一致性**：波形分析的 AI 提示词禁止「声称控制硬件 / 下发参数」，只做解释；调参智能体侧 AI 虽可通过工具改参，但每一步都经用户配置范围 + 系统护栏校验并有安全回退兜底——两侧约束一致地保证「AI 不越权」。
 
 ---
 
-## PID 辅助调参：算法与数据流详解
+## PID 调参智能体（Agent）：架构与数据流详解
 
-> 本节面向二次开发者，解释「AI 辅助调参」背后的实现细节。设计原则是：**确定性算法跑本地、AI 只做解释、参数必须人工确认下发**。这样既保证离线可用、结果可复现，也避免了「AI 直接控制硬件」的安全风险。
+> 本节面向二次开发者，解释「PID 调参」标签页（`PidAgentPanel.vue`）背后的实现。设计参考 Pi-agent 的对话式智能体架构——**双层循环（Agent Loop）、工具四要素（Tools）、事件驱动、上下文压缩**：LLM 通过工具自主完成「查数据 → 改参数 → 设目标 → 看结果 → 再决策」的完整调参闭环，思考过程实时输出到对话框；确定性算法（指标分析 / 仿真 / 安全护栏）全部本地执行，参数写入受用户配置范围 + 系统护栏约束、越限自动回退——「AI 不越权」由机制保证，而非仅靠提示词。
 >
-> 📖 **本地策略与 AI 提示词的完整组织方式详见 [`docs/pid-tuning-strategy-and-ai-prompt.md`](docs/pid-tuning-strategy-and-ai-prompt.md)**，涵盖分阶段调参、Kp 二分法、前馈整定、提示词字段设计、自动调参闭环、安全护栏等。
+> 📖 调参策略与提示词的背景见 [`docs/pid-tuning-strategy-and-ai-prompt.md`](docs/pid-tuning-strategy-and-ai-prompt.md)（成文于智能体化之前的「本地候选 + AI 单轮给参」链路；其中分阶段调参、Kp 二分法、前馈整定等算法思想已沉淀进智能体系统提示词，安全护栏部分仍完全适用）。
 
-### 总体数据流
+### 1. 总体数据流
 
 ```
-仿真(simulatePidStrategy) 或 真实串口(onSerialData)
-        │  统一采样 [{ t, target, feedback, output }]
-        ▼
- analyzeControlSamples ──► 确定性指标 + 风险判定(risks)
-        │  指标 + 安全边界
-        ▼
- buildPidSuggestion ──► 有界候选参数(Kp/Ki/Kd, 0~20 / 0~10)
+调参前用户配置（四类：PID 初始值/范围 · 信号安全范围 · 前馈项「+」自定义 · 场景提示词）
         │
-        ├─(无 apiKey)──► 直接给出候选，等待人工审查
-        │
-        └─(有 apiKey)──► buildStructuredAiContext ──► fetch /chat/completions
-                              │  system prompt 禁止改边界/禁止声称控硬件
-                              ▼
-                          aiResult(仅解释, 不参与下发)
-        │
+        │ buildSystemPrompt：以 <user_config> 标签包裹进系统提示词（全量携带 · 永不压缩）
         ▼
- sendParams: 数值+边界校验 → ElMessageBox 二次确认 → 下发 "PID kp ki kd"
+┌───────────────────── runAgentLoop 双层循环（tool_calls 驱动）─────────────────────┐
+│                                                                                   │
+│   callLlm（OpenAI 兼容 chat/completions + tools 协议；convertToLlm 翻译内部消息）   │
+│         │ finish_reason = "tool_calls" → 执行工具；"stop" → 内层结束               │
+│         ▼                                                                         │
+│   5 个工具串行执行（护栏校验；出错以 isError 喂回模型，循环不中断）                   │
+│    ├─ get_channel_stats / get_channel_data ◄── dataBuffer 带时间戳环形缓冲          │
+│    ├─ set_pid_params（用户范围 → 系统上限 → 单步增幅，三重校验）                     │
+│    ├─ set_feedforward_params（用户范围校验）                                       │
+│    └─ set_target ──► 仿真：立即阶跃采样 / 串口：下发 SET_POINT 异步采集             │
+│           │ 样本写入 dataBuffer ──► 安全检测 analyzeControlSamples                 │
+│           │      └─ 越限/劣化 ──► bestStable 自动回退 + [安全机制] 通知              │
+│           │             （UI 红框警示块 + 以 user 角色入 steer 队列喂回 LLM）        │
+│         ▼                                                                         │
+│   工具结果喂回上下文 ──► 数据字节 > 50KB 时 compactIfNeeded 压缩（仅数据块）         │
+│         └──► 下一轮迭代，直到模型输出总结（stop）/ followUp 追加 / 用户停止 /         │
+│               maxTurns = 50 兜底                                                   │
+└───────────────────────────────────┬───────────────────────────────────────────────┘
+                                    │ 事件：agent_start/end · turn_start/end ·
+                                    │       message_start/end · tool_execution_start/end
+                                    ▼
+        usePidAgent（事件 → refs）──► PidAgentPanel 右栏消息流：
+        助手思考打字机流式 · 工具调用单行 · 安全警示块 · 上下文压缩提示条
 ```
 
-**关键文件职责拆分**（UI 与算法解耦，便于 `tests/` 复用同一份算法）：
+### 2. 双层循环引擎（`agentLoop.mjs`）
+
+```
+外层 while（任务回合）：
+  内层 while（单任务的 LLM ↔ 工具迭代）：
+    ① drain steer 队列 → 注入中途纠偏 / 安全通知消息
+    ② callLlm（携带全部历史 + tools 定义）
+       ├─ finish_reason = "tool_calls" → 校验参数 → 串行执行工具
+       │    → toolResult（含 isError）append 到 messages → 继续内层
+       └─ finish_reason = "stop" → 内层结束
+  内层结束 → drain followUp 队列（用户在运行期间追加的任务）：
+    有 → 注入后重启外层（视为新任务）；无 → 循环整体结束
+```
+
+- **循环驱动**：以模型返回的 `finish_reason`（OpenAI 兼容协议的 `tool_calls` / `stop`）作为继续/停止依据，不自行猜测模型意图。
+- **两阶段消息队列** `createPendingMessageQueue`（先 push 暂存、drain 时一次性取出并清空）：`steer()`（运行中纠偏，每个内层回合开始时注入——对话不被打断、方向可被纠正）与 `followUp()`（Agent 即将整体结束时注入，视为新任务重启外层）。输入框在调参运行期间保持可用。
+- **停止条件**：① 模型说完了（`stop` 且无 followUp）；② 用户点击停止（`AbortSignal` → `aborted`）；③ `shouldStopAfterTurn` 钩子（安全熔断等场景 → `user-stop`）；④ `maxTurns = 50` 防御性兜底（超出以 `max-turns` 强制终止）。
+- **事件驱动**：循环只派发事件、不碰 UI——`agent_start/end`、`turn_start/end`、`message_start/end`（流式思考）、`tool_execution_start/end`；另有压缩模块的 `compaction_applied` 与安全模块的 `safety_triggered`。UI（`usePidAgent`）与日志各自订阅。
+- **压缩挂载点**：`onBeforeLlm(messages) => messages` 在每回合调 LLM 前调用，`usePidAgent` 在此挂载 `compactIfNeeded`（见第 5 节）。
+
+---
+
+### 3. 工具集（`tools/index.mjs`，5 个）
+
+每个工具按 Pi 四要素定义：`name` / `description`（面向模型可读，必须写明「何时用、怎么传参」——模型只能看到描述）/ `parameters`（JSON Schema）/ `execute`。工具自身无状态，参数读写、阶跃仿真、串口下发、数据缓冲、用户配置等运行时能力全部经注入的 `controller` 获得（由 `usePidAgent` 组装实现）：
+
+| 工具 | 参数 | 行为 | 护栏 |
+|------|------|------|------|
+| `get_channel_stats` | `timeRange: [起, 止]`（秒，相对调参开始）；`channels?`（默认全部） | 返回时间段内各通道统计特征（mean/std/min/max/peak/rms/sampleCount）；段内含阶跃时附加控制指标（overshoot/settlingTime/steadyError/rmse/status，复用 `analyzeControlSamples`）。调参开始与每次改参后应先调用了解系统特性 | 时间段非法（如起始为负）→ `isError` 喂回 |
+| `get_channel_data` | `timeRange`；`channels?`；`maxPoints?`（默认 30） | 返回时间段各通道原始数据 `{t, target, feedback, output}`（均匀下采样至 maxPoints），用于观察波形细节；描述中提示模型「数据量大时优先用 stats」 | 同上 |
+| `set_pid_params` | `kp?/ki?/kd?`（串级另含 `speed*/position*`），只传要改的项 | 写回参数（左栏「当前参数总览」实时高亮变化），返回 `{applied, previous, guardrailNotes}`；修改后需调 `set_target` 验证 | 三重校验：① 用户配置范围裁剪（越界裁剪并说明，如 `kp: 50 → 20（超出用户配置上限 20）`）→ ② 系统上限（Kp≤20、Ki/Kd≤10）→ ③ 单步增幅限制（Kp×3、Ki/Kd×4），后两重复用 `applyPidGuardrails` |
+| `set_feedforward_params` | `{ <前馈项id>: <新系数> }`，只传要改的项 | 写回前馈系数，返回 `{applied, guardrailNotes}`；需重力/摩擦等补偿改善跟踪或稳态误差时使用 | 未知 id / 非数字 → `isError`（附可用前馈项列表）；越界按用户配置范围裁剪并说明 |
+| `set_target` | `value: number` | 修改目标值并触发阶跃采集（调参验证的必经步骤）。仿真模式：立即用当前参数跑 `simulatePidStrategy`，样本按会话时钟偏移写入 dataBuffer，返回本次 `timeRange`（可直接传给 get_channel_*）；串口模式：下发 `SET_POINT <value>`，响应经串口数据流异步进入 dataBuffer，稍后用 `get_channel_stats` 查看 | 严重越界（超出目标安全范围一个量程以上）→ `isError` 拒绝执行；轻微软出 → 裁剪到边界并说明；采集完成自动触发安全检测（见第 6 节） |
+
+**错误喂回协议**：工具内部不吞错、不兜底，出错直接 `throw Error`（中文消息），由循环捕获转为 `isError: true` 的 toolResult 喂回模型——**循环不中断**，模型看到错误原因后自行纠错重试（如传错时间段后修正参数重查）。
+
+---
+
+### 4. 调参前用户配置（四类）
+
+面板左栏在「开始调参」前要求提供：
+
+1. **PID 参数初始值及取值范围**：每参数一行（初始值 | 最小 | 最大）；单环策略 3 项（Kp/Ki/Kd），`cascade_position` 串级策略自动展开 6 项（位置环 + 速度环，键名与 `set_pid_params` 的 schema 一一对应）。取值范围作为工具护栏第一重硬约束。
+2. **信号安全取值范围**：控制值 / 反馈值 / 目标值各自的 min~max，用于 `set_target` 校验与数据异常检测。
+3. **前馈项「+」自定义添加**：点击「＋添加前馈项」从预设模板（线性 / 二次 / sin / cos / 重力补偿 / 常数偏置 / 目标一阶导）选择，填系数初始值与取值范围；已添加项列表展示、可删除；前馈项 id 由所选模板生成。替代旧版「三栏预定义库勾选」方式。
+4. **控制场景提示词**（必填）：多行文本，描述被控对象、调参目标与特殊约束（如「直流电机速度环，额定转速 3000rpm，带 5:1 减速器，允许 10% 超调」）。
+
+`validateUserConfig` 做必填校验（PID 初始值/范围与场景提示词必填；安全范围与前馈可选，有默认值），未完成点击「开始调参」会提示缺失项并阻止启动。四类信息经 `buildSystemPrompt` 以 `<user_config>` XML 风格标签包裹进系统提示词，**每次调 LLM 全量携带、永不压缩**——保证模型在任何压缩策略下都能看到完整的参数边界、信号安全范围与场景背景。
+
+---
+
+### 5. 上下文压缩策略（`compaction.mjs`）
+
+- **度量**：`measureDataBytes` 只统计「数据查询类 toolResult」（`get_channel_*` 的返回，创建消息时以 `meta.isDataQuery` 标记）的 UTF-8 字节总量——这类消息体积大且信息可再取，是最值得牺牲的部分。
+- **阈值**：50KB（`COMPACT_THRESHOLD_BYTES = 50 * 1024`，约为 AI 上下文窗口的十分之一）。每回合调 LLM 前（`onBeforeLlm` 挂载点）检测，数据字节超阈值即触发 `compactIfNeeded`。
+- **压缩动作**（借鉴 Pi：有损留底、保留尾部、独立请求）：
+  1. 保留最近 `retainedTail = 3` 条数据块原样（智能体通常正围绕最新数据推理）；
+  2. 其余旧数据块发起**独立 LLM 摘要请求**（不带 tools、不复用对话缓存）总结为紧凑摘要（保留关键数值：各时间段指标、参数变更序列、超调/震荡特征）；
+  3. 摘要以 `compact` 消息**成组替换**原数据块（按 assistant 消息分组：一条 assistant 的多个 toolCall 对应的 toolResult 整组处理，assistant + 待压缩 toolResult 一起移除、原位置插入摘要消息，避免「assistant 还在、配对 toolResult 没了」的残缺对话）；摘要请求失败不影响主流程。
+- **永不压缩**：系统提示词中的用户四类配置、所有用户消息（含 steer / followUp）、助手思考文本、安全通知消息。
+- **UI 呈现**：对话流插入「📦 上下文已压缩 xKB → yKB（仅数据部分）」提示条；左栏上下文用量指示条实时显示「数据 xKB / 阈值 50KB」并按 80% / 100% 变色。
+
+---
+
+### 6. 安全兜底（`safety.mjs`，复用 `pidSafety`）
+
+- **触发点**：`set_target` 每次样本采集完成后调用 `onSamplesCollected` → `analyzeControlSamples` 确定性指标（阈值取用户验收配置，缺省超调 20% / 振荡 10%）。
+- **bestStable 滚动维护**：复用 `maybeUpdateBestResult`——**仅 STABLE 轮次**可入选最佳稳定记录，避免把坏参数记录成回退目标。
+- **触发条件**：超调 / 振荡越限，或 `shouldRollbackToBest` 判定相对 bestStable 双阈值劣化（相对 >1.3 倍且绝对增量 >0.5）。
+- **动作**：参数自动回退至 `bestStable.pid`（无记录时无法回退，仅提示回调参数），并生成 `[安全机制] 检测到超调 x% 超过安全限制 y%，参数已自动回退至 …` 消息，双通道送达：① UI 以红框警示块醒目显示；② 以 user 角色推入 steer 队列喂回 LLM（下一回合即可见），模型据此调整探索策略（如收到通知后改用更小 Kp 做二分）。
+
+---
+
+### 7. 仿真与串口双模式
+
+工具内部按测试来源（`testMode`）分流，启动前串口模式会校验设备已连接：
+
+- **仿真模式**（默认）：`set_target` → `buildSimOverrides` 组装当前参数/前馈/目标 → `simulatePidStrategy` 跑一次阶跃仿真（三个物理模型：电机速度环一阶 `J·dω/dt + B·ω = Kt·i` / 串级位置双闭环 / 倒立摆不稳定二阶；固定种子可复现噪声、积分项抗饱和），样本经 `onSimulationData` 上抛 `App.vue` 绘制到上方波形区，同时按会话时钟偏移写入 dataBuffer 并触发安全检测，返回本次 `timeRange`——**波形在前、对话调参在后**的产品形态保持不变。
+- **串口模式**：`set_target` 下发 `SET_POINT <value>`（utf8）；面板 watch `latestPayload` → `onSerialData` 把每帧串口数据（`标签:值` 文本行，冒号后取前三个数作 target/feedback/output，不足三个跳过）按首帧时间戳换算为相对秒写入 dataBuffer——`get_channel_*` 工具即可按时间段查询真实响应。PID / 前馈参数在串口模式下写回上位机侧参数状态（左栏参数总览），向设备下发参数指令的链路见「进度与路线图」进行中项。
+
+---
+
+### 8. 关键文件职责拆分
+
+（UI 与算法解耦：`services/pidAgent/` 全部纯 JS、无 Vue/DOM/window 依赖，渲染进程与 Node `tests/` 共用同一份实现）
 
 | 文件 | 职责 |
 |------|------|
-| `components/PidPanel.vue` | UI 薄壳：步骤 0 策略/1 阶跃/2 分析/3 下发、仿真播放、串口采集下发、风险确认弹窗；调参算法/状态外置 |
-| `services/controlAnalysis.mjs` | 确定性分析 `analyzeControlSamples`、候选生成 `buildPidSuggestion`、AI 上下文打包 `buildStructuredAiContext` |
-| `services/pidSimulation.mjs` | 策略注册表 `PID_STRATEGIES`、物理仿真 `simulatePidStrategy`、嵌入式代码生成 `generateEmbeddedControllerFiles` |
-| `services/pidSafety.mjs` | 安全护栏 `applyPidGuardrails`、兜底 `buildFallbackSuggestion`、评分 `scoreMetrics`、最佳记录 `maybeUpdateBestResult`、回退判定 `shouldRollbackToBest`、达标判定 `isMetricsAcceptable` |
-| `services/pidTuningSession.mjs` | 自动调参会话状态机 `createTuningSession` / `registerTuningRound`（轮次编排、best 跟踪、停止判定 complete/stagnated/max-rounds） |
-| `services/pidTuningEngine.mjs` | 自动调参编排引擎 `runAutoTuning`（无 Vue，闭环可独立运行；支持 `aiClient` 注入与取消） |
-| `services/pidAiClient.mjs` | AI HTTP 客户端 `callAiForPid`（提示词组装/指数退避/schema 协商/解析护栏，无 Vue） |
-| `composables/usePidTuning.mjs` | 调参共享状态管理层：持有参数/前馈/历史/分析状态，桥接引擎回调与 UI |
+| `services/pidAgent/types.mjs` | 消息工厂（`createUserMessage` / `createAssistantMessage` / `createToolResultMessage`；role: user/assistant/toolResult，kind: normal/steer/followUp/safety/compact/summary）+ `createDefaultUserConfig` / `validateUserConfig` 校验 |
+| `services/pidAgent/dataBuffer.mjs` | 带时间戳通道环形缓冲：`push`（串口流 / 仿真样本统一写入）、`query`（按时间段取原始数据、自动下采样）、`stats`（统计特征 + 阶跃指标，内嵌 `analyzeControlSamples`） |
+| `services/pidAgent/llm.mjs` | `callLlm`（OpenAI 兼容 chat/completions + tools 协议、5 次指数退避、部分后端不支持 function calling 时去 tools 重试一次）+ `convertToLlm`（内部消息 → 协议消息翻译：steer/followUp/safety 补来源前缀、toolCalls 对象参数转 JSON 字符串、过滤模型不该看的消息） |
+| `services/pidAgent/systemPrompt.mjs` | `buildSystemPrompt`：智能体身份与工作方式 + 工具清单与使用建议 + `<user_config>` 包裹的四类配置 + 验收/安全阈值 |
+| `services/pidAgent/tools/index.mjs` | `createPidAgentTools`：第 3 节的 5 个工具（四要素定义、无状态、能力经 controller 注入、错误 throw 由循环转 isError） |
+| `services/pidAgent/agentLoop.mjs` | `runAgentLoop` 双层循环 + `createPendingMessageQueue` 两阶段队列 + `maxTurns` 兜底 + 事件派发 + `onBeforeLlm` 压缩挂载点 |
+| `services/pidAgent/safety.mjs` | `createSafetyGuard`：采集后指标分析 + bestStable 维护 + 参数回退 + `[安全机制]` 消息产出（入队 / 终止等编排职责在引擎层，本模块只做判定与回退） |
+| `services/pidAgent/compaction.mjs` | `measureDataBytes` / `compactIfNeeded`：仅压缩数据块、retainedTail=3、独立摘要请求、成组替换 |
+| `services/pidAgent/utils.mjs` | `readCanonicalPid` / `applyCanonicalPid`（合并形态 ↔ 规范形态：单环三键 / 串级六键，迁移自旧调参会话模块）+ `buildSimOverrides`（组装仿真 overrides） |
+| `composables/usePidAgent.mjs` | Vue 适配层：配置状态（pidConfig / safetyRange / feedforwardItems / scenePrompt / testMode）+ 事件 → refs（messages / running / turnCount / ctxBytes / paramHighlight）+ `startAgent` / `steer` / `followUp` / `sendChat` / `stopAgent` / `onSerialData` + controller 组装与系统提示词/工具/压缩装配 |
+| `components/PidAgentPanel.vue` | 对话式面板（职责见上方组件职责表）：打字机推进、自动滚底、参数变化高亮、上下文用量条、前馈「+」弹窗 |
 
-> ⚠ 注意：`analyzeControlSamples` 同时被 `WorkspaceAnalysis.vue`（波形分析模块）与 `PidPanel.vue`（调参模块）调用——这正是「先做波形分析、再做调参」架构依赖的落点：调参的指标计算直接复用波形分析的能力。
+**复用的既有模块**（本次智能体化改造不动）：
 
----
+| 文件 | 在智能体中的角色 |
+|------|------------------|
+| `services/pidSimulation.mjs` | `PID_STRATEGIES` 策略注册表（面板「仿真策略」下拉 + 串级六参数展开）+ `simulatePidStrategy` 阶跃仿真（`set_target` 仿真模式数据源）+ `generateEmbeddedControllerFiles` 嵌入式导出 |
+| `services/controlAnalysis.mjs` | `analyzeControlSamples` 确定性指标——`dataBuffer.stats` 与安全兜底共用（与波形分析模块同一份实现）；另有 `buildPidSuggestion` 等本地候选函数保留为纯函数库（`tests/` 覆盖，智能体链路不再使用） |
+| `services/pidSafety.mjs` | `applyPidGuardrails`（系统上限 + 单步增幅，`set_pid_params` 第二三重校验）+ `maybeUpdateBestResult` / `shouldRollbackToBest`（安全兜底） |
+| `services/aiDataContext.mjs` | 串口行解析 + 通道统计纯函数库（`tests/` 覆盖，数据侧共用底座） |
+| `services/pidPrompt.mjs` | 提示词 / JSON Schema / 响应解析纯函数库（`tests/` 覆盖，智能体化之前的给参链路产物） |
 
-### 1. 策略注册表（`PID_STRATEGIES` / `FEEDFORWARD_LIBRARY`）
-
-策略是「系统模型 + 验收标准 + 默认参数」的聚合对象，定义在 `pidSimulation.mjs`：
-
-```js
-motor_speed: {
-  name: '电机速度环（一阶模型）',
-  parameters: ['Kp', 'Ki', 'Kd'],
-  defaultOrder: ['Kp', 'Ki', 'Kd'],               // 调参顺序，用户可在 UI 用 ↑/↓ 调整
-  acceptance: { overshootLimit: 20, settlingBand: 0.05, oscillationLimit: 10 }, // 验收阈值
-  defaults: { duration, dt, noise, target, J, B, Kt, outputLimit, kp, ki, kd }
-}
-```
-
-- **`acceptance`**：该策略的验收阈值，被 `analyzeControlSamples` 用来判定 `risks`（超调/稳态波动是否越界）。新增竞赛系统（直立环/舵机环）时，只需在此登记一项即可接入整套调参链路。
-- **`defaultOrder`**：调参顺序（如倒立摆把 `Kd` 前置）。`PidPanel.moveTuningStep()` 让用户用 ↑/↓ 调整顺序，`buildPidSuggestion` 会按顺序对修正幅度做指数衰减（排第 0 位完整修正，后续按 `0.5^pos` 衰减），真正落地「调参顺序由用户决定」。**前馈项加入调参顺序**：勾选的前馈项 id 会自动出现在调参顺序中（默认置顶），UI 显示为「前馈·<简称>」，可 ↑/↓ 调整；调参顺序同步到 AI 上下文，让 AI 知道用户的调参优先级。
-- **I/D 开关**：用户可在 PID 候选步骤用复选框关闭 I 或 D（默认均开启），选择 P / PI / PD / PID 模式。关闭时：① 强制对应 Ki/Kd=0 并禁用输入框；② 仿真时强制对应项为 0；③ 本地策略 `buildPidSuggestion` 的 `disableI`/`disableD` 选项约束阶段推断（不允许进入含禁用项的阶段）；④ AI 提示词中标注「启用积分项/启用微分项」为否，并在安全要求中强调对应项必须输出 0。
-- **`FEEDFORWARD_LIBRARY`**：前馈项库，分三栏（多项式 / 三角函数 / 其他），每栏内多项可勾选、可多选、可跨栏组合，对应规格里的 `F = f_pid(error) + Σ f_ff(target)`：
-  - **多项式**：线性 `Kff·target`、二次 `Kff·target²`、三次 `Kff·target³`
-  - **三角函数**：sin `Kff·sin(target)`、cos `Kff·cos(target)`、tan `Kff·tan(target)`
-  - **其他**：重力补偿 `m·g·l·sin(target)`、常数偏置 `Kff`、符号补偿 `Kff·sign(target)`
-  - 勾选状态 `feedforwardSelection` 形如 `{ linear: 0.5, gravity: 1 }`，前馈 = Σ(已勾选项 compute())。每项有独立系数输入框，可实时调整。不勾选任何项即纯 PID。串级策略下，多项式/三角/符号类前馈作用于位置环（叠加到速度目标），重力补偿/常数偏置作用于速度环（叠加到力矩）。
+> ⚠ 注意：`analyzeControlSamples` 同时被 `WorkspaceAnalysis.vue`（波形分析模块）与 `pidAgent`（`dataBuffer.stats` + `safety.mjs`）调用——这正是「先做波形分析、再做调参」架构依赖的落点：调参的指标计算直接复用波形分析的能力。其完整算法步骤与判定标准默认值见上方「波形分析模块」章节的「确定性响应分析」小节。
 
 ---
 
-### 2. 物理仿真引擎（`simulatePidStrategy`）
+### 9. 嵌入式集成（`generateEmbeddedControllerFiles` + 模板文件）
 
-不依赖硬件即可验证整条链路。要点：
-
-- **可复现噪声**：`seededRandom(seed=20260723)`（线性同余），`noise()` 用三次采样均值近似高斯。固定种子保证每次仿真结果一致，便于回归比对。
-- **标准离散 PID**（`pidStep`）：前向欧拉积分，且**积分项抗饱和**——积分累加被 clamp 到 `±outputLimit`；微分用相邻误差差商 `(error - prevError)/dt`。`pidStep` 输出不再内部 clamp，留给调用方叠加前馈后再统一限幅。
-- **前馈真正接入仿真**：`computeFeedforward(config, target)` 按勾选的 `feedforwardSelection` 求和，叠加到 PID 输出。三个模型均生效——这是「前馈控制」卖点首次闭环。
-- **三个物理模型**（对应不同微分方程）：
-  - `motor_speed`：一阶 `J·dω/dt + B·ω = Kt·i`，被控量转速、控制量电流。前馈叠加到电流。
-  - `cascade_position`：双闭环，外环位置 PID 输出速度目标、内环速度 PID 输出电流。多项式/三角/符号类前馈作用于位置环（叠加到速度目标），重力补偿/常数偏置作用于速度环（叠加到力矩）。
-  - `inverted_pendulum`：不稳定二阶 `J·θ'' − m·g·l·θ = −T`，以 `measured − target` 作误差；当 `θ` 发散（超出 ±3）时 `break` 提前终止，避免无意义长数组。前馈叠加到力矩。
-- 返回 `{ strategy, config, samples }`，`samples` 为统一格式的采样数组，直接进入第 3 步分析。
-
----
-
-### 3. 确定性响应分析（`analyzeControlSamples`）——调参与波形分析共用的核心
-
-输入即统一采样 `{t, target, feedback, output}`，全部为纯数学计算，**不联网、可离线**：
-
-1. **清洗与排序**：`map → filter(有限值) → sort(by t)`；`sampleCount < minimumSamples(默认 8)` 直接返回 `valid:false`。
-2. **阶跃定位** `findStep`：找相邻 `target` 跳变最大的索引作为阶跃起点。
-3. **初值/终值**：阶跃前均值 → `initialFeedback`；阶跃后 15% 尾部均值 → `finalFeedback`/`finalTarget`，以此得 `stepSize`。
-4. **上升时间** `crossingTime`：线性插值求反馈穿越 10% / 90% 阈值时刻，`riseTime = t90 − t10`。
-5. **超调** `overshoot`：阶跃后极值偏离 `finalTarget` 的比例（按 `direction` 判断正负阶跃）。
-6. **稳定时间** `settlingTime`：从阶跃点起，找首个「其后连续窗口全部落入 ±band」的采样点（`band = stepSize × settlingBand`，默认 ±5%）。整窗未收敛返回 `null`。
-7. **其余指标**：`steadyError`、`rmse`（误差 RMS）、`oscillation`（尾部极差 / 阶跃幅值）、`sampleRate`、`outputPeak`。
-8. **风险判定 `risks`**：超调/稳态波动超出 `acceptance` 阈值、稳态误差过大、未收敛 → 推入 `risks`，并给出 `health`（良好/需关注/高风险）。
-
-> 该函数的输出即为波形分析模块的「响应指标卡」，也是 `buildPidSuggestion` 的输入——一处实现、两处复用。其完整算法步骤与判定标准默认值见上方「波形分析模块」章节的「确定性响应分析」小节。
-
----
-
-### 4. 候选参数生成（`buildPidSuggestion`）——保守、有界、只给建议
-
-这是「辅助式调参」的算法核心，**只生成候选、绝不自动下发**。支持单环（`kp/ki/kd`）与串级（`speedKp/speedKi/speedKd + positionKp/positionKi/positionKd` 共 6 参数）：
-
-```js
-// 单环：base = { kp, ki, kd }；串级：base = { speedKp, speedKi, speedKd, positionKp, positionKi, positionKd }
-// 每个参数已 clamp 到 Kp 0~20, Ki/Kd 0~10
-if (metrics.overshoot > limit)   { P:0.82, I:0.78, D:1.22 /* 降比例积分、增微分 */ }
-if (metrics.oscillation > limit) { P:0.86, I:0.82, D:1.15 /* 降环路激进程度 */ }
-if (steadyError 过大)            { I:1.18 /* 小幅加积分 */ }
-if (响应保守)                    { P:1.10 /* 小幅提比例 */ }
-// 每次修正后再次 clamp 回 0~20 / 0~10
-```
-
-- 修正系数均为**经验启发式**（基于经典 PID 调参直觉：超调→降 Kp、振荡→降 Ki、稳态差→升 Ki）。
-- **tuningOrder 真正生效**：按用户调整的调参顺序，对修正幅度做指数衰减（`orderFactor = 1 + (factor-1) × 0.5^pos`），排第 0 位的参数完整修正，越靠后修正越小，体现「调参顺序由用户决定」。
-- **串级 6 参数**：自动识别 `current` 是否含 `speed*`/`position*` 字段进入串级模式；内环（速度环）修正幅度衰减到 30%，外环（位置环）完整修正，符合「先内环后外环」调参惯例。
-- 任何一步都重新 `clamp` 回安全边界，确保候选参数本身不会损坏硬件。
-- `confidence` 仅「低 / 中」（样本 ≥80 才中）——**刻意不提供「高」**，提醒用户仍需人工判断。
-- 返回 `{ ..., confidence, reasons }`，`reasons` 是一句人能读懂的调整依据，展示在 UI。串级下下发指令为 `PID <speedKp> <speedKi> <speedKd> <positionKp> <positionKi> <positionKd>`。
-
----
-
-### 5. AI 给参（可选增强，覆盖候选）
-
-仅当配置了 `aiConfig.apiKey` 才触发。AI **只给出新参数**（不再只做解释），并把参数自动填入下方"PID 候选与参数下发"：
-
-- 确定性算法 `buildPidSuggestion` 先给出有界候选作为**基线**（无 Key 或 AI 失败时回退到此）。
-- 提示词中**限定死 AI 输出格式**为单个 JSON 对象，禁止任何解释/Markdown/额外文字：
-  - 单环：`{"kp":<0-20>,"ki":<0-10>,"kd":<0-10>}`
-  - 串级：`{"speedKp":<0-20>,"speedKi":<0-10>,"speedKd":<0-10>,"positionKp":<0-20>,"positionKi":<0-10>,"positionKd":<0-10>}`
-- 用户消息携带：当前参数、响应指标（超调率/上升时间/稳定时间/稳态误差/RMSE/振荡/采样点数）、场景描述。
-- `parseAiParams` 解析返回：剥离 ```json 代码块、截取首末 `{}`、`JSON.parse`、逐字段校验为有限数并 clamp 到安全边界。
-- 解析成功 → 覆盖 `outputParams`（候选区实时更新）；解析失败 → 保留确定性基线并提示。
-- 离线/无 Key 时跳过 AI，仍有本地候选，保证「无网可用」。
-
----
-
-### 6. 下发与安全管理（`sendParams`）
-
-- 先校验参数是否为有限数；再按**安全边界**拦截：`Kp∈[0,20]`、`Ki,Kd∈[0,10]`（串级 6 参数同此边界），越界直接报错不发送。
-- 默认 `ElMessageBox.confirm` **二次确认弹窗**（警告样式），显示完整参数（串级显示速度环/位置环两组），用户必须主动点「确认下发」；取消则参数不变。
-- **自动下发**：步骤 3 提供「自动下发」复选框。勾选时弹出风险警告（可能导致设备失控/超速/过流/损坏、网络异常可能下发错误参数、建议先仿真验证并做好急停准备），用户确认后开启；开启后 `sendParams` 跳过二次确认，AI 给参后（若已连接串口）自动写入设备。
-- 下发指令格式：单环 `PID <kp> <ki> <kd>`，串级 `PID <speedKp> <speedKi> <speedKd> <positionKp> <positionKi> <positionKd>`（utf8），由用户固件侧约定解析——这也是「自动调参闭环」目前唯一依赖外部约定的地方（见下方待办）。
-
----
-
-### 7. 嵌入式集成（`generateEmbeddedControllerFiles` + 模板文件）
-
-一键把当前配置导出为可移植的 `.h / .c`。**模板文件独立存放，便于审查修改**：
+把当前配置导出为可移植的 `.h / .c`（服务层能力，由 `tests/pid-simulation.mjs` 覆盖验证；导出入口曾位于旧版步骤式调参面板，UI 入口随面板重构移除，可按需重新接入）。**模板文件独立存放，便于审查修改**：
 
 - 模板目录：`src/renderer/src/services/embedded-templates/zhichuan_pid.h` 与 `zhichuan_pid.c`，是真实的 C 源文件，含占位符（`__GUARD__` / `__FF_MASK__` / `__NAME__`）与详细注释。
 - 代码读取：渲染进程用 Vite `?raw` 动态导入（构建时内联为字符串），Node 测试环境用 `fs.readFileSync` 读取真实文件。两种环境共用同一份模板源，保证「改模板即生效」。
@@ -454,9 +466,9 @@ if (响应保守)                    { P:1.10 /* 小幅提比例 */ }
    - `PID <spKp> <spKi> <spKd> <poKp> <poKi> <poKd>`：串级批量设 6 参数
    - `SET <type> <value>`：单参数修改（`type` 见 `ZHICHUAN_PARAM_*` 宏，含前馈系数）
 
-**前馈项掩码**：因为前馈项是勾选开启、事先不确定哪些项被启用，采用掩码解决。每个前馈项分配一个 bit（`ZHICHUAN_FF_LINEAR`=0x0001、`ZHICHUAN_FF_GRAVITY`=0x0040 等，见 `.h`），勾选好已开启的前馈项后，上位机生成一个总掩码（如勾选线性+重力 → `0x0041u`）：
+**前馈项掩码**：因为前馈项由用户按需添加、事先不确定哪些项被启用，采用掩码解决。每个前馈项分配一个 bit（`ZHICHUAN_FF_LINEAR`=0x0001、`ZHICHUAN_FF_GRAVITY`=0x0040 等，见 `.h`），确定已启用的前馈项后，上位机生成一个总掩码（如线性+重力 → `0x0041u`）：
 - 导出时自动写入 `.h` 的 `#define ZHICHUAN_FF_MASK`
-- UI 上同时显示掩码值，可一键复制，手动粘贴到已有工程的头文件对应位置
+- 掩码值随导出配置生成（如 `0x0041u`），可手动粘贴到已有工程的头文件对应位置
 - 用户工程据此掩码判断运行时启用哪些前馈项，示例：
   ```c
   float ff = 0.0f;
@@ -468,61 +480,24 @@ if (响应保守)                    { P:1.10 /* 小幅提比例 */ }
 
 ---
 
-### 8. 安全护栏与自动调参闭环（`pidSafety.mjs` / `pidTuningSession.mjs`）
+### 10. 测试覆盖（`tests/`）
 
-> 本节对应 07-26 新增的「自动调参」能力。设计借鉴开源项目 [llm-pid-tuner](https://github.com/KINGSTON-115/llm-pid-tuner) 的 `pid_safety.py`，但落地为纯函数、并与我们的确定性分析 + 人工确认定位结合：**自动调参仅在仿真模式下运行**，真实硬件仍走人工确认。
-
-**`pidSafety.mjs`（五项纯函数，全部无副作用、可测试）**：
-
-| 函数 | 作用 |
-|------|------|
-| `applyPidGuardrails(current, proposed)` | 先按 `PID_LIMITS`（Kp 0~20、Ki/Kd 0~10，串级各轴同限）裁剪边界，再按 `maxIncreaseRatio`（Kp ×3、Ki/Kd ×4）限制单步增幅，防 LLM 一拍脑袋给 10 倍参数。返回 `{ params, notes }` |
-| `buildFallbackSuggestion(metrics, current)` | LLM 不可用时按 `metrics.status` 给保守乘性修正：OSCILLATING→降 P/I 增 D、OVERSHOOTING→降 P/I 增 D、SLOW_RESPONSE→增 P（稳态误差大同时增 I）、STABLE→细调。保证流程不中断 |
-| `scoreMetrics(metrics)` | 评分（越低越好）：`rmse + 1.2·|steadyError| + 0.6·overshoot + 0.3·oscillation + 状态惩罚`（OSCILLATING 12 / OVERSHOOTING 8 / SLOW_RESPONSE 6）。用于 best 比较与劣化判定 |
-| `maybeUpdateBestResult(best, current)` | **仅在 STABLE 时**更新最佳记录，避免回滚到坏参数 |
-| `shouldRollbackToBest(best, curMetrics)` | best 为 STABLE 且当前非 STABLE → 立即回退；或 rmse/steadyError/overshoot 任一**双阈值劣化**（相对 >1.3 倍 且 绝对增量 >0.5）→ 回退 |
-| `isMetricsAcceptable(metrics, opts)` | 终止条件：STABLE 且 rmse/稳态误差/超调均在阈值内 |
-
-**`pidTuningSession.mjs`（自动调参会话状态机）**：
-
-`createTuningSession({ maxRounds=12, requiredStable=2, patience=4 })` 创建会话；每轮调 `registerTuningRound(session, { pid, metrics, round }, acceptance)` 返回 `{ session, outcome, roundRecord }`。`outcome.decision` 取值：
-
-| decision | 触发条件 | 动作 |
-|----------|----------|------|
-| `continue` | 未达标、未劣化、未到上限 | 用候选参数进入下一轮 |
-| `rollback` | `shouldRollbackToBest` 命中 | 回退到 `bestStable.pid`，streak 清零 |
-| `complete` | 连续 `requiredStable` 轮达标 | 终止，应用最佳参数 |
-| `stagnated` | 连续 `patience` 轮无改善 | 终止，恢复已验证最佳参数 |
-| `max-rounds` | 达到 `maxRounds` 上限 | 终止，恢复最佳参数 |
-
-会话同时维护 `bestStable`（仅 STABLE 记录）与 `bestObserved`（任意最低分），取消时也会恢复最佳。
-
-**自动调参闭环（`services/pidTuningEngine.mjs`，仿真模式）**：
-
-`PidPanel.runAutoTuning`（薄壳）做风险确认后，调用 `composables/usePidTuning.startAutoTuning`，由**无 Vue 的引擎** `runAutoTuning` 独立执行循环；每轮经 `onRound` 回调把「采样/参数/历史/状态文本」推回 UI 并写回。仅 `testMode === 'simulation'` 可用：
-1. 风险确认对话框（说明轮次/回退/停止规则）。
-2. 引擎选择：`hybrid`（有 API Key 则经 `pidAiClient.callAiForPid` 给参 + 安全护栏，AI 失败自动切本地规则）或 `local`（纯 `buildFallbackSuggestion` + 护栏，**离线可用**）。
-3. 循环 `maxRounds` 轮：① `simulatePidStrategy` 跑仿真 → ② `analyzeControlSamples` 算指标 → ③ `registerTuningRound` 评价（决定 continue/rollback/complete/stagnated/max-rounds）→ ④ 若未终止，生成下一轮候选（hybrid 走 AI，否则规则兜底 + `applyPidGuardrails`）→ 应用 → 下一轮。
-4. 终止/取消时恢复 `bestStable || bestObserved` 的参数。
-
-> 与手动调参的关系：手动模式仍是「AI 给候选 → 人工二次确认 → 下发」；自动模式把"确认"这一步交给会话状态机，但**仅限仿真**，不下发真实硬件。这既兑现了"辅助式"定位，又让仿真下能体验完整闭环。
-
----
-
-### 9. 测试覆盖（`tests/`）
-
-MVP 自测脚本直接 import 上述 `services` 中的纯函数，保证「算法实现」与「算法验证」同源：
+自测脚本直接 import 上述 `services` 中的纯函数，保证「算法实现」与「算法验证」同源：
 
 - `control-analysis.mjs`：喂入构造的阶跃响应，断言指标（超调/稳定时间等）计算正确，并验证 `buildPidSuggestion` 的 tuningOrder 衰减与串级 6 参数支持。
 - `ai-data-context.mjs`：验证 `buildStructuredAiContext` 打包的结构化上下文。
 - `pid-simulation.mjs`：验证 `simulatePidStrategy` 三个策略的采样有效性；验证 `generateEmbeddedControllerFiles` 生成的是通信层（含 `zhichuan_periodic_send`/`zhichuan_parse_command`、不含 PID 计算逻辑）、前馈掩码按勾选正确生成（如 linear+gravity → 0x0041u、全选 → 0x01FFu、无勾选 → 0x0000u）。
 - `pid-safety.mjs`：验证 `applyPidGuardrails` 的边界裁剪与单步增幅限制、`buildFallbackSuggestion` 按 status 的乘性修正、`scoreMetrics` / `maybeUpdateBestResult`（仅 STABLE 更新）/ `shouldRollbackToBest`（双阈值劣化）/ `isMetricsAcceptable` 的判定。
-- `pid-tuning-session.mjs`：验证会话状态机——`registerTuningRound` 的五种 decision（continue/rollback/complete/stagnated/max-rounds）、best 跟踪、取消时恢复最佳参数。
 - `pid-prompt.mjs`：验证 `pidPrompt.mjs` 的 JSON Schema / 结构化输出格式、`parsePidAiResponse` 解析、历史与波形打包、成功案例挑选。
-- `pid-tuner-engine.mjs`：验证自动调参引擎——无 Vue 依赖（源码级）、local 闭环可复现、hybrid 注入 AI stub（成功/失败回退）、首轮取消、onRound 回调状态完整性。
+- `pid-agent-buffer.mjs`：验证智能体消息工厂与用户配置校验（`types.mjs`），以及带时间戳环形缓冲的写入与按时间段查询/统计（`dataBuffer.mjs`）。
+- `pid-agent-llm.mjs`：验证 `convertToLlm` 消息翻译（kind 来源前缀 / toolCalls 协议格式）与 `callLlm` 的请求组装、指数退避与错误处理（fetch stub）。
+- `pid-agent-tools.mjs`：验证 5 个工具的护栏校验（用户范围裁剪 / 系统上限与增幅限制 / 目标严重越界拒绝）、错误喂回与仿真/串口双模式分流（stub controller）。
+- `pid-agent-loop.mjs`：验证双层循环——`tool_calls` 驱动的多工具链、steer/followUp 队列注入时机、`maxTurns` 兜底、工具错误不中断、事件顺序与五种停止原因（stop/max-turns/aborted/user-stop/error）。
+- `pid-agent-safety-compact.mjs`：验证安全兜底（bestStable 维护 / 超调与振荡越限回退 / `[安全机制]` 消息与事件 / 无记录时不回退）与上下文压缩（字节度量只计数据块 / 阈值触发 / retainedTail 尾部保留 / 摘要失败不影响主流程）。
+- `pid-agent-utils.mjs`：验证参数形态转换（单环/串级的 `readCanonicalPid` / `applyCanonicalPid`，含字符串写回值转数字）与 `buildSimOverrides` 组装。
 - `vue-sfc-compile.cjs`：用 `@vue/compiler-sfc` 编译所有 `.vue` 组件，捕获模板/脚本语法错误（兼容 npm 与 pnpm 安装环境）。
 
-运行：`npm run test:analysis`（上述 8 个自测脚本；`full-tuning-trial` / `feedforward-tuning-trial` 不在此命令内，作为独立调参验收脚本单独运行）。
+运行：`npm run test:analysis`（上述 12 个自测脚本；`full-tuning-trial` / `feedforward-tuning-trial` 不在此命令内，作为独立调参验收脚本单独运行）。
 
 > **独立调参验收脚本**（不进入 `test:analysis`，手动运行以生成波形）：
 
@@ -546,7 +521,7 @@ MVP 自测脚本直接 import 上述 `services` 中的纯函数，保证「算�
 | `npm run dev` | 经 `scripts/dev.js` 启动：设置 Electron 镜像环境变量（`ELECTRON_MIRROR` / `ELECTRON_BUILDER_BINARIES_MIRROR`）+ 按平台选择 spawn 方式（Windows 用 shell 命令字符串规避 DEP0190 警告），再 `electron-vite dev` |
 | `npm run build` | `electron-vite build`，产物到 `out/`（out/main、out/preload、out/renderer） |
 | `npm run dist` | `electron-vite build && electron-builder`，生成安装包 |
-| `npm run test:analysis` | 跑 `tests/` 下算法自测：控制指标计算、AI 上下文、PID 仿真、PID 安全护栏、自动调参会话、PID 提示词、自动调参引擎回归、Vue SFC 编译（不含波形生成验收脚本） |
+| `npm run test:analysis` | 跑 `tests/` 下 12 个算法自测脚本：控制指标计算、AI 上下文、PID 仿真、PID 安全护栏、PID 提示词、调参智能体 6 项（缓冲 / LLM / 工具 / 循环 / 安全压缩 / 工具函数）、Vue SFC 编译（不含波形生成验收脚本） |
 
 > 调试：`npm run dev` 启动时 `isDev` 为真（`electron-vite dev` 设了 `ELECTRON_RENDERER_URL`），`src/main/index.js` 会在 `ready-to-show` 时自动 `openDevTools({ mode: 'detach' })`；生产构建不会开。随时也可手动 `Ctrl+Shift+I`（macOS `Cmd+Option+I`）开关。主进程日志看终端。
 
@@ -568,28 +543,25 @@ MVP 自测脚本直接 import 上述 `services` 中的纯函数，保证「算�
 ### 已完成 ✅
 
 - 三进程骨架、IPC 桥接、亮/暗双主题
-- 工作区上下分栏：上方实时波形持续可见（可拖动调整高度），下方三标签切换：**数据**（左数据流/表切换，右数据分析）/ **AI 助手** / **PID 调参**
+- 工作区上下分栏：上方实时波形持续可见（可拖动调整高度），下方两标签切换：**数据**（左数据流/表切换，右数据分析）/ **PID 调参**（对话式智能体，原「AI 助手」独立标签页已合并进该面板——空闲输入即自由对话）
 - 串口全参数配置、DTR/RTS、Raw / JustFloat 解析
 - 数据流/数据表、自动发送、录制回放、控制响应模拟
 - ECharts 多通道波形（缩放/平移/显隐/标准化/导出）
-- AI 助手（OpenAI 兼容接入、上下文注入、异常检测、协议识别）
-- 确定性响应分析、PID 辅助调参（本地候选 + AI 给参 + 人工确认/自动下发）
-- 策略注册表（多系统 / 多控制结构差异化调参，含仿真 / 真实串口测试来源与验收指标）
-- **I/D 开关**：用户可选择 P / PI / PD / PID 模式，关闭时强制对应项为 0 并约束调参策略与 AI 提示词
-- **前馈项加入调参顺序**：勾选的前馈项自动出现在调参顺序中，默认置顶，可 ↑/↓ 调整，并同步到 AI 上下文
-- **前馈系数整定**（`buildFeedforwardSuggestion`）：与 PID 调参解耦，根据稳态误差/超调启发式微调前馈系数
-- 参数安全限制（Kp 0~20、Ki/Kd 0~10 边界 + 单步增幅限制 + 二次确认下发，防异常参数损坏硬件）
-- **自动调参闭环（仿真模式）**：会话状态机 + best 跟踪 + 自动回退 + 停止判定（complete/stagnated/max-rounds），hybrid（AI+护栏）/ local（规则兜底）双引擎，离线可用
-- LLM 失败规则兜底（`buildFallbackSuggestion`，按 status 保守修正，流程不中断）
-- 嵌入式集成（一键导出 `.c/.h` 通信层，函数指针注入式）
+- 确定性响应分析（数据标签页：指标 + 高级判定 + AI 结构化解释 + 报告导出）
+- **PID 调参智能体化（参考 Pi-agent）**：双层循环引擎（外层 followUp / 内层 tool_calls 驱动、steer 中途纠偏、maxTurns=50 兜底）+ 5 个调参工具（查统计 / 查原始数据 / 改 PID / 改前馈 / 设目标，护栏校验 + 错误喂回）+ 动态系统提示词（`<user_config>` 包裹四类用户配置）+ 带时间戳通道数据缓冲 + 上下文压缩（50KB 阈值、仅数据块、retainedTail=3、独立摘要请求）+ 事件驱动 UI（思考打字机 / 工具单行 / 安全警示 / 压缩条）
+- 策略注册表（多系统预设，保留为智能体面板的「仿真策略」下拉；串级策略自动展开六参数配置）
+- 前馈项「+」自定义添加与系数智能体整定（`set_feedforward_params` 工具 + 用户范围护栏）
+- 参数安全护栏（用户配置范围 + 系统上限 + 单步增幅三重校验，裁剪原因返回模型，防异常参数损坏硬件）
+- 安全兜底（bestStable 自动回退 + `[安全机制]` 通知 LLM 与 UI，工具错误 isError 喂回不中断循环）
+- 嵌入式集成（`.c/.h` 通信层模板，函数指针注入式；服务层 + 测试保留，UI 导出入口随旧面板移除）
 - npm 警告修复（`.npmrc` 移除无效键 + `dev.js` 环境变量设置镜像 + DEP0190 警告规避）
-- MVP 自测（`tests/` 脚本）
+- MVP 自测（`tests/` 12 个自测脚本，含智能体 6 项）
 
 ### 进行中 🚧
 
 - 离线信号处理降级（Z-N / 继电自整定，无网可用）
 - 策略模板扩充（直立环 / 速度环 / 舵机环等更多竞赛系统预设与精细前馈项）
-- 自动调参向真实硬件延伸（当前仅仿真；硬件仍走人工确认闭环）
+- 串口实机调参深化：工具分流已支持（`set_target` 经串口下发 `SET_POINT` 并异步采集响应入数据缓冲），PID / 前馈参数向设备下发的指令链路待接入（zhichuan 指令集已就绪）
 
 ### 待完成 📋
 

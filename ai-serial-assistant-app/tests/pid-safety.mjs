@@ -136,6 +136,39 @@ console.log('8. shouldRollbackToBest 劣化判定')
   const betterMetrics = { valid: true, status: 'STABLE', rmse: 0.3, steadyError: 0.05, overshoot: 3, oscillation: 1 }
   const r3 = shouldRollbackToBest(best, betterMetrics)
   assert('更优不应回退', !r3.shouldRollback)
+  // 噪声级超调波动（0 → 0.61%，< 2pp 阈值）→ 不应回退（修复假阳性）
+  const base = { valid: true, status: 'STABLE', rmse: 0.3, steadyError: 0.05, overshoot: 0, oscillation: 1 }
+  const tinyOvershootRise = { valid: true, status: 'STABLE', rmse: 0.3, steadyError: 0.05, overshoot: 0.61, oscillation: 1 }
+  const r4 = shouldRollbackToBest({ pid: { kp: 9 }, metrics: base, score: 1, round: 1 }, tinyOvershootRise)
+  assert('噪声级超调波动不应回退', !r4.shouldRollback)
+  // 真实超调膨胀（0 → 5%，≥ 2pp 阈值）→ 应回退
+  const realOvershootRise = { valid: true, status: 'STABLE', rmse: 0.3, steadyError: 0.05, overshoot: 5, oscillation: 1 }
+  const r5 = shouldRollbackToBest({ pid: { kp: 9 }, metrics: base, score: 1, round: 1 }, realOvershootRise)
+  assert('真实超调膨胀应回退', r5.shouldRollback)
+  // 跨工作点豁免：best 来自小阶跃（stepSize=20, STABLE），当前为大阶跃慢收敛（stepSize=50, SLOW_RESPONSE）
+  // → 不应回退（换目标 ≠ 参数变差；硬超限回退由 overOvershoot/overOscillation 独立负责）
+  const bestSmallStep = {
+    pid: { kp: 5 },
+    metrics: { valid: true, status: 'STABLE', rmse: 0.3, steadyError: 0.05, overshoot: 0, oscillation: 1, stepSize: 20, finalTarget: 20 },
+    score: 1,
+    round: 1
+  }
+  const curBigStep = {
+    valid: true,
+    status: 'SLOW_RESPONSE',
+    rmse: 6.7,
+    steadyError: 15,
+    overshoot: 0,
+    oscillation: 11.5,
+    stepSize: 50,
+    finalTarget: 50
+  }
+  const r6 = shouldRollbackToBest(bestSmallStep, curBigStep)
+  assert('跨工作点不应回退（状态退化豁免）', !r6.shouldRollback)
+  // 同工作点（stepSize 均为 50）且 best STABLE → cur 非 STABLE → 仍应立即回退（回归确认）
+  const curSameStepDegraded = { ...curBigStep, stepSize: 50, finalTarget: 50 }
+  const r7 = shouldRollbackToBest({ ...bestSmallStep, metrics: { ...bestSmallStep.metrics, stepSize: 50, finalTarget: 50 } }, curSameStepDegraded)
+  assert('同工作点状态退化仍应回退', r7.shouldRollback)
 }
 
 console.log('9. isMetricsAcceptable 终止条件')

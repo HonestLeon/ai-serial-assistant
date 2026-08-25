@@ -159,6 +159,18 @@ export function analyzeControlSamples(inputSamples, options = {}) {
   const stepSize = finalTarget - initialTarget
   const direction = Math.sign(stepSize || finalFeedback - initialFeedback || 1)
   const amplitude = Math.max(Math.abs(stepSize), 1e-6)
+
+  // 无有效阶跃防护：目标几乎无变化（stepSize ≈ 0）时，指标归一化会除以极小 amplitude
+  // 造成亿级数值爆炸（如缓冲查询区间恰好剔除段首跳变样本，选区 target 恒定时 stepSize=0）。
+  // 此时不应产出可比的阶跃指标，直接判定无效（调用方按 valid:false 处理，绝不输出爆炸数值）。
+  const minStep = clamp(finite(options.minStepSize, 1e-4), 1e-9, 1e6)
+  if (Math.abs(stepSize) < minStep) {
+    return {
+      valid: false,
+      reason: `未检测到有效阶跃（目标几乎无变化，stepSize=${stepSize}）`,
+      sampleCount: samples.length
+    }
+  }
   const stepTime = samples[stepIndex].t
 
   const threshold10 = initialFeedback + 0.1 * (finalTarget - initialFeedback)

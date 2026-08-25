@@ -1,12 +1,11 @@
 <script setup>
 import { ref, computed, reactive, onUnmounted } from 'vue'
-import { Cpu, Monitor, ChatDotRound, Operation } from '@element-plus/icons-vue'
+import { Cpu, Monitor, Operation } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import SerialPanel from './components/SerialPanel.vue'
 import DataMonitor from './components/DataMonitor.vue'
-import AiPanel from './components/AiPanel.vue'
 import StatusBar from './components/StatusBar.vue'
-import PidPanel from './components/PidPanel.vue'
+import PidAgentPanel from './components/PidAgentPanel.vue'
 import WorkspaceChart from './components/WorkspaceChart.vue'
 import WorkspaceAnalysis from './components/WorkspaceAnalysis.vue'
 
@@ -24,7 +23,7 @@ const showHex = ref(false)
 const latestPayload = ref(null)
 const detectedChannelCount = ref(0)
 
-// 全局 AI 配置（SerialPanel 和 AiPanel 共享）
+// 全局 AI 配置（SerialPanel 和 PID 调参智能体面板共享）
 const aiConfig = reactive({
   apiKey: sessionStorage.getItem('ai_api_key') || '',
   baseUrl: localStorage.getItem('ai_base_url') || 'https://api.deepseek.com',
@@ -122,7 +121,6 @@ function pushSerialContext(payload) {
 
 const tabs = [
   { key: 'data', label: '数据', icon: Monitor },
-  { key: 'ai', label: 'AI 助手', icon: ChatDotRound },
   { key: 'pid', label: 'PID 调参', icon: Operation }
 ]
 
@@ -220,7 +218,7 @@ function toggleHex() {
         <span class="app-version">v1.1.0</span>
       </div>
 
-      <div class="header-context">实时波形持续可见 · 下方切换 数据 / AI 助手 / PID 调参</div>
+      <div class="header-context">实时波形持续可见 · 下方切换 数据 / PID 调参</div>
 
       <div class="header-right">
         <div class="window-dot" style="background: var(--state-error);"></div>
@@ -281,7 +279,7 @@ function toggleHex() {
                 :key="tab.key"
                 role="tab"
                 :aria-selected="activeTab === tab.key ? 'true' : 'false'"
-                :class="{ active: activeTab === tab.key, ai: tab.key === 'ai' }"
+                :class="{ active: activeTab === tab.key }"
                 @click="activeTab = tab.key"
               >
                 <el-icon size="13"><component :is="tab.icon" /></el-icon>
@@ -313,22 +311,10 @@ function toggleHex() {
                   />
                 </div>
               </div>
-              <AiPanel
-                v-show="activeTab === 'ai'"
-                :connected="connected"
-                :status-text="statusText"
-                :serial-context="serialContext"
-                :ai-config="aiConfig"
-                :ai-switches="aiSwitches"
-                @send="onSend"
-                @update-ai-config="saveAiConfig"
-                @update-ai-switches="saveAiSwitches"
-              />
-              <PidPanel
+              <PidAgentPanel
                 v-show="activeTab === 'pid'"
                 :connected="connected"
                 :ai-config="aiConfig"
-                :serial-context="serialContext"
                 :latest-payload="latestPayload"
                 @send="onSend"
                 @simulation-data="onPidSimulationData"
@@ -530,11 +516,6 @@ function toggleHex() {
   color: var(--color-primary);
   border-bottom-color: var(--color-primary);
   font-weight: var(--weight-medium);
-}
-
-.lower-tabs button.active.ai {
-  color: var(--color-ai);
-  border-bottom-color: var(--color-ai);
 }
 
 .lower-panel {
