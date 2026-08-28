@@ -22,6 +22,8 @@ const MAX_MESSAGES = 5000
 
 // 消息自增 id，用于稳定的 v-for key
 let messageId = 0
+// 数据表行自增 id（稳定 key，避免下标 key 导致的全量重 patch）
+let rowId = 0
 
 // 滚动容器引用
 const messageListRef = ref(null)
@@ -195,6 +197,8 @@ async function clear() {
   }
   messages.value = []
   tableRows.value = []
+  // 待处理队列一并清空，避免清空后 100ms 内又补进一批旧数据
+  pendingSerialData.length = 0
 }
 
 function formatTime(payload) {
@@ -215,28 +219,73 @@ function parseToNumbers(raw) {
 }
 
 function onSerialData(payload) {
-  const { t, ms } = formatTime(payload)
-  messages.value.unshift({
-    id: ++messageId,
-    type: 'receive',
-    text: props.showHex ? payload.hex : payload.raw,
-    time: t,
-    ms
-  })
+  // 高频串口流批处理：设备遥测可达数百条/秒，逐条 IPC → 响应式更新 → DOM 重渲染
+  // 会把渲染进程打满（UI 卡死、消息流时间戳积压数分钟、按钮无响应）。
+  // 这里只入队（普通数组，零响应式成本），由 100ms 定时器批量消费：
+  // 同一 tick 内完成全部 unshift 与 emit，Vue 自动合并为一次组件重渲染。
+  // 主进程已按 25ms 时间窗聚合 IPC，payload 可能是单对象或数组（数组批）。
+  if (Array.isArray(payload)) {
+    for (const item of payload) pendingSerialData.push(item)
+  } else {
+    pendingSerialData.push(payload)
+  }
+  scheduleFlush()
+}
+
+/** 批量刷新间隔：消息流 10Hz 刷新肉眼依然流畅，且渲染开销恒定与数据速率无关 */
+const SERIAL_FLUSH_MS = 100
+const pendingSerialData = []
+let flushTimer = null
+
+function scheduleFlush() {
+  if (flushTimer != null) return
+  flushTimer = setTimeout(() => {
+    flushTimer = null
+    if (pendingSerialData.length) {
+      flushSerialData()
+      // flush 期间又有新数据到达：继续排队下一轮
+      if (pendingSerialData.length) scheduleFlush()
+    }
+  }, SERIAL_FLUSH_MS)
+}
+
+function flushSerialData() {
+  const batch = pendingSerialData.splice(0, pendingSerialData.length)
+  // 先在普通数组里构建整批新消息/新表格行，最后一次性 unshift：
+  // 逐条对响应式数组 unshift 是 O(n) 移动/条（n=5000 时高频批下开销显著），
+  // 一次 spread unshift 把移动成本合并为单次 O(n+m)。
+  const newMessages = []
+  const newRows = []
+  for (const payload of batch) {
+    const { t, ms } = formatTime(payload)
+    newMessages.push({
+      id: ++messageId,
+      type: 'receive',
+      text: props.showHex ? payload.hex : payload.raw,
+      time: t,
+      ms
+    })
+
+    // 数据表（稳定自增 id 作 v-for key：若用数组下标作 key，头部插入导致
+    // 所有行索引偏移，Vue 会全量重 patch 1000 行 × 9 单元格，低配机直接卡死）
+    const nums = parseToNumbers(payload.raw)
+    if (nums.length > 0) {
+      newRows.push({ id: ++rowId, time: t, ms, values: nums })
+    }
+
+    emit('data', payload)
+  }
+  if (newMessages.length) messages.value.unshift(...newMessages)
+  if (newRows.length) {
+    tableRows.value.unshift(...newRows)
+    if (tableRows.value.length > MAX_TABLE_ROWS) {
+      tableRows.value.splice(tableRows.value.length - MAX_TABLE_ROWS)
+    }
+  }
+  // 批量截断一次（而非逐条），同 tick 内全部响应式修改合并为一次重渲染
   if (messages.value.length > MAX_MESSAGES) {
     messages.value.length = MAX_MESSAGES
   }
-
-  // 数据表
-  const nums = parseToNumbers(payload.raw)
-  if (nums.length > 0) {
-    tableRows.value.unshift({ time: t, ms, values: nums })
-    if (tableRows.value.length > MAX_TABLE_ROWS) {
-      tableRows.value.pop()
-    }
-  }
-
-  emit('data', payload)
   if (autoScroll.value) scrollToTop()
 }
 
@@ -314,7 +363,8 @@ async function replayRecording() {
       })
       const nums = parseToNumbers(item.raw)
       if (nums.length > 0) {
-        tableRows.value.unshift({ time: t, ms, values: nums })
+        // 回放行同样使用自增 id 作稳定 key（v-for 依赖 row.id）
+        tableRows.value.unshift({ id: ++rowId, time: t, ms, values: nums })
         if (tableRows.value.length > MAX_TABLE_ROWS) tableRows.value.pop()
       }
     }, delay)
@@ -343,6 +393,11 @@ onUnmounted(() => {
     clearInterval(simulateTimer)
     simulateTimer = null
   }
+  if (flushTimer) {
+    clearTimeout(flushTimer)
+    flushTimer = null
+  }
+  pendingSerialData.length = 0
 })
 </script>
 
@@ -392,8 +447,8 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- 数据流视图 -->
-    <div v-show="activeSubTab === 'stream'" class="message-list-container">
+    <!-- 数据流视图（v-if：隐藏时不参与 patch，切回时由组件状态重建 DOM） -->
+    <div v-if="activeSubTab === 'stream'" class="message-list-container">
       <button v-if="!autoScroll" class="resume-follow" @click="scrollToTop">已暂停跟随 · 回到最新</button>
       <div
         ref="messageListRef"
@@ -401,10 +456,10 @@ onUnmounted(() => {
         @scroll="onScroll"
       >
         <div
-          v-for="(msg, idx) in messages"
+          v-for="msg in messages"
           :key="msg.id"
           class="message-row"
-          :class="{ alt: idx % 2 === 1, [msg.type]: true }"
+          :class="msg.type"
         >
           <span class="timestamp">[{{ msg.time }}.{{ msg.ms }}]</span>
           <span class="direction" :class="msg.type">{{ msg.type === 'send' ? 'Tx:' : msg.type === 'receive' ? 'Rx:' : msg.type === 'system' ? 'Sy:' : 'Er:' }}</span>
@@ -416,7 +471,7 @@ onUnmounted(() => {
 
     <!-- 数据表视图 -->
     <div
-      v-show="activeSubTab === 'table'"
+      v-if="activeSubTab === 'table'"
       ref="tableViewRef"
       class="table-view"
       @scroll="onScroll"
@@ -429,7 +484,7 @@ onUnmounted(() => {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(row, idx) in tableRows" :key="idx" :class="{ alt: idx % 2 === 1 }">
+          <tr v-for="row in tableRows" :key="row.id">
             <td class="ts-cell">{{ row.time }}.{{ row.ms }}</td>
             <td v-for="i in 8" :key="i" class="val-cell">
               {{ row.values[i - 1] !== undefined ? row.values[i - 1].toFixed(3) : '—' }}
@@ -621,7 +676,9 @@ onUnmounted(() => {
   padding: 1px var(--space-4);
 }
 
-.message-row.alt {
+/* 隔行底色用 CSS nth-child：若绑定 idx 计算的 alt class，头部插入会让
+   全部 5000 行 class 重算重写，高频流下是显著 DOM 开销 */
+.message-row:nth-child(even) {
   background: var(--message-alt-bg);
 }
 
@@ -693,7 +750,7 @@ onUnmounted(() => {
   color: var(--color-text-primary);
 }
 
-.data-table tr.alt td {
+.data-table tbody tr:nth-child(even) td {
   background: var(--message-alt-bg);
 }
 

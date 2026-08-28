@@ -34,6 +34,7 @@ import {
   readCanonicalPid,
   applyCanonicalPid,
   buildSimOverrides,
+  buildPidCommand,
   createSerialStepCollector
 } from '../services/pidAgent/utils.mjs'
 
@@ -41,8 +42,10 @@ import {
 const COMPACT_THRESHOLD_BYTES = 50 * 1024
 
 // 串口阶跃安全检测窗口时长（秒）：set_target 下发后，自响应首帧计时，
-// 攒满该时长即自动对窗口内样本做安全检测（与常见仿真阶跃时长一致，可按需调整）
-const SERIAL_STEP_WINDOW_SEC = 5
+// 攒满该时长即自动对窗口内样本做安全检测。
+// 取 12s：实测设备 set_point 为斜坡（0→50 约 8-10s 才到稳态），5s 窗口内系统
+// 尚未收敛，指标全失真（SLOW_RESPONSE / 包络虚高）；留裕量覆盖斜坡 + 稳态段。
+const SERIAL_STEP_WINDOW_SEC = 12
 
 /** 串级策略判定（目前仅 cascade_position 为串级） */
 const isCascadeStrategy = (strategyId) => strategyId === 'cascade_position'
@@ -331,9 +334,24 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
         })
         break
       }
-      case 'agent_end':
+      case 'agent_end': {
         stopReason.value = String(event.stopReason ?? '')
+        // 失败要进聊天流：此前仅更新顶部状态行，LLM 失败时对话区毫无反馈，
+        // 用户看到的就是"发完任务卡住不动"。这里补一条醒目的错误消息。
+        if (event.stopReason === 'error') {
+          const text = `调参已中止：${event.error || 'LLM 调用失败'}`
+          messages.value.push({
+            id: nextUiMessageId(),
+            kind: 'error',
+            text,
+            toolName: null,
+            toolStatus: null,
+            durationMs: null,
+            shownLen: text.length
+          })
+        }
         break
+      }
       default:
         break
     }
@@ -417,6 +435,8 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
       scenePrompt: scenePrompt.value,
       overshootLimit: 20,
       oscillationLimit: 10,
+      // 运行模式（systemPrompt 渲染串口模式专属引导用）
+      mode: testMode.value,
       // 仿真模式注入模型物理特性（串口模式不提供，模型按实测数据说话）
       modelSpec: buildModelSpec(strategyId.value, testMode.value)
     }
@@ -485,12 +505,14 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
       })
     }
 
-    /** 安全护栏（bestStable 随重建重置；emit 走统一事件处理，safety_triggered 不重复推消息） */
+    /** 安全护栏（bestStable 随重建重置；emit 走统一事件处理，safety_triggered 不重复推消息）。
+     *  mode 双策略：仿真全量回退；串口仅硬越限回退（劣化误触发实测会毁掉整局调参） */
     safetyGuard = createSafetyGuard({
       userConfig: internalUserConfig,
       getPid: getPidSnapshot,
       setPid: setPidHandler,
-      emit
+      emit,
+      mode: testMode.value
     })
 
     /**
@@ -511,6 +533,16 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
           durationMs: null,
           shownLen: result.message.length
         })
+        // 串口模式：回退参数必须同步下发设备——护栏 setPid 只写上位机内存，
+        // 若不下发，设备仍跑越限参数，上位机/设备参数分裂（回退形同虚设）。
+        if (result.rollbackPid && testMode.value === 'serial') {
+          const cmd = buildPidCommand(result.rollbackPid, {
+            isCascade: isCascadeStrategy(strategyId.value)
+          })
+          Promise.resolve(onSerialSend?.(cmd)).catch(() => {
+            // 下发失败静默：串口错误已有 serial:error 通道上报，不阻塞安全流程
+          })
+        }
       }
       return result
     }
@@ -558,6 +590,8 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
       },
       getDataBuffer: () => dataBuffer,
       getUserConfig: () => internalUserConfig,
+      // 串口阶跃采集窗口时长（set_target 串口分支组装 suggestedQuery 用）
+      getStepWindowSec: () => SERIAL_STEP_WINDOW_SEC,
       // 样本采集完成后的安全检测（仿真模式 set_target 调用；串口模式由窗口采集器完成回调驱动）
       onSamplesCollected: notifySamplesCollected,
       // 串口阶跃已下发：开启/重置窗口采集（真实数据流入 onSerialData 后在此窗口内收样）

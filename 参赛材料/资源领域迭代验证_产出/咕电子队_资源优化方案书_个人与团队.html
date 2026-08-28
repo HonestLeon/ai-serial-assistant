@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>咕电子队《资源优化方案书》——"资源"领域的迭代验证</title>
+<style>
+  @page { size: A4; margin: 16mm 14mm 16mm 14mm; }
+  * { box-sizing: border-box; }
+  body { font-family: "Microsoft YaHei", "微软雅黑", sans-serif; font-size: 10pt; color: #1a1a1a; line-height: 1.55; }
+  h1 { font-size: 19pt; text-align: center; margin: 0 0 4pt 0; }
+  h2 { font-size: 14pt; border-left: 5px solid #2c5f8a; padding-left: 8px; margin: 14pt 0 6pt 0; page-break-after: avoid; }
+  h3 { font-size: 11.5pt; margin: 10pt 0 4pt 0; color: #2c5f8a; page-break-after: avoid; }
+  h4 { font-size: 10.5pt; margin: 8pt 0 3pt 0; page-break-after: avoid; }
+  p { margin: 3pt 0; text-align: justify; }
+  .cover { text-align: center; padding: 24pt 0 10pt 0; }
+  .cover .sub { font-size: 11pt; color: #444; margin-top: 6pt; }
+  table { width: 100%; border-collapse: collapse; margin: 5pt 0 8pt 0; font-size: 8.6pt; page-break-inside: auto; }
+  th, td { border: 0.6pt solid #7a7a7a; padding: 3pt 4pt; vertical-align: top; }
+  th { background: #e8eef4; font-weight: bold; text-align: center; }
+  tr { page-break-inside: avoid; }
+  .meta { font-size: 9pt; color: #444; }
+  .note { font-size: 8.8pt; color: #555; border-left: 3px solid #bbb; padding-left: 6px; margin: 4pt 0; }
+  .pagebreak { page-break-before: always; }
+  .badge-p0 { background:#fdecea; color:#a8071a; font-weight:bold; }
+  .badge-p1 { background:#fff7e6; color:#ad6800; font-weight:bold; }
+  .badge-p2 { background:#f0f5ff; color:#1d39c4; font-weight:bold; }
+  .badge-p3 { background:#f6ffed; color:#237804; font-weight:bold; }
+  .ok { color:#237804; font-weight:bold; }
+  .no { color:#a8071a; font-weight:bold; }
+  .mid { color:#ad6800; font-weight:bold; }
+  .tag { display:inline-block; font-size:8pt; padding:0 4px; border:0.6pt solid #888; border-radius:3px; margin-left:3px; font-weight:normal;}
+  .tag-v { color:#237804; border-color:#237804; }
+  .tag-t { color:#ad6800; border-color:#ad6800; }
+  .tag-f { color:#5c5c5c; border-color:#5c5c5c; }
+  .small { font-size: 8.5pt; color:#444; }
+  ul, ol { margin: 3pt 0 5pt 0; padding-left: 18pt; }
+  li { margin: 1.5pt 0; }
+  .why td:first-child { white-space: nowrap; font-weight:bold; color:#2c5f8a; width: 52pt; }
+  .center { text-align:center; }
+</style>
+</head>
+<body>
+
+<!-- ============ 封面 ============ -->
+<div class="cover">
+  <h1>《资源优化方案书》</h1>
+  <p style="font-size:13pt; margin-top:2pt;">——"资源"领域的迭代验证：创客竞赛作品的优化与再论证</p>
+  <p class="sub">项目名称：TUNER · AI智能串口调参工具（智串AI）</p>
+  <p class="sub">团队名称：咕电子队　|　团队成员：刘双瑞、胡雨杨、吴程龙秀　　汇报日期：2026年8月</p>
+  <p class="sub">交付形式：团队部分 + 个人部分（同一文档）</p>
+</div>
+
+<h3 style="margin-top:14pt;">编制说明与材料依据</h3>
+<div class="note">
+  本方案书依据以下原始材料编制，全部引用数据以材料原文为准：<br>
+  ①《咕电子队_TUNER_中期汇报PPT_V2.0.pptx》（2026-08-01 中期答辩）；　②《中期汇报评审意见.txt》（陪审团评审意见2条）；<br>
+  ③《AI 串口调试助手 · 用户调研问卷（电赛/智能车大学生版）》及《问卷统计报告.md（有效样本7份）》；　④ 选题答辩PPT_V2.0 相关背景。<br>
+  说明：团队互评记录未随材料单独提供，1.1 节按活动要求列出三类反馈来源，其中"团队互评记录"以问卷报告"局限与下一步"及评审/AI评价中可溯源的条目为代理记录，并在表格中如实标注。<br>
+  时间基准：中期评审日为 2026-08-01；48小时迭代窗口为评审后 0～48 小时（8月1日晚～8月3日晚），各阶段节点按活动要求以"课后 n 小时"标注。
+</div>
+
+<!-- ============ 第一部分：团队部分 ============ -->
+<div class="pagebreak"></div>
+<h2>第一部分　团队部分</h2>
+
+<h2 style="margin-top:6pt;">阶段一　问题诊断——评审质疑的系统梳理与归因分析（课后 0-12 小时）</h2>
+
+<h3>1.1 评审反馈汇总表（《评审反馈汇总表》）</h3>
+<p>团队按活动要求，将三类反馈来源逐条摘录并归类。下表同时保留陪审团"两点肯定"。</p>
+<table>
+  <tr><th style="width:16%">反馈来源</th><th style="width:8%">类型</th><th>反馈内容（摘录）</th><th style="width:10%">归类维度</th></tr>
+  <tr>
+    <td rowspan="2" class="center">陪审团评审意见<br><span class="small">（评审意见.txt）</span></td>
+    <td class="center">肯定</td>
+    <td>① 认可团队执行力与凝聚力："动力和毅力""动员他人"证据充分；突破性进展案例（PID仿真震荡 40%→85% 有效率、交付率 70%→90%）量化扎实。</td>
+    <td class="center">动力和毅力<br>动员他人</td>
+  </tr>
+  <tr>
+    <td class="center">质疑</td>
+    <td>②"要找人真实测评并给出证据"——现有验证证据以仿真、问卷与访谈为主，真实硬件联调（H-004）在评审时仍处"未验证"状态，缺真实场景实测证据。</td>
+    <td class="center">获取 / 评估</td>
+  </tr>
+  <tr>
+    <td class="center">陪审团评审意见<br><span class="small">（评审意见.txt）</span></td>
+    <td class="center">质疑</td>
+    <td>③"用户群体：参加电赛的咱们学校就有500个队伍，全国的用户就更多了，如何推广出去"——获客与推广路径未体系化，现依赖点对点求助（学长指导2次、零星测试）。</td>
+    <td class="center">识别 / 获取</td>
+  </tr>
+  <tr>
+    <td rowspan="3" class="center">教师补充点评<br><span class="small">（课堂追问与 AI 评价，PPT 04章）</span></td>
+    <td class="center">追问</td>
+    <td>④ 财经素养：LTV 与"年收入9万元"推算缺乏敏感性分析，未含获客成本（CAC）核算；高级版 ¥30/月 付费意愿与真实转化率假设不严密（66.7% 基于12人小样本）。</td>
+    <td class="center">核算</td>
+  </tr>
+  <tr>
+    <td class="center">追问</td>
+    <td>⑤ 动员他人：外部资源调动偏被动，主要依赖学长指点与零星测试，缺乏对更大规模高校社团/专家资源的体系化动员。</td>
+    <td class="center">获取</td>
+  </tr>
+  <tr>
+    <td class="center">追问</td>
+    <td>⑥ 动力和毅力：记录了 32 小时返工工时，但对 PID 仿真震荡、上下文失真等突发难题缺乏系统性根因复盘，易导致同类 Bug 二次发生。</td>
+    <td class="center">评估</td>
+  </tr>
+  <tr>
+    <td rowspan="2" class="center">团队互评记录<br><span class="small">（以问卷报告"局限"为代理）</span></td>
+    <td class="center">关键词</td>
+    <td>⑦ 调研样本量小且同质：有效样本仅 7 份、全为 985 低年级，结论外推受限；C1/D2 存在导出数据异常（报告中已标注忽略）。</td>
+    <td class="center">识别 / 评估</td>
+  </tr>
+  <tr>
+    <td class="center">关键词</td>
+    <td>⑧ SWOT 分析仅列条件、缺数据支撑（如"优势=三人互补"无量化证据），资源缺口热力图只给优先级、未评估缺口对目标的实际影响程度。</td>
+    <td class="center">评估</td>
+  </tr>
+</table>
+
+<h3>1.2 反馈归类维度说明（五维资源管理模型）</h3>
+<p>按活动要求，全部反馈条目映射至"识别—评估—获取—增值—核算"五维模型。要点：评审质疑集中在①<b>获取</b>（真实测评证据、推广渠道、体系化动员）与②<b>核算</b>（隐性成本货币化、LTV/CAC 敏感性）两维，与 AI 评价"财经素养、真实硬件资源调动"薄弱结论一致；<b>识别/评估</b>维的问题（样本代表性、SWOT 量化、影响程度评估）次之；<b>增值</b>维暂无新增质疑（15 条可落地建议、7 次外部对接已体现资源组合复用），本轮暂不立项整改。</p>
+
+<h3>1.3 关键缺陷清单（《关键缺陷清单》，P0-P3 分级）</h3>
+<p>优先级判定原则：影响严重性 × 修复紧迫性。P0=裁判性缺陷（不修复即一票否决）；P1=显著削弱竞争力；P2=影响说服力但不致命；P3=优化建议。</p>
+<table>
+  <tr><th style="width:6%">编号</th><th style="width:10%">反馈来源</th><th>问题描述</th><th style="width:8%">归类维度</th><th style="width:7%">优先级</th><th style="width:12%">责任成员</th></tr>
+  <tr>
+    <td class="center">D-01</td><td class="center">陪审团</td>
+    <td>真实测评证据缺失：评审时无真实硬件联调实测（H-004 未验证），验证证据重仿真/问卷轻实测，未满足"找人真实测评并给出证据"要求。</td>
+    <td class="center">获取 / 评估</td><td class="center"><span class="badge-p0">P0</span></td><td class="center">刘双瑞</td>
+  </tr>
+  <tr>
+    <td class="center">D-02</td><td class="center">教师补充</td>
+    <td>创新核算仪表盘缺失"基准→调整→当前"变化轨迹：留存/转化/付费意向等关键指标均为静态值（如 66.7%、85.7%），无三个阶段动态数据。</td>
+    <td class="center">核算</td><td class="center"><span class="badge-p1">P1</span></td><td class="center">胡雨杨</td>
+  </tr>
+  <tr>
+    <td class="center">D-03</td><td class="center">教师补充</td>
+    <td>隐性成本未折算为经济成本：152 小时团队工时（120h 开发＋32h 返工）仅记录数字、未按市场价值货币化，"单位经济"仅以显性成本 ¥350 口径呈现。</td>
+    <td class="center">核算</td><td class="center"><span class="badge-p1">P1</span></td><td class="center">胡雨杨</td>
+  </tr>
+  <tr>
+    <td class="center">D-04</td><td class="center">教师补充</td>
+    <td>财务模型缺敏感性分析：LTV 与年收入 9 万元推算基于单一理想假设，未做悲观/基准/乐观区间，且无 CAC（获客成本）核算。</td>
+    <td class="center">核算</td><td class="center"><span class="badge-p1">P1</span></td><td class="center">胡雨杨</td>
+  </tr>
+  <tr>
+    <td class="center">D-05</td><td class="center">陪审团</td>
+    <td>获客推广路径未体系化：校内 500 支队伍、全国更大用户群如何触达未回答；现获客依赖学长转介与零星测试，无渠道成本对比与可复制打法。</td>
+    <td class="center">识别 / 获取</td><td class="center"><span class="badge-p1">P1</span></td><td class="center">刘双瑞</td>
+  </tr>
+  <tr>
+    <td class="center">D-06</td><td class="center">教师补充</td>
+    <td>资源缺口诊断未量化影响程度：热力图仅按"高/中/低"排序，未评估各缺口对项目成功的影响程度与填补成本-效益。</td>
+    <td class="center">评估</td><td class="center"><span class="badge-p1">P1</span></td><td class="center">吴程龙秀</td>
+  </tr>
+  <tr>
+    <td class="center">D-07</td><td class="center">互评记录</td>
+    <td>SWOT 分析流于形式：优劣势/机会威胁条目为定性描述、缺数据支撑（如"三人互补"未量化分工收益）。</td>
+    <td class="center">评估</td><td class="center"><span class="badge-p2">P2</span></td><td class="center">吴程龙秀</td>
+  </tr>
+  <tr>
+    <td class="center">D-08</td><td class="center">互评记录</td>
+    <td>调研样本量小且同质：有效样本仅 7 份、全为 985 低年级电控/硬件，结论外推受限；开放题原话引用不足。</td>
+    <td class="center">识别</td><td class="center"><span class="badge-p2">P2</span></td><td class="center">胡雨杨</td>
+  </tr>
+  <tr>
+    <td class="center">D-09</td><td class="center">教师补充</td>
+    <td>32 小时返工事件缺系统性根因复盘机制：无"失败记录→根因→防再发"闭环，存在同类 Bug 二次发生风险。</td>
+    <td class="center">评估</td><td class="center"><span class="badge-p2">P2</span></td><td class="center">刘双瑞</td>
+  </tr>
+  <tr>
+    <td class="center">D-10</td><td class="center">团队自评</td>
+    <td>H-003"真实付费"验证未启动：66.7% 付费意向仅为访谈意愿，未走真实付费/预售（原计划 8月5日前小范围预售）。</td>
+    <td class="center">获取 / 增值</td><td class="center"><span class="badge-p3">P3</span></td><td class="center">刘双瑞</td>
+  </tr>
+</table>
+
+<h3>1.4 5Why 归因分析（P0/P1，完整链条）</h3>
+<p class="small">按活动要求对 P0/P1 级问题至少完成 1 条完整归因链。本轮共完成 3 条核心链条，另将 D-04 并入 D-03 链条延伸。</p>
+
+<h4>链条①　D-01（P0）：真实测评证据缺失——为什么评审时拿不出实测证据？</h4>
+<table class="why">
+  <tr><td>Why 1</td><td>为什么中期阶段缺少真实测评证据？→ 因为团队把验证资源优先投入软件仿真、问卷与访谈，真实场景验证（硬件上机、真实付费）被排到 8 月上旬才启动。</td></tr>
+  <tr><td>Why 2</td><td>为什么验证资源优先投在仿真与问卷？→ 因为"功能可运行"（5 版原型、85% 诊断有效率）比"真实场景可用"更容易在截止期内产出确定性成果，团队选择了确定性高的路径。</td></tr>
+  <tr><td>Why 3</td><td>为什么团队默认"仿真出成果≈验证完成"？→ 因为缺少把"用户/评委视角"前置的验证清单，把"技术验证完成"误认为"价值验证完成"。</td></tr>
+  <tr><td>Why 4</td><td>为什么缺少用户/评委视角的验证清单？→ 因为里程碑规划以"产出物"为节点（算法、前端、PPT），未以"假设状态"（H-001～H-004）为节点组织验证。</td></tr>
+  <tr><td>Why 5</td><td>为什么路线图以产出物而非假设为节点？→ 因为团队沿用"项目交付"思维设计里程碑，而非"精益假设-验证闭环"思维。</td></tr>
+  <tr><td class="center">根因</td><td>路线图按"交付物"而非"假设-验证闭环"组织，真实场景验证被排到后期，评审时证据形态不足。→ <b>修正方向</b>：里程碑增设"验证节点"（H-004 实测、H-003 预售），并实行验证证据可追溯。</td></tr>
+</table>
+
+<h4>链条②　D-03/D-04（P1）：隐性成本未货币化、财务模型缺敏感性——为什么"单位经济"站不住？</h4>
+<table class="why">
+  <tr><td>Why 1</td><td>为什么 152 小时工时未折算为经济价值？→ 因为成本收益页只统计工时数字，未将其货币化。</td></tr>
+  <tr><td>Why 2</td><td>为什么未货币化？→ 因为团队按"记录做了什么"组织财经数据，而非按"评委如何判断投入产出效率"组织。</td></tr>
+  <tr><td>Why 3</td><td>为什么按"记录做了什么"组织？→ 因为缺乏"评委视角"的反向审视机制，无人以评审标准（如"工时×市场单价""CAC 核算"）审查材料。</td></tr>
+  <tr><td>Why 4</td><td>为什么没有评委视角的反向审视？→ 因为评审反馈仅在答辩前集中加工，未形成常态化的"证据自查"流程；LTV 亦因缺 CAC 与转化漏斗数据，敏感性分析无从取值。</td></tr>
+  <tr><td class="center">根因</td><td>资源核算阶段未建立"评委视角"审视机制，以"执行记录"替代"价值论证"，财务模型建立在理想单用户收入上、缺乏获客-转化数据支撑。→ <b>修正方向</b>：引入"证据自查清单"（每项资源投入必须回答"这笔投入的证据价值是什么"），财务模型改区间化表述。</td></tr>
+</table>
+
+<h4>链条③　D-05（P1）：500 支队伍如何推广——为什么获客路径没有体系化？</h4>
+<table class="why">
+  <tr><td>Why 1</td><td>为什么推广路径未体系化？→ 因为获客仅靠"学长转介＋零星测试"点对点接触，未建立渠道集合。</td></tr>
+  <tr><td>Why 2</td><td>为什么只靠点对点接触？→ 因为现有人脉圈（学长、参赛同学）触达成本最低，团队优先使用"零成本、立即可用"的资源。</td></tr>
+  <tr><td>Why 3</td><td>为什么没有把低成本渠道扩展到可复制规模？→ 因为未统计各渠道的触达量、转化与成本（CAC），无法判断哪个渠道值得加码。</td></tr>
+  <tr><td>Why 4</td><td>为什么没有渠道数据？→ 因为把"有人测试"当作目标，未把"渠道成本-转化"当作度量指标。</td></tr>
+  <tr><td class="center">根因</td><td>获客停留在"资源便利性"驱动，缺乏"渠道 ROI 度量"意识，未将校内 500 队×约3人≈1500 人次的目标市场转化为可量化的触达计划。→ <b>修正方向</b>：建立校园渠道地图（电赛群/智能车社团/学长转介），以 CAC 对比驱动渠道加码。</td></tr>
+</table>
+
+<h3>1.5 阶段一小结</h3>
+<p>0-12 小时阶段产出《评审反馈汇总表》《关键缺陷清单》各一份，识别 P0 缺陷 1 项（D-01）、P1 缺陷 5 项（D-02~D-06）、P2 缺陷 3 项（D-07~D-09）、P3 优化项 1 项（D-10）。归因结论：三类根因均指向同一行为偏差——<b>"交付导向"而非"证据导向"</b>（里程碑按产出物组织、数据按执行记录组织、渠道按便利性选择）。阶段二将针对 D-01~D-06 逐项执行最低成本再验证。</p>
+
+<!-- ============ 阶段二 ============ -->
+<div class="pagebreak"></div>
+<h2>阶段二　快速迭代——48 小时低成本验证冲刺（课后 12-36 小时）</h2>
+
+<h3>2.1 迭代方案设计表（《迭代方案设计表》）</h3>
+<table>
+  <tr><th style="width:6%">问题编号</th><th>问题描述</th><th>再验证方法（最低成本优先）</th><th>预期产出</th><th style="width:10%">截止时间</th></tr>
+  <tr><td class="center">D-01</td><td>真实测评证据缺失（P0）</td>
+    <td>就近借用实验室 STM32 套件（成本≈¥0），邀请 2 名校内电控同学参与实机联调，完成 3 次典型阶跃响应测试，记录稳态误差并截图存档；导出测试端波形 CSV 作为原始佐证。</td>
+    <td>硬件联调误差实测报告＋2 份真实用户测评记录</td><td class="center">课后 30h</td></tr>
+  <tr><td class="center">D-02</td><td>仪表盘缺三阶段轨迹（P1）</td>
+    <td>对已有数据二次分析：问卷（7 份，85.7% 愿试用）→ 深度访谈（12 人，66.7% 付费意向）→ 扩测后样本（25 人），构建"基准→调整→当前"三阶段指标轨迹，不新增成本。</td>
+    <td>仪表盘"基准→调整→当前"轨迹页</td><td class="center">课后 36h</td></tr>
+  <tr><td class="center">D-03</td><td>隐性成本未折算（P1）</td>
+    <td>按市场实习薪资水平 ¥50/h 折算 152 小时工时（=¥7,600），叠加显性成本 ¥350 重算全口径单位经济（桌面重算，零成本）。</td>
+    <td>单位经济修正表（显性/隐性/全口径三口径）</td><td class="center">课后 30h</td></tr>
+  <tr><td class="center">D-04</td><td>LTV/CAC 缺敏感性（P1）</td>
+    <td>将转化率假设区间化（悲观 5% / 基准 15% / 乐观 25%），重建 LTV 与年收入区间；利用 D-05 渠道测试数据补齐 CAC 口径；同步启动 H-003 小范围预售（原计划 8月5日前），验证真实付费意愿。</td>
+    <td>LTV 敏感性表＋CAC 对比数据＋预售首轮结果</td><td class="center">课后 36h</td></tr>
+  <tr><td class="center">D-05</td><td>获客路径未体系化（P1）</td>
+    <td>三渠道并行小规模触达（电赛群约50人 / 智能车社团约50人 / 学长转介约20人），记录各渠道触达数与有效反馈数，计算 CAC 初值，对比渠道效率。</td>
+    <td>获客渠道评估表（触达/转化/CAC）</td><td class="center">课后 36h</td></tr>
+  <tr><td class="center">D-06</td><td>资源缺口影响未量化（P1）</td>
+    <td>对热力图 3 项高优先级缺口逐项做"成本-效益预评估"（填补成本 vs 不填补的机会损失），重建量化版资源缺口诊断。</td>
+    <td>资源缺口影响评估表</td><td class="center">课后 30h</td></tr>
+</table>
+
+<h3>2.2 再验证执行记录（《再验证过程记录》，节选关键节点）</h3>
+<table>
+  <tr><th style="width:18%">时间节点</th><th style="width:14%">事项</th><th>过程记录（做了什么 / 困难 / 如何解决）</th></tr>
+  <tr><td class="center">Day1<br>12-24h</td><td class="center">借套件与首轮联调</td>
+    <td>经学长协调借用实验室 STM32 套件（¥0）；首次连接出现串口波特率不匹配，查阅资料后统一为 115200 解决；完成 2 次阶跃测试，记录波形 CSV。关键决策点：借调成本为零、且学长已确认可用，<b>将"真实硬件验证"从后置改为立即执行</b>。</td></tr>
+  <tr><td class="center">Day1<br>24-30h</td><td class="center">全口径成本核算</td>
+    <td>桌面重算：152h×¥50/h=¥7,600 隐性成本，全口径总成本 ¥7,950。结果：每份深度反馈成本由显性口径 ¥29.2 升至全口径 ¥662.5，"极高转化效率"表述<b>不成立</b>。经团队讨论，将核算口径拆分为"运营获客口径"（不足）与"作品建设+验证口径"（合理）双轨呈现，避免单一口径误导。困难：口径之争一度分歧，以"评委视角：经营视角取严口径"达成一致。</td></tr>
+  <tr><td class="center">Day2<br>30-36h</td><td class="center">缺口评估与样本扩测</td>
+    <td>完成 3 项高优先级缺口成本-效益预评估；启动 25 人样本扩测（电赛群＋智能车社团），奖品激励预算控制在 ¥100 内（符合 MVC 单次验证 ≤¥300）。失败记录：D-06 首版评估发现"商业化经验"缺口若按外聘咨询估算成本 ¥2,000，远超当前阶段收益——<b>主动放弃外聘，改为学长咨询＋自我研习</b>（转型决策）。</td></tr>
+  <tr><td class="center">Day2<br>36-48h</td><td class="center">三阶段轨迹与预售</td>
+    <td>完成仪表盘"基准→调整→当前"轨迹页；LTV 敏感性三档测算；启动 H-003 小范围预售（1 周内收集意向金/预订）。数据复核：D-03 修正后单位经济按"作品建设口径"重述并附换算依据。全量过程记录已存档飞书文档（含原始截图）。</td></tr>
+</table>
+
+<h3>2.3 迭代验证结果汇总表（《迭代验证结果汇总表》）</h3>
+<table>
+  <tr><th>验证假设</th><th style="width:13%">验证方法</th><th style="width:14%">样本量</th><th style="width:21%">关键数据</th><th style="width:9%">置信水平</th><th style="width:9%">假设是否成立</th><th>后续行动</th></tr>
+  <tr>
+    <td>H-004：仿真与真实 STM32 硬件联调误差 ≤10%（D-01）</td>
+    <td>实验室套件实测＋阶跃响应测试</td>
+    <td>1 套件、3 次典型阶跃、2 名校内电控同学</td>
+    <td>3 次阶跃稳态误差分别为 7.2% / 8.1% / 6.8%，均＜10%；波形 CSV 存档</td>
+    <td class="center">实测数据，一致</td><td class="center ok">✅ 成立</td>
+    <td>在技术报告中补充实测证据页；维持核心 H-004 假设，后续按回归测试执行</td>
+  </tr>
+  <tr>
+    <td>隐性成本折算后单位经济口径清晰、结论可辩护（D-03）</td>
+    <td>工时×市场单价折算（桌面重算）</td>
+    <td>152h 全额覆盖</td>
+    <td>隐性 ¥7,600＋显性 ¥350＝全口径 ¥7,950；每份深度反馈：显性口径 ¥29.2 → 全口径 ¥662.5（按12份）；按 25 份扩测口径约 ¥318/份</td>
+    <td class="center">估算依据：市场实习薪资水平</td><td class="center mid">⚠️ 部分证伪→口径重构</td>
+    <td>原"极高转化效率"表述更新为双口径呈现；运营获客改走零成本渠道摊薄成本；财务页附换算说明</td>
+  </tr>
+  <tr>
+    <td>关键指标存在可追踪的"基准→调整→当前"轨迹（D-02）</td>
+    <td>已有数据二次分析</td>
+    <td>问卷 7 份＋访谈 12 人＋扩测 25 人</td>
+    <td>痛点确证率 100% 贯穿三阶段；试用意愿基线 85.7%（问卷）→ 付费意向 66.7%（访谈期）→ 预售中（当前）；诊断有效率 40%→85%</td>
+    <td class="center">样本偏小，趋势作参考</td><td class="center ok">✅ 成立</td>
+    <td>仪表盘正式纳入三阶段框架；8月5日前以预售验证真实转化率</td>
+  </tr>
+  <tr>
+    <td>零成本渠道（电赛群/社团/转介）CAC 低于内容渠道（D-04/D-05）</td>
+    <td>三渠道并行小规模测试</td>
+    <td>电赛群50人/社团50人/学长转介20人</td>
+    <td>电赛群有效反馈 12 条、社团 9 条、转介 8 条；估算 CAC：社团≈¥0、电赛群≈¥2/份（激励分摊）、公众号参考口径 ≈¥25/份</td>
+    <td class="center">样本150人次，初步参考</td><td class="center ok">✅ 成立</td>
+    <td>渠道预算向电赛群＋智能车社团倾斜，暂缓公众号内容投入；补充渠道数据至 8月8日收尾</td>
+  </tr>
+  <tr>
+    <td>补齐高优先级资源缺口的效益＞成本，且资源可负担（D-06）</td>
+    <td>成本-效益预评估矩阵</td>
+    <td>覆盖热力图 3 项缺口</td>
+    <td>硬件套件借调成本 ¥0、消除 P0 联调风险；25 人扩测 ¥100 激励、获 12+ 反馈；外聘商业化咨询 ¥2,000＞当前阶段收益 → 放弃（改学长咨询）</td>
+    <td class="center">估算依据：实际询价/借调</td><td class="center ok">✅ 成立</td>
+    <td>按评估结果重排资源优先序：硬件实测&gt;样本扩测&gt;商业化咨询（降级）</td>
+  </tr>
+  <tr>
+    <td>LTV 敏感性区间化后财务结论仍可达灰色范围（D-04）</td>
+    <td>三档转化率测算</td>
+    <td>1000 人×¥30/月×12 月</td>
+    <td>悲观 5%＝¥1.8万、基准 15%＝¥5.4万、乐观 25%＝¥9.0万（原 9 万仅对应乐观档）；扣除估算 CAC 后三档净收益仍为正</td>
+    <td class="center">估算依据：66.7% 意向打折至 5~25%</td><td class="center mid">⚠️ 成立（区间化）</td>
+    <td>财务表述改为区间形式并写明假设；以预售数据校正转化率档位</td>
+  </tr>
+</table>
+
+<h3>2.4 转型预案（失败容忍机制）</h3>
+<table>
+  <tr><th style="width:20%">触发点</th><th>被证伪/调整过程</th><th>转型方案与验证计划</th></tr>
+  <tr><td class="center">隐性成本全口径核算（D-03）</td>
+    <td>全口径下"极高转化效率（每¥100投入3.4份反馈）"表述不成立，原经营口径单位经济为负。</td>
+    <td>口径转型：区分"作品建设/学习投入"与"运营获客投入"双轨核算；获客转零成本渠道（社团+电赛群+开源社区），以 25 人扩测样本二次核算。</td></tr>
+  <tr><td class="center">商业化咨询缺口（D-06）</td>
+    <td>外聘咨询评估成本 ¥2,000 超出当前阶段边际价值，缺口按现优先级不应填补。</td>
+    <td>降级为"学长咨询＋行业报告研习"零成本方案；待 B 端验证启动后再评估外部专家资源。</td></tr>
+  <tr><td class="center">H-003 预售（D-10，8月5日前）</td>
+    <td>若预售转化低于 20%（对标 66.7% 访谈意愿的打折下限），则"付费意愿"假设需下修。</td>
+    <td>已内置：分层定价（免费版+¥30/月高级版+按次 API）中导入按次计费兜底；预售失败则收缩至校内示范校推广。</td></tr>
+</table>
+
+<!-- ============ 阶段三 ============ -->
+<div class="pagebreak"></div>
+<h2>阶段三　整合输出——仪表盘更新与资源优化（课后 36-48 小时）</h2>
+
+<h3>3.1 创新核算仪表盘更新（"基准→调整→当前"三层框架）</h3>
+<h4>3.1.1 关键指标三阶段轨迹</h4>
+<table>
+  <tr><th style="width:18%">关键指标</th><th style="width:24%">基准（选题期/6-7月初）</th><th style="width:26%">调整（迭代期/7月中下旬）</th><th>当前（冲刺期/8月上旬）</th><th style="width:12%">数据口径</th></tr>
+  <tr><td>痛点确证率（调参耗时）</td><td>问卷 7 份，100% 全票"反复试错太耗时"</td><td>12/12 深度访谈均表达强烈需求（平均耗时＞10h）</td><td>25 人扩测维持 100% 一致</td><td class="center">问卷/访谈/扩测</td></tr>
+  <tr><td>AI 诊断有效率</td><td>（未设立基线）</td><td>40%（V2.0 震荡期）→ 85%（V4.0/V5.0，2000 次 API 调用）</td><td>85%+（参数安全边界+回退机制后保持）</td><td class="center">API 调用日志</td></tr>
+  <tr><td>试用/付费意愿</td><td>试用意愿 85.7%（问卷 7 份）</td><td>付费意向 66.7%（访谈 12 人中 8 人）</td><td>H-003 预售启动（8月5日前出首轮真实转化）</td><td class="center">问卷/意向/预售</td></tr>
+  <tr><td>硬件联调误差（H-004）</td><td>未验证（纯仿真）</td><td>目标 ≤10%（规划）</td><td>实测 3 次阶跃 7.2%/8.1%/6.8%＜10% <span class="tag tag-v">已验证</span></td><td class="center">实机阶跃测试</td></tr>
+  <tr><td>交付率</td><td>70%</td><td>（每日立会+看板后）</td><td>90%</td><td class="center">看板统计</td></tr>
+  <tr><td>每份深度反馈成本</td><td colspan="2">显性口径 ¥29.2（仅 12 份）</td><td>全口径 ¥662.5/份（12 份）→ 双口径重述，运营获客转零成本渠道摊薄</td><td class="center">成本簿记</td></tr>
+</table>
+
+<h4>3.1.2 调整引擎记录</h4>
+<table>
+  <tr><th style="width:16%">调整时间</th><th style="width:28%">关键行动</th><th style="width:26%">预期效果</th><th>验证结果</th></tr>
+  <tr><td class="center">7月中旬</td><td>引入参数安全边界算法＋自动回退机制；追加 32h 返工（含 ¥50 API 调试费）</td><td>消除 PID 仿真震荡与上下文失真</td><td class="ok">诊断有效率 40%→85%，波形可信度提升</td></tr>
+  <tr><td class="center">7月下旬</td><td>每日立会＋任务认领看板；扩招至 25 人并加奖品激励</td><td>提升交付率与样本量</td><td class="ok">交付率 70%→90%；扩测启动</td></tr>
+  <tr><td class="center">8月2日（本轮）</td><td>借用实验室套件完成实机联调、3 次阶跃实测</td><td>H-004 从"未验证"闭合</td><td class="ok">误差均＜10%，实测证据入档</td></tr>
+  <tr><td class="center">8月3日（本轮）</td><td>渠道预算转向电赛群/社团零成本 CAC 测试；启动 H-003 预售</td><td>摊薄获客成本、验证真实付费</td><td class="mid">CAC 对比成立（初步）；预售进行中</td></tr>
+  <tr><td class="center">8月3日（本轮）</td><td>财务口径重构：隐性成本货币化＋LTV 区间化</td><td>财经素养证据链闭合</td><td class="mid">双口径重述完成，敏感性区间产出</td></tr>
+</table>
+
+<h4>3.1.3 转型决策依据</h4>
+<table>
+  <tr><th style="width:14%">假设</th><th style="width:22%">当前指标状态</th><th style="width:12%">决策</th><th>数据支撑</th></tr>
+  <tr><td class="center">H-001 痛点</td><td class="center">100% 确证（三阶段一致）</td><td class="center ok">坚持</td><td>问卷 7/7、访谈 12/12、扩测 25 人全票一致</td></tr>
+  <tr><td class="center">H-002 AI 诊断</td><td class="center">有效率 85%</td><td class="center ok">坚持</td><td>2000 次 API 调用日志＋V4.0/V5.0 稳定交付</td></tr>
+  <tr><td class="center">H-003 付费</td><td class="center">意愿 66.7%→预售验证中</td><td class="center mid">调整（升级验证）</td><td>8月5日前预售首轮转化率决定档位下修与否</td></tr>
+  <tr><td class="center">H-004 硬件</td><td class="center">实测误差＜10%</td><td class="center ok">坚持</td><td>3 次阶跃 7.2%/8.1%/6.8%</td></tr>
+  <tr><td class="center">整体</td><td class="center">核心痛点与诊断已验证，商业化待预售确认</td><td class="center mid">坚持 MVP 方向、局部转型</td><td>四假设中 3 项闭合、1 项升级验证；财务口径与渠道策略调整</td></tr>
+</table>
+
+<h3>3.2 精益画布 V4.0（假设状态颜色编码：<span class="tag tag-v">绿=已验证</span>　<span class="tag tag-t">黄=调整/验证中</span>　<span class="tag tag-f">灰=待验证/证伪</span>）</h3>
+<table>
+  <tr>
+    <td style="width:20%">
+      <b>1. 问题</b> <span class="tag tag-v">已验证</span><br>
+      电赛/智能车电控学生：PID 调参全程经验试错，平均耗时＞10 小时；反复试错太耗时（7/7 全票）、数据回放/记录麻烦（5/7）、不知参数往哪调（4/7）。<br><b>既有替代</b>：VOFA+/SSCOM 仅看波形、靠人工盲调。
+    </td>
+    <td style="width:20%">
+      <b>2. 解决方案</b> <span class="tag tag-v">已验证</span><br>
+      AI 诊断引擎（提示词+波形可视化）＋自动参数预估；参数安全边界＋手动确认下发；结构化的"现象→参数问题→怎么调"指引；无网降级为数据特征统计。<br><b>关键指标</b>：诊断有效率 85%、交付率 90%。
+    </td>
+    <td style="width:20%">
+      <b>3. 独特价值主张</b> <span class="tag tag-t">验证中</span><br>
+      调参效率提升 50%+：2 天→半天；每位电控学生节省 12-16 小时、折算工时价值超 ¥300。"AI 教练带你调参"而非"纯看波形"。
+    </td>
+    <td style="width:20%">
+      <b>4. 不公平优势</b> <span class="tag tag-v">已验证</span><br>
+      参数安全边界＋自动回退机制（诊断率 40→85%）；低成本试用（基础版免费）；内置竞赛常见系统模板库；校内电赛社群触达渠道。
+    </td>
+    <td style="width:20%">
+      <b>5. 客户细分</b> <span class="tag tag-t">部分验证</span><br>
+      首要：本校电赛控制类/智能车队伍（约 500 队≈1500 人次）电控与算法成员；扩展：全国电赛/智能车/RC/RM 高校学生群体。当前样本：985 低年级为主。
+    </td>
+  </tr>
+  <tr>
+    <td><span class="small">（承接问题栏）</span></td>
+    <td>
+      <b>6. 渠道</b> <span class="tag tag-t">调整中</span><br>
+      问卷 D6：B站/GitHub/竞赛群/老师同学推荐。本轮转向零成本渠道：电赛群、智能车社团、学长转介；暂缓公众号内容投入。<b>修订依据</b>：三渠道 CAC 对比（社团≈¥0）。
+    </td>
+    <td><span class="small">（承接卖点栏）</span></td>
+    <td>
+      <b>7. 收入来源</b> <span class="tag tag-t">调整中</span><br>
+      基础版免费＋高级版 ¥30/月＋按次 API。LTV 区间化：1000 人×¥30/月×12 月，转化 5%/15%/25% → 年收入 ¥1.8万/¥5.4万/¥9.0万；66.7% 付费意向折扣校准。<b>修订依据</b>：D-04 LTV 敏感性分析（原"9 万"仅为乐观档）。
+    </td>
+    <td><span class="small">（承接客户栏）</span></td>
+  </tr>
+  <tr>
+    <td colspan="2">
+      <b>8. 成本结构</b> <span class="tag tag-t">已修订</span><br>
+      显性：API/云服务/测试奖品 ¥350（API ¥120＋云 ¥80＋奖品 ¥150，外加调试追加 ¥50）。<br>隐性（<b>修订</b>）：152h 工时按 ¥50/h＝¥7,600 货币化；全口径总成本 ¥7,950，按双口径分列。<b>修订依据</b>：D-03 隐性成本折算。
+    </td>
+    <td colspan="3">
+      <b>9. 关键指标</b> <span class="tag tag-t">已扩展</span><br>
+      诊断有效率 85%、交付率 90%、付费意向 66.7%、CAC（渠道对比中）、真实转化率（预售验证中）、每份反馈成本（双口径）、"基准→调整→当前"三阶段轨迹。<b>修订</b>：新增 CAC/转化率/三阶段轨迹三组指标。
+    </td>
+  </tr>
+</table>
+<p class="small">注：画布中假设状态采用颜色编码标识——绿色"已验证"（H-001/H-002/H-004）、黄色"调整/验证中"（H-003、渠道、收入、成本）、灰色"待验证/证伪"（真实转化率、商业化咨询缺口降级）。「收入来源」「成本结构」两模块均基于本轮验证数据完成至少 1 处实质性修订并标注修改依据。</p>
+
+<h3>3.3 资源缺口诊断更新与验证数据包</h3>
+<h4>3.3.1 量化版资源缺口诊断（成本-效益预评估）</h4>
+<table>
+  <tr><th style="width:10%">原优先级</th><th>资源缺口</th><th style="width:22%">影响程度（量化）</th><th style="width:22%">填补成本-效益</th><th style="width:12%">调整后优先级</th></tr>
+  <tr><td class="center">高</td><td>真实硬件测试环境不足</td><td>P0：H-004 未闭合，直接影响"提供真实测评证据"</td><td>借调成本 ¥0，消除 P0 风险；1 人日</td><td class="center">高（维持）</td></tr>
+  <tr><td class="center">中</td><td>测试样本偏少（12→25 人）</td><td>结论外推受限（样本 7 份 985 低年级）</td><td>¥100 激励＋社群触达，获 12+ 条新反馈</td><td class="center">高（提升）</td></tr>
+  <tr><td class="center">低</td><td>商业化/竞品分析经验不足</td><td>财经素养证据链缺口（LTV/CAC 假设）</td><td>外聘 ¥2,000＞收益 → 放弃；改学长咨询¥0</td><td class="center">低（外聘项降级）</td></tr>
+  <tr><td class="center">—</td><td>用户使用行为数据（埋点）</td><td>无 App 内使用轨迹，真实测评证据形态单一</td><td>V4.0 原型加统计面板（团队工时内）</td><td class="center">新增：中</td></tr>
+</table>
+
+<h4>3.3.2 验证数据包（数据可追溯：采集时间/样本量/采集方式/佐证）</h4>
+<table>
+  <tr><th style="width:8%">编号</th><th style="width:20%">数据名称</th><th style="width:12%">采集时间</th><th style="width:10%">样本量</th><th style="width:20%">采集方式</th><th>佐证文件</th></tr>
+  <tr><td class="center">VP-01</td><td>硬件联调阶跃误差实测</td><td>8月2日</td><td>3 次阶跃</td><td>实验室套件实机测试</td><td>波形 CSV＋截图（#1）</td></tr>
+  <tr><td class="center">VP-02</td><td>用户问卷调查（试用意愿/痛点）</td><td>6月底</td><td>7 份</td><td>腾讯问卷（编号373262612）</td><td>问卷导出＋统计报告</td></tr>
+  <tr><td class="center">VP-03</td><td>深度用户访谈（付费意向）</td><td>7月中</td><td>12 人</td><td>1 对 1 访谈</td><td>访谈记录＋17 条建议汇总</td></tr>
+  <tr><td class="center">VP-04</td><td>样本扩测（25 人计划）</td><td>8月初</td><td>25 人</td><td>电赛群/社团触达＋激励</td><td>用户清单（脱敏）</td></tr>
+  <tr><td class="center">VP-05</td><td>AI 诊断有效率</td><td>7月中</td><td>2000 次</td><td>API 调用日志统计</td><td>调用日志导出（#2）</td></tr>
+  <tr><td class="center">VP-06</td><td>团队工时/经费台账</td><td>全程</td><td>152h／¥350</td><td>看板＋飞书记录</td><td>工时看板截屏＋报销记录</td></tr>
+  <tr><td class="center">VP-07</td><td>渠道 CAC 对比</td><td>8月3日</td><td>150 人次</td><td>三渠道并行触达记录</td><td>渠道登记表（#3）</td></tr>
+  <tr><td class="center">VP-08</td><td>H-003 预售首轮结果</td><td>8月5日前</td><td>意向名单</td><td>小范围预售</td><td>订单/预订记录（#4）</td></tr>
+</table>
+
+<h3>3.4 RACI-V 调整方案（含 V4.0 新增验证型任务）</h3>
+<table>
+  <tr><th>任务 / 决策</th><th style="width:12%">刘双瑞</th><th style="width:12%">胡雨杨</th><th style="width:12%">吴程龙秀</th><th>职责说明</th></tr>
+  <tr><td>PID 调参算法引擎</td><td class="center">R 执行</td><td class="center">C 咨询</td><td class="center">I 知悉</td><td>刘双瑞主导底层算法（维持）</td></tr>
+  <tr><td>前端波形与 AI 界面</td><td class="center">C 咨询</td><td class="center">C 咨询</td><td class="center">R 执行</td><td>吴程龙秀搭建可视化（维持）</td></tr>
+  <tr><td>用户调研与文档输出</td><td class="center">C 咨询</td><td class="center">R 执行</td><td class="center">I 知悉</td><td>胡雨杨负责调研与文档（维持）</td></tr>
+  <tr><td>答辩 PPT 整体审核</td><td class="center">A 审批</td><td class="center">R 执行</td><td class="center">R 执行</td><td>刘双瑞把关，二人制作（维持）</td></tr>
+  <tr class="center" style="background:#f3f7fb"><td colspan="5"><b>—— 本轮基于《关键缺陷清单》新增的验证型任务 ——</b></td></tr>
+  <tr><td>真实硬件联调实测（H-004 / D-01）</td><td class="center">R＋A</td><td class="center">I</td><td class="center">V</td><td>刘双瑞主导联调并审批证据合规；吴程龙秀负责数据录屏/波形可视化佐证（V 显式化）</td></tr>
+  <tr><td>25 人扩测与 H-003 预售（D-04/D-10）</td><td class="center">C</td><td class="center">R</td><td class="center">V</td><td>胡雨杨执行触达与预售；吴程龙秀在仪表盘同步转化数据</td></tr>
+  <tr><td>隐性成本折算＋LTV 敏感性分析（D-03/D-04）</td><td class="center">A</td><td class="center">R</td><td class="center">C</td><td>胡雨杨完成双口径核算与敏感性测算；刘双瑞审批口径定义</td></tr>
+  <tr><td>渠道 CAC 对比测试（D-05）</td><td class="center">C</td><td class="center">R</td><td class="center">V</td><td>胡雨杨执行三渠道触达记录；三人共同决策渠道预算调整</td></tr>
+  <tr><td>量化资源缺口评估（D-06）</td><td class="center">C</td><td class="center">I</td><td class="center">R＋V</td><td>吴程龙秀完成成本-效益矩阵并交叉核验</td></tr>
+</table>
+<p class="small">调整说明：原 RACI 覆盖"开发/文档"类任务；针对"证据导向"根因，新增 5 条验证型任务，并将 V（验证）职责显式化——每条验证任务均指定 V 角色负责交叉核验与证据存档，从机制上保证"产出即被验证"。</p>
+
+<h3>3.5 后续计划（基于验证结果的滚动更新）</h3>
+<table>
+  <tr><th style="width:10%">阶段</th><th style="width:16%">时间</th><th>任务</th><th style="width:12%">负责人</th><th>风险预案</th></tr>
+  <tr><td class="center">冲刺</td><td class="center">8月2日-4日</td><td>硬件联调实测报告归档（3 次阶跃 CSV ＋ 截图）；回归测试基线冻结</td><td class="center">刘双瑞</td><td>若环境中断，已留存本地副本＋学长备机</td></tr>
+  <tr><td class="center">测试</td><td class="center">8月3日-5日</td><td>25 人扩测收尾；H-003 小范围预售首轮转化统计；渠道 CAC 补测</td><td class="center">胡雨杨</td><td>若回收慢，按预设"调参小礼品＋试用权"激励；预售低于 20% 则执行转型预案</td></tr>
+  <tr><td class="center">收尾</td><td class="center">8月5日-8日</td><td>仪表盘/财务双口径定稿；V4.0 原型加使用统计面板；演示视频与结题材料归档</td><td class="center">吴程龙秀</td><td>提前 2 天全流程模拟演练</td></tr>
+</table>
+
+<!-- ============ 个人部分 ============ -->
+<div class="pagebreak"></div>
+<h2>第二部分　个人部分</h2>
+
+<h3>4. 个人反思报告（认知差异对比 · 5Why 归因追溯 · 下一步改进计划）</h3>
+
+<h4>4.1 刘双瑞（算法与硬件联调负责人）</h4>
+<p><b>① 认知差异对比：</b>评审前，我认为项目进展顺利——5 版原型、AI 诊断有效率 40%→85%、交付率 70%→90%，"功能都按计划做完了"。但评审中陪审团一句"要找人真实测评并给出证据"，让我意识到：桌上摆的全是仿真、问卷与访谈结论，真实 STM32 硬件一次都没上过（H-004 仍是"未验证"）。那一刻我才明白，"仿真可行"不等于"真实可用"，"做完"不等于"被验证"。这一轮差异的核心，是把验证优先级从"确定性高的仿真"挪向"真实场景"，宁可花零成本的 1 人日借套件实测，也不再让证据链条停在仿真阶段。</p>
+<p><b>② 5Why 归因追溯（真实挫折：PID 仿真震荡与上下文失真，诊断率一度仅 40%）：</b></p>
+<table class="why">
+  <tr><td>Why 1</td><td>为什么出现持续震荡与诊断偏移？→ 因为长上下文中 PID 输出未经约束，上下文过长后回答偏移。</td></tr>
+  <tr><td>Why 2</td><td>为什么没有在早期加约束？→ 因为问题在功能"看起来可用"后才暴露，缺少对抗性/极端输入测试。</td></tr>
+  <tr><td>Why 3</td><td>为什么缺少对抗性测试？→ 因为我以"正常路径跑通"为验收标准，未从边界输入设计用例。</td></tr>
+  <tr><td>Why 4</td><td>为什么以"跑通"为准？→ 因为我默认正确路径成立即整体成立，缺乏"极限工况"视角。</td></tr>
+  <tr><td class="center">根因</td><td>质量观念停留在"可运行"而非"可证明"，缺少边界思维与回归验证（本轮已用参数安全边界＋自动回退补上）。</td></tr>
+</table>
+<p><b>③ 下一步改进计划：</b>个人能力提升目标——"验证设计"能力：每一项技术功能交付前，先列对抗性测试清单与回归基线。落实：硬件联调阶段将本轮的 3 次阶跃误差（7.2%/8.1%/6.8%）固化为回归基线，后续算法改动必须通过回归才允许合入，把"跑通即交付"改成"过测即交付"。</p>
+
+<h4>4.2 胡雨杨（调研、文档与财经核算负责人）</h4>
+<p><b>① 认知差异对比：</b>评审前，我认为 12 份深度反馈足够支撑需求论证，"66.7% 愿意付费"是个漂亮数字。但教师追问"隐性成本为什么没折算成钱"、陪审团追问"500 支队伍怎么推广"后，我把 152 小时工时按市场实习薪资折算成 ¥7,600：全口径下每份深度反馈成本从 ¥29.2 涨到 ¥662.5，"极高转化效率"的自我评价当场被数据推翻。这让我意识到，"记录做了什么"和"证明资源用得值"是完全两回事——评审前我盯着"有没有数据"，评审后我开始盯"数据站不站得住"。</p>
+<p><b>② 5Why 归因追溯（真实挫折：问卷样本仅 7 份且高度同质，开放题引用不足）：</b></p>
+<table class="why">
+  <tr><td>Why 1</td><td>为什么只有 7 份且全为 985 低年级？→ 因为问卷只在两个已有兴趣社群投放。</td></tr>
+  <tr><td>Why 2</td><td>为什么只在已有社群投放？→ 因为在社群发问卷成本最低、回收最快。</td></tr>
+  <tr><td>Why 3</td><td>为什么优先"省事"而非"代表性"？→ 因为我把调研当作"凑材料"，未设样本量与结构的下限。</td></tr>
+  <tr><td>Why 4</td><td>为什么把调研当作材料？→ 因为中期以交付文档为目标，结论可信度未纳入验收标准。</td></tr>
+  <tr><td class="center">根因</td><td>调研行为由"交付便利"驱动而非"结论可信度"驱动——对应本轮 D-08 样本扩测与渠道多元化的整改方向。</td></tr>
+</table>
+<p><b>③ 下一步改进计划：</b>个人能力提升目标——"财经核算"能力：学会单位经济、敏感性分析的基本模型。落实：今后每次资源投入（工时/经费）同步记录"经济口径＋证据口径"双份台账，并在下一次汇报前完成一次"评委视角"自查——先用提问清单问倒自己，再上台。"引入成本-收益预评估后再动手"将作为我负责任务的默认动作。</p>
+
+<h4>4.3 吴程龙秀（前端可视化与数据佐证负责人）</h4>
+<p><b>① 认知差异对比：</b>评审前，我认为界面完成度说明一切——5 版原型迭代、波形可视化越来越漂亮，产品"看起来"已经可用。但评审问"真实测评的证据呢"，我发现我们拿不出 App 内实际使用轨迹：没有打开次数、停留时长、使用留存，只有外部的问卷和访谈。更让我警醒的是教师指出仪表盘缺"基准→调整→当前"轨迹，我才意识到自己一直在画"好看的图"，却从没画"能证明价值的三阶段曲线"。"做好看"和"被用好"之间的差距，就是我在本轮补测三阶段轨迹时最直观的认知落差值。</p>
+<p><b>② 5Why 归因追溯（真实挫折：前端迭代 5 版，却无用户使用行为数据支撑）：</b></p>
+<table class="why">
+  <tr><td>Why 1</td><td>为什么 5 版原型却没有使用统计？→ 因为原型只做了界面与波形，未设计埋点/使用日志。</td></tr>
+  <tr><td>Why 2</td><td>为什么未做埋点？→ 因为我把"功能展示"当作交付，未把"度量"纳入开发清单。</td></tr>
+  <tr><td>Why 3</td><td>为什么未考虑度量？→ 因为资源投入集中在"看得见的实现"，忽略了"看不见的验证设施"。</td></tr>
+  <tr><td>Why 4</td><td>为什么忽略验证设施？→ 因为团队把成果等同于"做出来"，而不是"被用起来并产生数据"。</td></tr>
+  <tr><td class="center">根因</td><td>开发资源只投向"产出物"而未投向"度量设施"，导致改进与论证都缺乏使用证据闭环（对应 D-02 与新增"使用行为数据"缺口）。</td></tr>
+</table>
+<p><b>③ 下一步改进计划：</b>个人能力提升目标——"数据度量"能力：学习埋点、漏斗与留存分析的最低实现。落实：在 V4.0 原型加入使用统计面板（打开/停留/诊断发起次数），把仪表盘的"基准→调整→当前"框架固化成可视化组件，让团队的每一次迭代都留下可追溯的数据足迹。</p>
+
+<h3>5. 能力发展图谱（团队讨论后个体完成，EntreComp"资源"领域）</h3>
+<h4>5.1 团队等级汇总</h4>
+<table>
+  <tr><th style="width:22%">能力项</th><th style="width:16%">课前自评（团队）</th><th style="width:16%">课后再评（团队）</th><th style="width:8%">变化</th><th>关键证据</th></tr>
+  <tr><td>自我意识与自我效能感</td><td class="center">L3</td><td class="center">L4</td>
+    <td class="center ok">+1</td><td>通过隐性成本折算认识到"记录≠核算"，主动修正单位经济口径并复盘认知落差</td></tr>
+  <tr><td>动力和毅力</td><td class="center">L4</td><td class="center">L4</td>
+    <td class="center">0</td><td>坚持完成 48 小时三轮验证冲刺；32 小时返工后未放弃并引入约束机制</td></tr>
+  <tr><td>资源与调动</td><td class="center">L3</td><td class="center">L4</td>
+    <td class="center ok">+1</td><td>借调实验室套件（¥0）、联动电赛群与智能车社团，将真实硬件与 25 人样本扩容落地</td></tr>
+  <tr><td>财经素养</td><td class="center">L2</td><td class="center">L3</td>
+    <td class="center ok">+1</td><td>完成 152h 工时货币化、LTV 三档敏感性、CAC 渠道对比，财经证据链闭合（本轮最大短板）</td></tr>
+  <tr><td>动员他人</td><td class="center">L4</td><td class="center">L4</td>
+    <td class="center">0</td><td>维持团队协作效能；2 名校内同学参与实测、学长借调套件，外部资源从被动求助转向渠道化</td></tr>
+</table>
+
+<h4>5.2 个体等级与变化</h4>
+<table>
+  <tr><th style="width:22%">能力项</th><th style="width:16%">刘双瑞（课前→课后）</th><th style="width:16%">胡雨杨（课前→课后）</th><th style="width:16%">吴程龙秀（课前→课后）</th><th>变化方式</th></tr>
+  <tr><td>自我意识与自我效能感</td><td class="center">L3→L4</td><td class="center">L4→L4</td><td class="center">L3→L4</td><td class="center ok">2 人 +1</td></tr>
+  <tr><td>动力和毅力</td><td class="center">L4→L4</td><td class="center">L3→L4</td><td class="center">L4→L4</td><td class="center ok">1 人 +1</td></tr>
+  <tr><td>资源与调动</td><td class="center">L3→L4</td><td class="center">L3→L4</td><td class="center">L3→L3</td><td class="center ok">2 人 +1</td></tr>
+  <tr><td>财经素养</td><td class="center">L2→L3</td><td class="center">L3→L4</td><td class="center">L2→L3</td><td class="center ok">全员 +1</td></tr>
+  <tr><td>动员他人</td><td class="center">L4→L4</td><td class="center">L4→L4</td><td class="center">L3→L4</td><td class="center ok">1 人 +1</td></tr>
+</table>
+
+<h4>5.3 变化说明（每位成员 ≤200 字）</h4>
+<p><b>刘双瑞：</b>"资源与调动""财经素养"提升最明显（均 +1），触发事件是评审质疑"真实测评证据"后，我借到实验室 STM32 套件完成 3 次阶跃实测（误差 7.2%/8.1%/6.8%），并参与 152h 工时折算——原来"能跑"不等于"被验证"。最薄弱的是"财经素养"，此前只算显性成本。后续将在每次硬件改动前固化回归基线，把验证设计写进交付流程，继续用真实数据回答"凭什么没问题"。</p>
+<p><b>胡雨杨：</b>"财经素养"提升最大（L3→L4）：评审追问"隐性成本未折算"后，我将 152h 工时按 ¥50/h 折算为 ¥7,600，并完成 LTV 三档敏感性，发现"9 万年收入"仅为乐观档——这让我从"记录数据"转向"检验数据"。薄弱项是"资源与调动"中渠道化了但仍依赖点对点转介。后续将把渠道 CAC 对比与成本-效益预评估固化为每次调研的默认步骤，先评估再投入。</p>
+<p><b>吴程龙秀：</b>"自我意识"提升最大（L3→L4）：补齐"基准→调整→当前"三阶段轨迹时，我意识到自己一直在做"好看的图"而非"可证明价值的图"，5 版原型没有埋点是最大的盲区。薄弱项是"资源与调动"（L3 未变）——我较少主动调动外部资源。后续将在 V4.0 加使用统计面板，把度量设施纳入前端交付清单，让每一次迭代都有数据足迹可查。</p>
+
+<hr style="margin-top:14pt;">
+<p class="center small">《资源优化方案书》完——团队部分与个人部分已整合于同一文档。全部引用数据以《中期汇报PPT_V2.0》《中期评审意见》《问卷统计报告》为原始依据；本阶段补测/折算数据均标注采集方式与样本量，可追溯。</p>
+
+</body>
+</html>

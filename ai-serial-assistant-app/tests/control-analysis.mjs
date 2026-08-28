@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 import {
   analyzeControlSamples,
   buildPidSuggestion,
-  createSamplesFromChannels
+  createSamplesFromChannels,
+  sliceLastTransition
 } from '../src/renderer/src/services/controlAnalysis.mjs'
 
 function createResponse({ damping = 0.45, count = 200 } = {}) {
@@ -91,6 +92,75 @@ assert.equal(customStandards.limits.steadyErrorRatio, 0.02)
   }))
   const rt = analyzeControlSamples(tiny, { overshootLimit: 20, oscillationLimit: 10 })
   assert.equal(rt.valid, false, 'stepSize 低于 minStepSize 应判定无效')
+}
+
+// P3 斜坡目标检测：末段目标仍在变化 → valid:false + targetRamping（斜坡期指标全是假象）
+{
+  // 斜坡 0→50（10s，采样到 9.9s 时仍在爬）→ 末段目标持续变化 → 判无效
+  const ramping = Array.from({ length: 100 }, (_, i) => {
+    const t = i * 0.1
+    const target = 5 * t
+    return { t, target, feedback: target * 0.9, output: target }
+  })
+  const r1 = analyzeControlSamples(ramping, { overshootLimit: 20, oscillationLimit: 10 })
+  assert.equal(r1.valid, false, '斜坡进行中不应产出阶跃指标')
+  assert.equal(r1.targetRamping, true)
+  assert.ok(String(r1.reason).includes('斜坡'))
+  assert.equal(typeof r1.finalTarget, 'number')
+
+  // 斜坡完成后（目标稳定 50，反馈收敛）→ 正常产出指标且 targetRamping=false
+  const settled = Array.from({ length: 300 }, (_, i) => {
+    const t = i * 0.1
+    const target = t < 10 ? 5 * t : 50
+    const feedback = t < 10 ? target * 0.9 : 50 * (1 - Math.exp(-2 * (t - 10))) + 45 * (t < 10 ? 1 : 0) * 0
+    return { t, target, feedback: t < 10 ? feedback : 45 + 5 * (1 - Math.exp(-2 * (t - 10))), output: target }
+  })
+  const r2 = analyzeControlSamples(settled, { overshootLimit: 20, oscillationLimit: 10 })
+  assert.equal(r2.valid, true, '斜坡完成后应产出阶跃指标')
+  assert.equal(r2.targetRamping, false)
+
+  // 常规阶跃（目标一步到位）不受斜坡守卫影响
+  const step = createResponse()
+  assert.equal(analyzeControlSamples(step).targetRamping, false)
+}
+
+// P2 sliceLastTransition：目标变化段切分（多阶跃取末段 / 稳态取全窗 / 斜坡为一段）
+{
+  // 三段目标：t=0~2 为 0、t=2~6 为 20、t=6~10 为 50 → 窗内两次变化，segment 只含第二段（含基线）
+  const twoSteps = []
+  for (let i = 0; i <= 100; i += 1) {
+    const t = i * 0.1
+    const target = t < 2 ? 0 : (t < 6 ? 20 : 50)
+    twoSteps.push({ t, target, feedback: target * 0.9, output: target })
+  }
+  const r1 = sliceLastTransition(twoSteps)
+  assert.equal(r1.transitionCount, 2, '窗口内应有两次目标变化')
+  assert.ok(r1.segment.length < twoSteps.length, '应切掉第一段')
+  assert.equal(r1.segment[0].target, 20, '段首应保留阶跃前基线（目标 20）')
+  assert.ok(r1.segment[r1.segment.length - 1].target === 50)
+
+  // 稳态窗口（目标恒定）→ 全窗口 + transitionCount=0
+  const steady = Array.from({ length: 50 }, (_, i) => ({
+    t: i * 0.1, target: 50, feedback: 48 + Math.sin(i) * 0.2, output: 15
+  }))
+  const r2 = sliceLastTransition(steady)
+  assert.equal(r2.transitionCount, 0)
+  assert.equal(r2.segment.length, steady.length)
+
+  // 斜坡（目标持续变化）→ 单个 transition，segment 含斜坡全程
+  const ramp = Array.from({ length: 50 }, (_, i) => ({
+    t: i * 0.1, target: i, feedback: i * 0.9, output: i
+  }))
+  const r3 = sliceLastTransition(ramp)
+  assert.equal(r3.transitionCount, 1, '连续斜坡为一个目标变化段')
+  assert.ok(r3.segment.length > 10)
+
+  // 边界：空数组 / 单样本
+  assert.deepEqual(sliceLastTransition([]), { segment: [], transitionCount: 0 })
+  assert.deepEqual(
+    sliceLastTransition([{ t: 0, target: 0, feedback: 0, output: 0 }]),
+    { segment: [{ t: 0, target: 0, feedback: 0, output: 0 }], transitionCount: 0 }
+  )
 }
 
 console.log('control-analysis: all assertions passed')

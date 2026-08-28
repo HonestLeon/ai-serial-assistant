@@ -3,8 +3,25 @@ import {
   readCanonicalPid,
   applyCanonicalPid,
   buildSimOverrides,
+  buildPidCommand,
   createSerialStepCollector
 } from '../src/renderer/src/services/pidAgent/utils.mjs'
+
+// 0. buildPidCommand：固件 PID 下发指令格式（单环 3 参 / 串级 6 参速度环在前）
+{
+  assert.equal(buildPidCommand({ kp: 2.5, ki: 0.5, kd: 0 }), 'PID 2.5 0.5 0')
+  // 串级：速度环三参在前、位置环三参在后（zhichuan 固件 sscanf 顺序）
+  assert.equal(
+    buildPidCommand(
+      { speedKp: 1, speedKi: 0, speedKd: 0, positionKp: 3, positionKi: 0.5, positionKd: 0 },
+      { isCascade: true }
+    ),
+    'PID 1 0 0 3 0.5 0'
+  )
+  // 字符串值（applyCanonicalPid 写回形态）与缺省键（回退 0）
+  assert.equal(buildPidCommand({ kp: '2', ki: undefined, kd: null }), 'PID 2 0 0')
+  assert.equal(buildPidCommand(null), 'PID 0 0 0')
+}
 
 // 1. readCanonicalPid 单环：只保留 kp/ki/kd 三键（多余的 speed* 被丢弃）
 {

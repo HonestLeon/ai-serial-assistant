@@ -83,6 +83,8 @@ export function convertToLlm(agentMessages = []) {
  *   - tools: 调参工具定义 [{ name, description, parameters }]，默认 []
  *   - signal: 外部 AbortSignal（可为 null）；中止时中断 fetch 并停止重试
  *   - retryDelays: 重试退避秒数表，默认 [0,2,4,8,16]（测试可注入 [0,0,0,0,0] 绕过等待）
+ *   - timeoutMs: 单次请求超时（默认 120s）：服务端挂起不返回时按失败重试，
+ *     避免 UI 长时间无反馈地"卡住"；外部 signal 中止不受此限立即返回
  * @returns {Promise<{ok:boolean, content?:string,
  *   toolCalls?:Array<{id:string, name:string, arguments:object}>,
  *   finishReason?:string, usage?:object|null, warnings?:string[], error?:string}>}
@@ -94,18 +96,11 @@ export async function callLlm({
   messages,
   tools = [],
   signal = null,
-  retryDelays = [0, 2, 4, 8, 16]
+  retryDelays = [0, 2, 4, 8, 16],
+  timeoutMs = 120000
 } = {}) {
   if (!aiConfig?.apiKey) {
     return { ok: false, error: '未配置 API Key' }
-  }
-
-  // 把外部 signal 桥接到本次请求的 AbortController（整个重试期间持续有效）
-  const abortController = new AbortController()
-  const onOuterAbort = () => abortController.abort()
-  if (signal) {
-    if (signal.aborted) abortController.abort()
-    else signal.addEventListener('abort', onOuterAbort)
   }
 
   const requestMessages = [
@@ -115,7 +110,8 @@ export async function callLlm({
   // 部分 OpenAI 兼容后端不支持 function calling：遇到 400/422 时去掉 tools 降级重试
   let toolsEnabled = tools.length > 0
 
-  async function requestCompletion(includeTools) {
+  /** 单次请求（每次尝试独立的 AbortController：外部中止 + 本尝试超时各自独立） */
+  async function requestCompletion(includeTools, controller) {
     const body = {
       model: aiConfig.model,
       temperature: 0.2,
@@ -136,57 +132,67 @@ export async function callLlm({
         Authorization: `Bearer ${aiConfig.apiKey}`
       },
       body: JSON.stringify(body),
-      signal: abortController.signal
+      signal: controller.signal
     })
   }
 
   let lastError = ''
-  try {
-    for (let attempt = 0; attempt < retryDelays.length; attempt += 1) {
-      if (retryDelays[attempt] > 0) {
-        await new Promise((resolve) => setTimeout(resolve, retryDelays[attempt] * 1000))
+  for (let attempt = 0; attempt < retryDelays.length; attempt += 1) {
+    if (retryDelays[attempt] > 0) {
+      await new Promise((resolve) => setTimeout(resolve, retryDelays[attempt] * 1000))
+    }
+    if (signal?.aborted) {
+      return { ok: false, error: '请求已中止' }
+    }
+    const attemptController = new AbortController()
+    const onOuterAbort = () => attemptController.abort()
+    signal?.addEventListener('abort', onOuterAbort)
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      attemptController.abort()
+    }, timeoutMs)
+    try {
+      let res = await requestCompletion(toolsEnabled, attemptController)
+      if (!res.ok && toolsEnabled && (res.status === 400 || res.status === 422)) {
+        // 部分后端不支持 function calling：去掉 tools/tool_choice 立即重试一次
+        toolsEnabled = false
+        res = await requestCompletion(false, attemptController)
       }
-      if (abortController.signal.aborted) {
+      if (!res.ok) {
+        const detail = (await res.text()).slice(0, 240)
+        lastError = `HTTP ${res.status}${detail ? `：${detail}` : ''}`
+        continue
+      }
+      const data = await res.json()
+      const choice = data.choices?.[0]
+      const finishReason = choice?.finish_reason ?? 'stop'
+      const content = choice?.message?.content ?? ''
+      const warnings = []
+      const toolCalls = (choice?.message?.tool_calls ?? []).map((tc) => {
+        let args = {}
+        try {
+          // 安全解析：arguments 缺省按 '{}'；非法 JSON 不抛错，给 {} 并记入 warnings
+          args = JSON.parse(tc.function?.arguments || '{}')
+        } catch {
+          warnings.push(`工具 ${tc.function?.name ?? '(unknown)'} 的 arguments 不是合法 JSON，已按空对象处理`)
+        }
+        return { id: tc.id, name: tc.function?.name, arguments: args }
+      })
+      return { ok: true, content, toolCalls, finishReason, usage: data.usage ?? null, warnings }
+    } catch (e) {
+      if (signal?.aborted) {
         return { ok: false, error: '请求已中止' }
       }
-      try {
-        let res = await requestCompletion(toolsEnabled)
-        if (!res.ok && toolsEnabled && (res.status === 400 || res.status === 422)) {
-          // 部分后端不支持 function calling：去掉 tools/tool_choice 立即重试一次
-          toolsEnabled = false
-          res = await requestCompletion(false)
-        }
-        if (!res.ok) {
-          const detail = (await res.text()).slice(0, 240)
-          lastError = `HTTP ${res.status}${detail ? `：${detail}` : ''}`
-          continue
-        }
-        const data = await res.json()
-        const choice = data.choices?.[0]
-        const finishReason = choice?.finish_reason ?? 'stop'
-        const content = choice?.message?.content ?? ''
-        const warnings = []
-        const toolCalls = (choice?.message?.tool_calls ?? []).map((tc) => {
-          let args = {}
-          try {
-            // 安全解析：arguments 缺省按 '{}'；非法 JSON 不抛错，给 {} 并记入 warnings
-            args = JSON.parse(tc.function?.arguments || '{}')
-          } catch {
-            warnings.push(`工具 ${tc.function?.name ?? '(unknown)'} 的 arguments 不是合法 JSON，已按空对象处理`)
-          }
-          return { id: tc.id, name: tc.function?.name, arguments: args }
-        })
-        return { ok: true, content, toolCalls, finishReason, usage: data.usage ?? null, warnings }
-      } catch (e) {
-        if (abortController.signal.aborted) {
-          return { ok: false, error: '请求已中止' }
-        }
-        lastError = e?.message || String(e)
+      if (timedOut) {
+        lastError = `请求超时（${Math.round(timeoutMs / 1000)}s 无响应）`
+        continue
       }
+      lastError = e?.message || String(e)
+    } finally {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onOuterAbort)
     }
-  } finally {
-    // 无论成功失败都解除对外部 signal 的监听，避免泄漏
-    if (signal) signal.removeEventListener('abort', onOuterAbort)
   }
   return { ok: false, error: lastError }
 }

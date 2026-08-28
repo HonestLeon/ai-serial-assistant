@@ -320,7 +320,58 @@ assert.ok(modelSpecPrompt.includes('以 get_channel_stats 返回的 finalFeedbac
 const nullSpecPrompt = buildSystemPrompt({ userConfig, tools: agentTools, modelSpec: null })
 assert.ok(!nullSpecPrompt.includes('模型特性'))
 
+// 串口模式引导：mode='serial' 时渲染「串口模式要点」（suggestedQuery / 斜坡 / 参数真实下发）
+const serialPrompt = buildSystemPrompt({ userConfig: { ...userConfig, mode: 'serial' }, tools: agentTools })
+assert.ok(serialPrompt.includes('串口模式要点'))
+assert.ok(serialPrompt.includes('suggestedQuery'))
+assert.ok(serialPrompt.includes('斜坡'))
+assert.ok(serialPrompt.includes('真实下发到设备'))
+// 仿真/缺省 mode：不渲染串口引导
+assert.ok(!nullSpecPrompt.includes('串口模式要点'))
+
 // P3a 使用建议：引导先 set_target 采集，再查询（消除空缓冲首查报错）
 assert.ok(prompt.includes('先调用 set_target 触发一次阶跃采集'))
+
+// ---------- 9. 超时：服务端挂起不返回 → 按失败返回"请求超时"（不无限卡住） ----------
+{
+  const calls = []
+  // 挂起的 fetch：仅在 signal 中止时 reject（真实 fetch 的行为）
+  const hangingFetch = async (url, init = {}) => {
+    calls.push({ url, init })
+    return new Promise((resolve, reject) => {
+      init.signal?.addEventListener('abort', () => reject(new Error('aborted')))
+    })
+  }
+  globalThis.fetch = hangingFetch
+  try {
+    const result = await callLlm({
+      aiConfig: AI_CONFIG,
+      systemPrompt: 's',
+      messages: [],
+      retryDelays: [0],
+      timeoutMs: 60
+    })
+    assert.equal(result.ok, false)
+    assert.match(result.error, /请求超时/)
+    assert.equal(calls.length, 1)
+
+    // 外部中止优先于超时：挂起中被 abort → 返回"请求已中止"
+    const ctrl = new AbortController()
+    const pending = callLlm({
+      aiConfig: AI_CONFIG,
+      systemPrompt: 's',
+      messages: [],
+      signal: ctrl.signal,
+      retryDelays: [0, 0, 0],
+      timeoutMs: 5000
+    })
+    setTimeout(() => ctrl.abort(), 30)
+    const abortedResult = await pending
+    assert.equal(abortedResult.ok, false)
+    assert.equal(abortedResult.error, '请求已中止')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+}
 
 console.log('✅ tests/pid-agent-llm.mjs 全部通过')

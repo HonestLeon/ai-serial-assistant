@@ -90,7 +90,7 @@ const serialContext = reactive({
   lastAnomaly: null
 })
 
-function pushSerialContext(payload) {
+function pushSerialContext(payload, nums) {
   const line = String(payload.raw).trim()
   if (!line) return
 
@@ -99,23 +99,26 @@ function pushSerialContext(payload) {
     hex: payload.hex,
     time: payload.time || Date.now()
   })
-  if (serialContext.recentLines.length > MAX_CONTEXT_LINES) {
-    serialContext.recentLines.shift()
+  // 摊还式修剪：到达上限后允许小幅超额（+128），积攒到阈值再一次 splice 清掉，
+  // 避免高频流下每行 push+shift 的 O(n) 数组移动（8 通道 × 1200 样本/行）。
+  if (serialContext.recentLines.length > MAX_CONTEXT_LINES + 128) {
+    serialContext.recentLines.splice(0, serialContext.recentLines.length - MAX_CONTEXT_LINES)
   }
 
-  // FireWater 格式：标签:值，只提取冒号后的数值
-  const colonIdx = line.indexOf(':')
-  const dataPart = colonIdx >= 0 ? line.slice(colonIdx + 1) : line
-  const nums = dataPart.match(/[-+]?\d*\.?\d+/g)
+  // FireWater 格式：标签:值，只提取冒号后的数值（由调用方解析一次后传入，避免重复正则）
   if (nums) {
-    nums.slice(0, 8).forEach((n, i) => {
-      const v = parseFloat(n)
+    const limit = Math.min(nums.length, 8)
+    for (let i = 0; i < limit; i++) {
+      const v = parseFloat(nums[i])
       serialContext.latestValues[i] = v
       serialContext.channelHistory[i].push(v)
-      if (serialContext.channelHistory[i].length > MAX_CONTEXT_SAMPLES) {
-        serialContext.channelHistory[i].shift()
+    }
+    for (let i = 0; i < 8; i++) {
+      const history = serialContext.channelHistory[i]
+      if (history.length > MAX_CONTEXT_SAMPLES + 256) {
+        history.splice(0, history.length - MAX_CONTEXT_SAMPLES)
       }
-    })
+    }
   }
 }
 
@@ -180,17 +183,18 @@ function onError(msg) {
 }
 
 function onData(payload) {
-  rxCount.value += String(payload.raw).length
-  latestPayload.value = payload
-  // FireWater 格式：标签:值，只提取冒号后的数值
   const rawText = String(payload.raw)
+  rxCount.value += rawText.length
+  latestPayload.value = payload
+  // FireWater 格式：标签:值，只提取冒号后的数值。
+  // 一次解析同时供 detectedChannelCount 与 pushSerialContext 复用（原先各解析一遍）。
   const colonIdx = rawText.indexOf(':')
   const dataPart = colonIdx >= 0 ? rawText.slice(colonIdx + 1) : rawText
   const nums = dataPart.match(/[-+]?\d*\.?\d+/g)
   if (nums) {
     detectedChannelCount.value = Math.min(nums.length, 8)
   }
-  pushSerialContext(payload)
+  pushSerialContext(payload, nums)
 
   if (recording.active) {
     recording.data.push({ ...payload, recTime: Date.now() - recording.startTime })

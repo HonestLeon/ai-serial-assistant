@@ -16,8 +16,11 @@ const agent = usePidAgent({
   getConnected: () => props.connected,
   onSimulationData: (samples) => emit('simulation-data', samples),
   onSerialSend: (cmd) => {
-    window.electronAPI?.serial?.send?.(cmd, 'utf8')
-    emit('send', cmd.length)
+    // 固件按行解析指令（'\n' 结尾才执行）：工具产出 "SET_POINT 20" 不带换行，
+    // 必须补上——否则设备永远收不到完整行，表现为 target/feedback/output 全 0
+    const line = String(cmd ?? '').endsWith('\n') ? String(cmd) : `${cmd}\n`
+    window.electronAPI?.serial?.send?.(line, 'utf8')
+    emit('send', line.length)
   }
 })
 
@@ -31,7 +34,10 @@ const {
   startAgent, sendChat, stopAgent
 } = agent
 
-// 串口数据流入（真实串口模式下由智能体写入通道数据缓冲）
+// 串口数据流入（真实串口模式下由智能体写入通道数据缓冲）。
+// 注意：DataMonitor 已做 100ms 批处理（高频遥测防渲染饱和），本 watch 每批只触发
+// 一次（末条样本生效）→ 智能体缓冲以 ~10Hz 采样。对本项目目标系统（τ≈0.25s 电机/
+// 位置环）的阶跃指标分析而言采样密度充足，且缓冲不会随设备原始速率膨胀。
 watch(() => props.latestPayload, (payload) => {
   if (payload) agent.onSerialData(payload)
 })
@@ -122,6 +128,18 @@ const statusText = computed(() => {
     return `已停止 · ${STOP_REASON_TEXT[stopReason.value] || stopReason.value}`
   }
   return '等待输入'
+})
+
+/**
+ * 等待 LLM 首次/下一轮回复：运行中且最后一条消息不是进行中的工具、
+ * 也不是已完成的思考文本时，显示"思考中"指示（否则 LLM 慢/失败时对话区毫无反馈）。
+ */
+const awaitingReply = computed(() => {
+  if (!running.value || messages.value.length === 0) return false
+  const last = messages.value[messages.value.length - 1]
+  if (last.kind === 'user' || last.kind === 'steerUser') return true
+  if (last.kind === 'tool' && last.toolStatus !== 'running') return true
+  return false
 })
 
 const DEFAULT_TASK_TEXT = '请根据用户配置开始调参，达成场景提示词中描述的目标。'
@@ -400,10 +418,24 @@ onUnmounted(() => {
             <div class="body">{{ msg.text }}</div>
           </div>
 
+          <!-- 运行失败（LLM 调用失败等：错误原因进聊天流，避免"卡住无反馈"） -->
+          <div v-else-if="msg.kind === 'error'" class="msg-error">
+            <div class="role">✗ 出错</div>
+            <div class="body">{{ msg.text }}</div>
+          </div>
+
           <!-- 上下文压缩 -->
           <div v-else-if="msg.kind === 'compact'" class="msg-compact">
             <span class="icon">📦</span>
             <span>上下文已压缩 <span class="bytes">{{ kb(msg.beforeBytes) }}KB → {{ kb(msg.afterBytes) }}KB</span>（仅数据部分）</span>
+          </div>
+        </div>
+
+        <!-- 等待 LLM 回复的"思考中"指示（消息流之后追加，非消息实体） -->
+        <div v-if="awaitingReply" class="msg-thinking awaiting">
+          <div class="role">🤔 助手 · 思考</div>
+          <div class="body">
+            <span class="thinking-dots"><i></i><i></i><i></i></span>
           </div>
         </div>
       </div>
@@ -1071,6 +1103,64 @@ onUnmounted(() => {
   line-height: 1.55;
   color: var(--state-error);
   white-space: pre-wrap;
+}
+
+/* 运行失败消息（LLM 调用失败等原因进聊天流） */
+.msg-error {
+  border: 1px solid var(--state-error);
+  border-left-width: 3px;
+  background: var(--state-error-muted);
+  border-radius: 6px;
+  padding: 7px 10px;
+}
+
+.msg-error .role {
+  font-size: 9px;
+  color: var(--state-error);
+  font-weight: 700;
+  margin-bottom: 2px;
+}
+
+.msg-error .body {
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--state-error);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* 等待 LLM 回复的"思考中"指示（三点跳动动画） */
+.awaiting .thinking-dots {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.awaiting .thinking-dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--color-text-tertiary);
+  animation: thinking-bounce 1.2s ease-in-out infinite;
+}
+
+.awaiting .thinking-dots i:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.awaiting .thinking-dots i:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes thinking-bounce {
+  0%, 60%, 100% {
+    transform: translateY(0);
+    opacity: 0.45;
+  }
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
 }
 
 /* 上下文压缩条 */

@@ -121,6 +121,82 @@ function findOscillationPeaks(samples, startIndex, finalTarget, stepSize, direct
 }
 
 /**
+ * 目标变化段切分：按「目标速度」把样本划分为若干目标变化段（transition），
+ * 返回最后一段（含阶跃基线）与窗口内目标变化次数。
+ *
+ * 背景（实测复盘）：get_channel_stats 查询的窗口常跨越多次目标变化（多轮 set_target
+ * 累积的缓冲），直接整窗分析会让 findStep 取到任意一次跳变，指标混杂所有工况
+ * （超调/振荡/峰数全是脏值，且多次查询结果完全相同）。切到最后一段后，
+ * 指标始终对应当前参数下的最新阶跃响应。
+ *
+ * 判定规则：
+ *   - moving[i] = |target[i] - target[i-1]| > eps，eps = max(1e-6, 目标全幅×0.5%)。
+ *     目标通道来自固件精确输出（无噪声），仿真目标为阶跃函数，两者均安全；
+ *   - 连续 moving（允许 ≤2 个非 moving 间隔）合并为一个 transition；
+ *   - 无任何 transition（稳态窗口）→ 返回全窗口，transitionCount = 0。
+ *
+ * @param {Array<{t:number,target:number,feedback:number,output?:number}>} samples 已按 t 升序的样本
+ * @returns {{segment:Array, transitionCount:number}}
+ */
+export function sliceLastTransition(samples) {
+  if (!Array.isArray(samples) || samples.length < 2) {
+    return { segment: samples ?? [], transitionCount: 0 }
+  }
+  const targets = samples.map((s) => finite(s.target))
+  const span = Math.max(...targets) - Math.min(...targets)
+  const eps = Math.max(1e-6, Math.abs(span) * 0.005)
+  const moving = []
+  for (let i = 1; i < samples.length; i += 1) {
+    moving.push(Math.abs(targets[i] - targets[i - 1]) > eps)
+  }
+
+  // 扫描 transition：从最后一个 moving 样本向前扩展（允许 ≤2 间隔），同时统计总数
+  let lastEnd = -1 // 最后一个 moving 的样本索引（moving[i] 对应样本 i+1）
+  for (let i = moving.length - 1; i >= 0; i -= 1) {
+    if (moving[i]) {
+      lastEnd = i
+      break
+    }
+  }
+  if (lastEnd < 0) {
+    return { segment: samples, transitionCount: 0 }
+  }
+
+  // 向前扩展最后一个 transition 的起点：从 lastEnd 向前，允许 ≤2 个连续非 moving 间隔
+  let start = lastEnd
+  let gap = 0
+  for (let i = lastEnd - 1; i >= 0; i -= 1) {
+    if (moving[i]) {
+      start = i
+      gap = 0
+    } else {
+      gap += 1
+      if (gap > 2) break
+    }
+  }
+  // 统计窗口内 transition 总数（供 LLM 了解窗口工况复杂度）
+  let transitionCount = 0
+  let inRun = false
+  let runGap = 0
+  for (let i = 0; i < moving.length; i += 1) {
+    if (moving[i]) {
+      if (!inRun) {
+        transitionCount += 1
+        inRun = true
+      }
+      runGap = 0
+    } else if (inRun) {
+      runGap += 1
+      if (runGap > 2) inRun = false
+    }
+  }
+
+  // 段起点：transition 首个 moving 样本（索引 start+1）往前多留 2 个样本作为阶跃基线
+  const segmentStart = Math.max(0, start + 1 - 2)
+  return { segment: samples.slice(segmentStart), transitionCount }
+}
+
+/**
  * 对统一格式的控制响应数据进行确定性分析。
  * 输入：[{ t, target, feedback, output? }]
  */
@@ -168,7 +244,33 @@ export function analyzeControlSamples(inputSamples, options = {}) {
     return {
       valid: false,
       reason: `未检测到有效阶跃（目标几乎无变化，stepSize=${stepSize}）`,
-      sampleCount: samples.length
+      targetRamping: false,
+      sampleCount: samples.length,
+      finalTarget: fmt(finalTarget),
+      finalFeedback: fmt(finalFeedback)
+    }
+  }
+
+  // 斜坡目标检测（实测复盘）：设备 set_point 常为斜坡（逐拍逼近设定值），若末段目标
+  // 仍在变化，finalTarget/finalFeedback 只是斜坡中途值，超调/稳态误差等指标全是假象。
+  // 此时判定无效并带 targetRamping 标记，调用方（LLM/UI）应等目标稳定后再分析。
+  const rampEps = Math.max(1e-6, Math.abs(stepSize) * 0.005)
+  const tailStart = Math.max(1, samples.length - Math.max(3, Math.round(samples.length * 0.1)))
+  let targetRamping = false
+  for (let i = tailStart; i < samples.length; i += 1) {
+    if (Math.abs(samples[i].target - samples[i - 1].target) > rampEps) {
+      targetRamping = true
+      break
+    }
+  }
+  if (targetRamping) {
+    return {
+      valid: false,
+      targetRamping: true,
+      reason: '目标仍在斜坡变化中，阶跃指标暂不可靠，待目标稳定后再查询',
+      sampleCount: samples.length,
+      finalTarget: fmt(finalTarget),
+      finalFeedback: fmt(finalFeedback)
     }
   }
   const stepTime = samples[stepIndex].t
@@ -255,6 +357,7 @@ export function analyzeControlSamples(inputSamples, options = {}) {
 
   return {
     valid: true,
+    targetRamping: false,
     sampleCount: samples.length,
     stepIndex,
     stepTime: fmt(stepTime),

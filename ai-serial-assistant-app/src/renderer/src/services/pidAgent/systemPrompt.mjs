@@ -87,6 +87,22 @@ export function buildSystemPrompt({ userConfig = {}, tools = [], modelSpec = nul
     )
   }
 
+  // ②+ 串口模式专属引导（实测复盘：盲查大窗口拿到旧数据/多阶跃混杂指标；
+  //     设备目标常为斜坡，未稳定前指标失真；参数修改会真实下发设备）
+  if (userConfig.mode === 'serial') {
+    sections.push(
+      '串口模式要点：\n' +
+      '- set_target 返回 suggestedQuery（建议查询区间），请按该区间调用 get_channel_stats，' +
+      '统计只分析窗口内最新一次目标变化段（stepCount 表示窗口内目标变化次数）\n' +
+      '- 设备目标值可能是斜坡（逐渐逼近设定值）：stepMetrics 为 null 且提示目标仍在变化时，' +
+      '等待一个采集窗口后再查询，不要把斜坡期数据当作稳态指标\n' +
+      '- 修改 PID 参数（set_pid_params）会真实下发到设备并立即生效，每次修改都应通过' +
+      'set_target 验证真实响应\n' +
+      '- 串口数据为真实物理量，可能含噪声与未建模特性：指标轻微波动属正常，' +
+      '以趋势与多次结果交叉验证为准'
+    )
+  }
+
   // ③ 用户配置：XML 标签包裹、永不压缩（Pi 的结构化习惯）
   const configLines = [
     'PID 参数初始值与范围：',

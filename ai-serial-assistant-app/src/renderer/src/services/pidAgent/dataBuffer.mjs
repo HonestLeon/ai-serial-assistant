@@ -1,4 +1,4 @@
-import { analyzeControlSamples } from '../controlAnalysis.mjs'
+import { analyzeControlSamples, sliceLastTransition } from '../controlAnalysis.mjs'
 
 /**
  * PID 调参智能体 —— 带时间戳的通道数据环形缓冲。
@@ -238,8 +238,22 @@ export function createDataBuffer({ capacitySec = 600, maxSamples = 60000 } = {})
     for (const channel of sanitizeChannels(channels)) {
       channelResult[channel] = channelStats(rangeSamples.map((sample) => sample[channel]))
     }
+
+    // 阶跃响应指标只分析「窗口内最后一次目标变化段」（含阶跃前基线）：
+    // 查询窗口常跨越多轮 set_target 累积的缓冲，整窗分析会让 findStep 取到任意一次
+    // 跳变，指标混杂所有工况（实测：多次查询返回完全相同的脏指标、峰数虚高）。
+    // stepCount 告知窗口内目标变化次数；finalValues 提供末段稳态读数
+    // （稳态窗口 stepMetrics 为 null 时，LLM 仍能读到当前稳态值）。
+    const { segment, transitionCount } = sliceLastTransition(rangeSamples)
+    const tailCount = Math.max(3, Math.round(segment.length * 0.15))
+    const tail = segment.slice(-tailCount)
+    const finalValues = {
+      target: finite(tail.map((s) => s.target).reduce((a, b) => a + b, 0) / tail.length),
+      feedback: finite(tail.map((s) => s.feedback).reduce((a, b) => a + b, 0) / tail.length),
+      output: finite(tail.map((s) => s.output).reduce((a, b) => a + b, 0) / tail.length)
+    }
     // 阶跃响应指标复用确定性分析（阈值与默认验收线一致）
-    const analysis = analyzeControlSamples(rangeSamples, { overshootLimit: 20, oscillationLimit: 10 })
+    const analysis = analyzeControlSamples(segment, { overshootLimit: 20, oscillationLimit: 10 })
     const stepMetrics = analysis.valid
       ? {
           valid: true,
@@ -260,11 +274,22 @@ export function createDataBuffer({ capacitySec = 600, maxSamples = 60000 } = {})
           health: analysis.health,                                        // 良好/需关注/高风险
           limits: analysis.limits                                         // 验收线（LLM 直接对照）
         }
-      : null
+      : analysis.valid === false && analysis.targetRamping
+        // 斜坡进行中：保留 targetRamping 标记与原因（null 会丢失关键语义）
+        ? {
+            valid: false,
+            targetRamping: true,
+            reason: analysis.reason,
+            finalTarget: analysis.finalTarget,
+            finalFeedback: analysis.finalFeedback
+          }
+        : null
     return {
       timeRange: [rangeSamples[0].t, rangeSamples[rangeSamples.length - 1].t],
       channels: channelResult,
       stepMetrics,
+      stepCount: transitionCount,
+      finalValues,
       sampleCount: rangeSamples.length,
       clipped
     }

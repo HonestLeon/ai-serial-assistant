@@ -25,14 +25,21 @@ const finiteOr = (value, fallback) => {
 /**
  * 创建安全兜底护栏。
  *
+ * 双模式回退策略（2026-08 实测调参记录复盘后引入）：
+ *   - simulation：三条判定全触发（超调越限 / 真振荡越限 / 相对最佳记录劣化）；
+ *   - serial：仅「硬越限」（超调 / 真振荡）触发回退；「相对最佳劣化」不回退——
+ *     串口实测窗口含斜坡/噪声/多工况切换，劣化判定极易误触发（实测一整局参数被
+ *     反复重置回初始值）。劣化仅在返回值携带 degradationWarning 供提示，不改参数。
+ *
  * @param {object} options
  * @param {object} options.userConfig        用户配置（使用 acceptance.overshootLimit / oscillationLimit）
  * @param {() => object} options.getPid      读取当前下发中的 PID 参数（快照）
  * @param {(pid: object) => void} options.setPid 回退时写入 PID 参数
  * @param {(event: object) => void} [options.emit] 安全事件回调（{ type:'safety_triggered', message, metrics, rollbackPid }）
+ * @param {'simulation'|'serial'} [options.mode] 运行模式（默认 simulation）
  * @returns {{ onSamplesCollected, getBestStable, reset }}
  */
-export function createSafetyGuard({ userConfig, getPid, setPid, emit = null }) {
+export function createSafetyGuard({ userConfig, getPid, setPid, emit = null, mode = 'simulation' }) {
   // 最佳稳定记录：maybeUpdateBestResult 格式 { pid, metrics, score, round }，初始无记录
   let bestStable = null
   // 采集轮次计数（每次 onSamplesCollected 自增）
@@ -76,7 +83,9 @@ export function createSafetyGuard({ userConfig, getPid, setPid, emit = null }) {
         Boolean(metrics.hasSignificantOscillation) || (Number(metrics.oscillationPeakCount) || 0) > 0
       const overOscillation = oscillation > oscillationLimit && hasRealOscillation
 
-      if (overOvershoot || overOscillation || rollback.shouldRollback) {
+      // 劣化回退仅仿真模式启用：串口实测窗口（斜坡/多工况/噪声）会让劣化判定反复误触发
+      const degradationRollbackEnabled = mode !== 'serial'
+      if (overOvershoot || overOscillation || (degradationRollbackEnabled && rollback.shouldRollback)) {
         // 4. 触发安全兜底：回退到最佳稳定参数（无记录时无法回退，仅提示回调）
         const rollbackPid = bestStable?.pid ?? null
         if (rollbackPid !== null) {
@@ -97,6 +106,16 @@ export function createSafetyGuard({ userConfig, getPid, setPid, emit = null }) {
 
         emit?.({ type: 'safety_triggered', message, metrics, rollbackPid })
         return { triggered: true, message, rollbackPid, metrics }
+      }
+
+      // 串口模式：劣化不回退，仅提示（LLM/UI 可参考，参数不动）
+      if (!degradationRollbackEnabled && rollback.shouldRollback) {
+        return {
+          triggered: false,
+          bestUpdated,
+          metrics,
+          degradationWarning: `指标相对最佳记录有所劣化（${rollback.reason}），串口模式下不自动回退`
+        }
       }
     }
 

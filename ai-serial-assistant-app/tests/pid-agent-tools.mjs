@@ -277,6 +277,65 @@ const findTool = (tools, name) => {
   assert.ok(result.message.includes('get_channel_stats'))
 }
 
+// 8b. set_target 串口模式 suggestedQuery：空缓冲时 [0, 窗口长]；有数据时从缓冲末尾起算
+//     （stub 无 getStepWindowSec → 回退默认 12s，与 usePidAgent 的 SERIAL_STEP_WINDOW_SEC 一致）
+{
+  const controller = createStubController({ userConfig: createDefaultUserConfig(), mode: 'serial' })
+  const tools = createPidAgentTools({ controller })
+  const targetTool = findTool(tools, 'set_target')
+
+  const first = await targetTool.execute({ value: 50 })
+  assert.equal(first.windowSec, 12)
+  assert.deepEqual(first.suggestedQuery, [0, 12])
+
+  // 缓冲有数据（模拟串口采集流入）后再触发：建议区间从当前缓冲末尾起算
+  controller.getDataBuffer().push(
+    Array.from({ length: 20 }, (_, i) => ({ t: i * 0.5, target: 50, feedback: i, output: i }))
+  )
+  const second = await targetTool.execute({ value: 70 })
+  assert.ok(Math.abs(second.suggestedQuery[0] - 9.5) < 1e-9, '起点应为缓冲末尾 t=9.5')
+  assert.ok(Math.abs(second.suggestedQuery[1] - 21.5) < 1e-9)
+  assert.ok(second.message.includes('[9.5, 21.5]'))
+}
+
+// 10. set_pid_params 串口模式：参数真实下发设备（PID 指令；单环 3 参 / 串级 6 参速度环在前）
+{
+  // 单环：kp 1→2，指令应为 "PID 2 0 0"（全量参数而非增量）
+  const single = createStubController({ userConfig: createDefaultUserConfig(), mode: 'serial' })
+  const singleTools = createPidAgentTools({ controller: single })
+  const singleResult = await findTool(singleTools, 'set_pid_params').execute({ kp: 2 })
+  assert.equal(singleResult.mode, 'serial')
+  assert.ok(singleResult.message.includes('下发到设备'))
+  assert.deepEqual(single.calls.sendSerialCommand, ['PID 2 0 0'])
+
+  // 仿真模式不下发（回归：sendSerialCommand 保持为空）
+  const sim = createStubController({ userConfig: createDefaultUserConfig() })
+  const simTools = createPidAgentTools({ controller: sim })
+  await findTool(simTools, 'set_pid_params').execute({ kp: 2 })
+  assert.deepEqual(sim.calls.sendSerialCommand, [])
+
+  // 串级：六参指令速度环在前（固件契约），位置环 1→3、速度环 1→2
+  const cascadeConfig = {
+    ...createDefaultUserConfig(),
+    pid: [
+      { key: 'positionKp', label: '位置环Kp', init: 1, min: 0, max: 20 },
+      { key: 'positionKi', label: '位置环Ki', init: 0, min: 0, max: 10 },
+      { key: 'positionKd', label: '位置环Kd', init: 0, min: 0, max: 10 },
+      { key: 'speedKp', label: '速度环Kp', init: 1, min: 0, max: 20 },
+      { key: 'speedKi', label: '速度环Ki', init: 0, min: 0, max: 10 },
+      { key: 'speedKd', label: '速度环Kd', init: 0, min: 0, max: 10 }
+    ]
+  }
+  const cascade = createStubController({
+    userConfig: cascadeConfig,
+    mode: 'serial',
+    pid: { speedKp: 1, speedKi: 0, speedKd: 0, positionKp: 1, positionKi: 0, positionKd: 0 }
+  })
+  const cascadeTools = createPidAgentTools({ controller: cascade })
+  await findTool(cascadeTools, 'set_pid_params').execute({ positionKp: 3, speedKp: 2 })
+  assert.deepEqual(cascade.calls.sendSerialCommand, ['PID 2 0 0 3 0 0'])
+}
+
 // 9. P1b 串级键映射：串级配置（position*/speed*）下接受单环键 kp/ki/kd → 映射到位置环
 {
   const cascadeConfig = {

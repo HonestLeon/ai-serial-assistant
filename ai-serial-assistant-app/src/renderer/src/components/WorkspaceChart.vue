@@ -1,8 +1,24 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import * as echarts from 'echarts'
+// 按需引入 ECharts 模块：全量 `import * as echarts from 'echarts'` 会把
+// 全部图表类型/组件打进 bundle（约 5.5MB 主 chunk），拖慢低配机启动与首屏；
+// 此处仅注册折线图 + 实际用到的组件，运行时行为不变。
+import * as echarts from 'echarts/core'
+import { LineChart } from 'echarts/charts'
+import { AxisPointerComponent, DataZoomComponent, GridComponent, TitleComponent, TooltipComponent } from 'echarts/components'
+import { CanvasRenderer } from 'echarts/renderers'
 import { ElMessageBox } from 'element-plus'
 import { Download, Hide, View } from '@element-plus/icons-vue'
+
+echarts.use([
+  LineChart,
+  GridComponent,
+  TooltipComponent,
+  AxisPointerComponent,
+  TitleComponent,
+  DataZoomComponent,
+  CanvasRenderer
+])
 
 const props = defineProps({
   connected: Boolean,
@@ -24,9 +40,14 @@ const yMax = ref('')
 const simulationMode = ref(false)
 const isDark = ref(document.documentElement.classList.contains('dark'))
 const MAX_POINTS = 2000
+// 数据刷新节流：高波特率下串口数据逐包到达，若每包都 setOption 全量重绘，
+// 渲染线程长期被占满，界面（含"关闭串口"按钮等交互）响应会明显变慢。
+// 将重绘频率限制在 ~30fps，串口数据流下的 UI 交互不再卡顿。
+const REFRESH_THROTTLE_MS = 33
 const hasExportData = computed(() => seriesData.value.some((series) => series.length > 0))
 let sampleIndex = 0
 let chart = null
+let refreshTimer = null
 // ResizeObserver：监听 echarts 容器尺寸变化（拖动分隔条、窗口缩放均可触发）
 let resizeObserver = null
 
@@ -49,8 +70,14 @@ const themeChannelColors = [
 ]
 
 function colors() {
-  return themeChannelColors.map((color) => isDark.value ? color.dark : color.light)
+  return palette.value
 }
+
+// 主题调色板缓存：主题切换时才重建。原先 buildSeries 每个系列调用两次
+// colors()（每次新分配 8 元素数组），30fps 重绘下是无谓的分配/GC 压力。
+const palette = computed(() =>
+  themeChannelColors.map((color) => isDark.value ? color.dark : color.light)
+)
 
 function extractNumbers(text) {
   const source = String(text)
@@ -61,17 +88,33 @@ function extractNumbers(text) {
 }
 
 function ensureChannels(count) {
+  let added = false
   while (seriesData.value.length < count) {
     seriesData.value.push([])
     visibleChannels.value.push(true)
-    seriesNames.value.push(`I${seriesNames.value.length}`)
+    added = true
+  }
+  // 通道名只在「通道数量变化」或「名称不匹配」（如从仿真模式切回串口，
+  // seriesNames 仍是 目标值/反馈值/控制输出）时重建为 I0..In——既保持
+  // 与原实现一致，又不让每个数据包都 map 重建一遍数组。
+  const needsRename = seriesNames.value.length !== seriesData.value.length
+    || (seriesNames.value.length > 0 && seriesNames.value[0] !== 'I0')
+  if (added || needsRename) {
+    seriesNames.value = seriesData.value.map((_, index) => `I${index}`)
   }
 }
 
 function plottedData(data) {
+  // 未开启归一化（绝大多数场景）：直接返回原始数组引用，零对象分配。
+  // 原先逐点包成 {value, raw} 对象——8 通道 × 2000 点 × 30fps ≈ 48 万对象/秒的
+  // 分配与 GC 压力，低配机上表现为周期性卡顿。tooltip 读取 item.data?.raw
+  // 回退到 item.value，数值与 raw 相同，显示不变。
+  if (!normalizeDrawing.value) {
+    return data
+  }
   const valid = data.filter(Number.isFinite)
-  if (!normalizeDrawing.value || valid.length < 2) {
-    return data.map((raw) => Number.isFinite(raw) ? { value: raw, raw } : null)
+  if (valid.length < 2) {
+    return data
   }
   const min = Math.min(...valid)
   const max = Math.max(...valid)
@@ -82,15 +125,19 @@ function plottedData(data) {
 }
 
 function buildSeries() {
+  const colorsList = palette.value
   return Array.from({ length: channelCount.value }, (_, index) => ({
     name: seriesNames.value[index] || `I${index}`,
     type: 'line',
     smooth: true,
     showSymbol: false,
     connectNulls: false,
+    // LTTB 降采样：2000 点全量绘制远超画布像素分辨率，采样后渲染点数
+    // 与容器宽度同量级，视觉无损而重绘开销大幅下降
+    sampling: 'lttb',
     data: visibleChannels.value[index] ? plottedData(seriesData.value[index] || []) : [],
-    lineStyle: { color: colors()[index], width: 1.8 },
-    itemStyle: { color: colors()[index] }
+    lineStyle: { color: colorsList[index], width: 1.8 },
+    itemStyle: { color: colorsList[index] }
   }))
 }
 
@@ -179,7 +226,6 @@ function appendData(payload) {
   if (!values.length) return
   simulationMode.value = false
   ensureChannels(values.length)
-  seriesNames.value = seriesData.value.map((_, index) => `I${index}`)
   sampleLabels.value.push(sampleIndex++)
   for (let index = 0; index < seriesData.value.length; index += 1) {
     seriesData.value[index].push(Number.isFinite(values[index]) ? values[index] : null)
@@ -188,7 +234,21 @@ function appendData(payload) {
     sampleLabels.value.shift()
     seriesData.value.forEach((data) => data.shift())
   }
-  refreshChart()
+  scheduleRefresh()
+}
+
+// 节流重绘：高频数据包合并为最多 REFRESH_THROTTLE_MS 一次刷新（串口数据流下渲染不再满载）
+function scheduleRefresh() {
+  if (refreshTimer) return
+  refreshTimer = setTimeout(() => {
+    refreshTimer = null
+    // 窗口最小化/后台时跳过重绘（数据照常累积，回到前台由 visibilitychange 补一次）
+    if (!document.hidden) refreshChart()
+  }, REFRESH_THROTTLE_MS)
+}
+
+function handleVisibilityChange() {
+  if (!document.hidden) refreshChart()
 }
 
 function loadSimulationSamples(samples) {
@@ -284,6 +344,7 @@ onMounted(() => {
   resizeObserver = new ResizeObserver(() => chart?.resize())
   resizeObserver.observe(chartRef.value)
   window.addEventListener('theme-change', handleThemeChange)
+  document.addEventListener('visibilitychange', handleVisibilityChange)
 })
 
 watch(() => props.latestPayload, (payload) => {
@@ -301,10 +362,15 @@ watch(() => props.visible, (visible) => {
 watch([normalizeDrawing, yAuto, yMin, yMax], () => refreshChart())
 
 onUnmounted(() => {
+  if (refreshTimer) {
+    clearTimeout(refreshTimer)
+    refreshTimer = null
+  }
   chart?.dispose()
   resizeObserver?.disconnect()
   resizeObserver = null
   window.removeEventListener('theme-change', handleThemeChange)
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
 })
 </script>
 

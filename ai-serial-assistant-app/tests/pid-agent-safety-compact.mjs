@@ -226,6 +226,87 @@ const makeSlowConvergeSamples = () => {
   assert.equal(setPidCalls.length, 0)
 }
 
+// 4.6 串口模式回退策略：劣化（状态退化）不回退仅提示；硬越限（超调）仍回退
+//     （实测复盘：串口劣化判定误触发会把整局参数反复重置回初始值）
+{
+  // 与 makeSlowConvergeSamples 同 stepSize（0→50）的稳定样本，避免跨工作点豁免干扰
+  const makeStableTarget50 = () => {
+    const samples = []
+    for (let i = 0; i <= 500; i += 1) {
+      const t = i * 0.01
+      const target = t < 1 ? 0 : 50
+      const feedback = t < 1 ? 0 : 50 * (1 - Math.exp(-3 * (t - 1)))
+      samples.push({ t, target, feedback, output: feedback })
+    }
+    return samples
+  }
+  // 超调 25% 样本（目标 0→50，峰值 62.5）
+  const makeOvershootTarget50 = () => {
+    const samples = []
+    for (let i = 0; i <= 500; i += 1) {
+      const t = i * 0.01
+      const target = t < 1 ? 0 : 50
+      let feedback = 0
+      if (t >= 1) {
+        const elapsed = t - 1
+        feedback = elapsed <= 0.3
+          ? (62.5 / 0.3) * elapsed
+          : 50 + 12.5 * Math.exp(-3 * (elapsed - 0.3))
+      }
+      samples.push({ t, target, feedback, output: feedback })
+    }
+    return samples
+  }
+
+  const userConfig = createDefaultUserConfig()
+  userConfig.acceptance.overshootLimit = 20
+  userConfig.acceptance.oscillationLimit = 10
+
+  // --- 串口模式 ---
+  let pid = { kp: 1.5, ki: 0.2, kd: 0 }
+  const serialSetPidCalls = []
+  const serialGuard = createSafetyGuard({
+    userConfig,
+    getPid: () => pid,
+    setPid: (p) => { serialSetPidCalls.push(p); pid = { ...p } },
+    mode: 'serial'
+  })
+  serialGuard.onSamplesCollected(makeStableTarget50()) // 建立 bestStable（STABLE）
+
+  // 劣化（STABLE → SLOW_RESPONSE，同工作点）：不回退，返回 degradationWarning
+  pid = { kp: 5, ki: 0, kd: 0 }
+  const degraded = serialGuard.onSamplesCollected(makeSlowConvergeSamples())
+  assert.equal(degraded.metrics.valid, true)
+  assert.notEqual(degraded.metrics.status, 'STABLE', '慢收敛样本应为非 STABLE（构成状态退化）')
+  assert.equal(degraded.triggered, false, '串口模式劣化不应触发回退')
+  assert.equal(serialSetPidCalls.length, 0, '串口模式劣化不应写参数')
+  assert.ok(degraded.degradationWarning, '串口模式劣化应返回提示')
+  assert.ok(degraded.degradationWarning.includes('不自动回退'))
+
+  // 硬越限（超调 25% > 20%）：串口模式仍回退
+  const violated = serialGuard.onSamplesCollected(makeOvershootTarget50())
+  assert.equal(violated.triggered, true, '串口模式硬超调应触发回退')
+  assert.equal(serialSetPidCalls.length, 1)
+  assert.deepEqual(serialSetPidCalls[0], { kp: 1.5, ki: 0.2, kd: 0 })
+  assert.ok(violated.message.includes('超调'))
+
+  // --- 仿真模式（回归）：同样的劣化应触发回退（行为不变） ---
+  let pid2 = { kp: 1.5, ki: 0.2, kd: 0 }
+  const simSetPidCalls = []
+  const simGuard = createSafetyGuard({
+    userConfig,
+    getPid: () => pid2,
+    setPid: (p) => { simSetPidCalls.push(p); pid2 = { ...p } },
+    mode: 'simulation'
+  })
+  simGuard.onSamplesCollected(makeStableTarget50())
+  pid2 = { kp: 5, ki: 0, kd: 0 }
+  const simDegraded = simGuard.onSamplesCollected(makeSlowConvergeSamples())
+  assert.equal(simDegraded.triggered, true, '仿真模式同工作点状态退化仍应回退')
+  assert.equal(simSetPidCalls.length, 1)
+  assert.ok(simDegraded.message.includes('劣化'))
+}
+
 // ---------------------------------------------------------------------------
 // Compaction：数据上下文压缩
 // ---------------------------------------------------------------------------

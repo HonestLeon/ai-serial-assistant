@@ -218,4 +218,52 @@ import { simulatePidStrategy } from '../src/renderer/src/services/pidSimulation.
   assert.ok(stat.stepMetrics.overshoot < 1000, 'overshoot 不应为亿级爆炸值')
 }
 
+// 9. P2 stats 末段分析：多阶跃窗口只分析最后一次目标变化段 + stepCount / finalValues
+//    （实测复盘：整窗分析会让 findStep 取最大跳变段，多次查询返回完全相同的脏指标）
+{
+  const buffer = createDataBuffer()
+  // 段1（t=0~5）：0→50 上冲到 75（超调 50%）；段2（t=6~11）：50→20 无超调收敛
+  const samples = []
+  for (let i = 0; i <= 100; i += 1) {
+    const t = i * 0.05
+    const target = t < 1 ? 0 : 50
+    const feedback = t < 1 ? 0 : (t < 1.5 ? 40 * (t - 1) + 20 : 50 + 25 * Math.exp(-3 * (t - 1.5)))
+    samples.push({ t, target, feedback, output: feedback })
+  }
+  for (let i = 120; i <= 220; i += 1) {
+    const t = i * 0.05
+    const target = t < 7 ? 50 : 20
+    const feedback = t < 7 ? 50 : 20 + 30 * Math.exp(-3 * (t - 7))
+    samples.push({ t, target, feedback, output: feedback })
+  }
+  buffer.push(samples)
+
+  const result = buffer.stats({ timeRange: [0, 11] })
+  assert.equal(result.stepCount, 2, '窗口内有两次目标变化')
+  assert.equal(result.stepMetrics.valid, true)
+  // 指标应来自段2（50→20 下阶跃、无超调），而非段1 的 50% 超调
+  assert.ok(Math.abs(result.stepMetrics.stepSize + 30) < 1, 'stepSize 应为段2 的 -30')
+  assert.ok(result.stepMetrics.overshoot < 5, '段2 无超调，不应报告段1 的大超调')
+  assert.ok(Math.abs(result.stepMetrics.finalFeedback - 20) < 2, 'finalFeedback 应为段2 稳态 ~20')
+  assert.ok(Math.abs(result.finalValues.target - 20) < 1, 'finalValues 应为末段稳态值')
+  assert.ok(Math.abs(result.finalValues.feedback - 20) < 1)
+  // 通道统计仍是全窗口（供了解整体分布）
+  assert.equal(result.channels.target.max, 50)
+  assert.equal(result.channels.target.min, 0)
+}
+
+// 10. 稳态窗口：目标无变化 → stepMetrics 为 null + stepCount=0，finalValues 提供稳态读数
+{
+  const buffer = createDataBuffer()
+  buffer.push(Array.from({ length: 50 }, (_, i) => ({
+    t: i * 0.1, target: 50, feedback: 48 + Math.sin(i) * 0.2, output: 15
+  })))
+  const result = buffer.stats({ timeRange: [0, 5] })
+  assert.equal(result.stepCount, 0)
+  assert.equal(result.stepMetrics, null, '稳态窗口无阶跃指标')
+  assert.ok(Math.abs(result.finalValues.target - 50) < 1e-9)
+  assert.ok(Math.abs(result.finalValues.feedback - 48) < 1)
+  assert.ok(Math.abs(result.finalValues.output - 15) < 1e-9)
+}
+
 console.log('✅ tests/pid-agent-buffer.mjs 全部通过')

@@ -565,7 +565,7 @@ ai-serial-assistant-app/
 
 - 离线信号处理降级（Z-N / 继电自整定，无网可用）
 - 策略模板扩充（直立环 / 速度环 / 舵机环等更多竞赛系统预设与精细前馈项）
-- 串口实机调参深化：工具分流已支持（`set_target` 经串口下发 `SET_POINT` 并异步采集响应入数据缓冲），PID / 前馈参数向设备下发的指令链路待接入（zhichuan 指令集已就绪）
+- 串口实机调参深化：`set_target` 下发 `SET_POINT` 异步采集 + `set_pid_params` 真实下发 `PID` 指令（单环 3 参 / 串级 6 参速度环在前）+ 安全回退参数同步下发设备 + 12s 阶跃采集窗口（`suggestedQuery` 建议查询区间）+ stats 只分析窗口内最后一次目标变化段（`stepCount` / `finalValues`）+ 斜坡目标检测（`targetRamping`）；剩余：前馈系数经 `SET` 指令下发设备
 
 ### 待完成 📋
 

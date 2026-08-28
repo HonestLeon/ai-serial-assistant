@@ -41,24 +41,40 @@ const channelFeatures = computed(() => {
     props.serialContext.channelHistory.filter((values) => values.length > 0).length
   )
   return Array.from({ length: count }, (_, index) => {
-    const values = (props.serialContext.channelHistory[index] || []).filter(Number.isFinite)
-    if (!values.length) return null
-    const n = values.length
-    const min = Math.min(...values)
-    const max = Math.max(...values)
-    const mean = values.reduce((sum, value) => sum + value, 0) / n
-    const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / n
-    const rms = Math.sqrt(values.reduce((sum, value) => sum + value ** 2, 0) / n)
+    const history = props.serialContext.channelHistory[index] || []
+    // 单遍统计：原先 filter + min/max spread + 三次 reduce + map(Math.abs) 共 ~7 遍
+    // 遍历（8 通道 × 1200 样本），串口流下每批刷新都会重算，低配机开销可观
+    let n = 0
+    let min = Infinity
+    let max = -Infinity
+    let sum = 0
+    let squareSum = 0
+    let peak = 0
+    let latest = 0
+    for (let i = 0; i < history.length; i++) {
+      const value = history[i]
+      if (!Number.isFinite(value)) continue
+      n += 1
+      sum += value
+      squareSum += value * value
+      if (value < min) min = value
+      if (value > max) max = value
+      const abs = Math.abs(value)
+      if (abs > peak) peak = abs
+      latest = value
+    }
+    if (!n) return null
+    const mean = sum / n
     return {
       channel: `I${index}`,
       n,
       min,
       max,
       mean,
-      peak: Math.max(...values.map(Math.abs)),
-      rms,
-      std: Math.sqrt(variance),
-      latest: values[n - 1]
+      peak,
+      rms: Math.sqrt(squareSum / n),
+      std: Math.sqrt(squareSum / n - mean * mean),
+      latest
     }
   }).filter(Boolean)
 })

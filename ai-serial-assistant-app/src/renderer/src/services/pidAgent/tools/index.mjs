@@ -1,4 +1,5 @@
 import { applyPidGuardrails } from '../../pidSafety.mjs'
+import { buildPidCommand } from '../utils.mjs'
 
 /**
  * PID 调参智能体 —— 工具集模块。
@@ -124,6 +125,7 @@ export function createPidAgentTools({ controller } = {}) {
     description:
       '修改 PID 参数（只传需要修改的项，如 {"kp": 2.0}）。参数会经三重安全校验：用户配置范围裁剪、系统上限'
       + '（Kp≤20，Ki/Kd≤10）、单步增幅限制（Kp×3，Ki/Kd×4），越界会被裁剪并在结果 guardrailNotes 中说明原因。'
+      + '串口模式下参数会真实下发到设备（PID 指令，串级时速度环三参在前）。'
       + '何时用：根据 get_channel_stats 的指标调整参数后。修改后需调用 set_target 触发阶跃验证效果。',
     parameters: {
       type: 'object',
@@ -187,6 +189,19 @@ export function createPidAgentTools({ controller } = {}) {
       const allNotes = [...guardrailNotes, ...systemNotes]
 
       controller.setPid(applied, allNotes)
+
+      // 串口模式：参数真实下发到设备（zhichuan 固件 PID 指令）。
+      // 此前只写上位机内存，设备全程跑旧参数——实测"无论怎么调反馈都一样"的根因。
+      if (controller.getMode() === 'serial') {
+        await controller.sendSerialCommand(buildPidCommand(controller.getPid(), { isCascade }))
+        return {
+          applied,
+          previous,
+          guardrailNotes: allNotes,
+          mode: 'serial',
+          message: '参数已下发到设备（PID 指令），请调用 set_target 触发阶跃验证'
+        }
+      }
       return { applied, previous, guardrailNotes: allNotes }
     }
   }
@@ -238,8 +253,8 @@ export function createPidAgentTools({ controller } = {}) {
     description:
       '修改目标值并触发阶跃响应采集（调参验证的必经步骤）。目标值经用户安全范围校验，轻微软出会被裁剪。'
       + '仿真模式下立即采集并返回摘要（timeRange 为本次阶跃数据区间，可直接传给 get_channel_stats/'
-      + 'get_channel_data 查询）；串口模式下发指令后异步采集，采集完成会自动进行安全检测，'
-      + '若触发回退会收到 [安全机制] 通知，稍后用 get_channel_stats 查看结果。'
+      + 'get_channel_data 查询）；串口模式下发指令后异步采集（返回 suggestedQuery 建议查询区间，'
+      + '约一个采集窗口后按该区间查询），采集完成会自动进行安全检测，若触发回退会收到 [安全机制] 通知。'
       + '何时用：每次修改 PID/前馈参数后，或需要重新验证当前参数时。',
     parameters: {
       type: 'object',
@@ -266,16 +281,23 @@ export function createPidAgentTools({ controller } = {}) {
       controller.setTarget(value)
 
       // 串口模式：下发目标指令，响应由外部采样流异步进入数据缓冲；
-      // 同时声明「已发起阶跃」，由上游串口窗口采集器在采集完成后自动做安全检测
+      // 同时声明「已发起阶跃」，由上游串口窗口采集器在采集完成后自动做安全检测。
+      // 返回建议查询区间 suggestedQuery：设备 set_point 常为斜坡（实测 ~8-10s 才到稳态），
+      // 盲查大窗口只会拿到旧数据/多阶跃混杂指标；按建议区间查「本次阶跃」最可靠。
       if (controller.getMode() === 'serial') {
         await controller.sendSerialCommand(`SET_POINT ${value}`)
         if (typeof controller.onStepTriggered === 'function') controller.onStepTriggered()
+        const windowSec = controller.getStepWindowSec?.() ?? 12
+        const rangeInfo = controller.getDataBuffer().getRange()
+        const tStart = rangeInfo.end ?? 0
         return {
           ok: true,
           mode: 'serial',
           target: value,
           guardrailNotes,
-          message: '指令已下发，响应采集中，稍后调用 get_channel_stats 查看'
+          windowSec,
+          suggestedQuery: [Number(tStart.toFixed(1)), Number((tStart + windowSec).toFixed(1))],
+          message: `指令已下发，采集窗口约 ${windowSec}s；建议稍后用 get_channel_stats 查询 [${tStart.toFixed(1)}, ${(tStart + windowSec).toFixed(1)}]（统计只分析最新一次目标变化段）`
         }
       }
 

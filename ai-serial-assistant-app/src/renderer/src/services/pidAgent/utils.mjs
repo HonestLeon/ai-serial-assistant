@@ -55,6 +55,31 @@ export function applyCanonicalPid(target, pid, cascade = false) {
   return target
 }
 
+/**
+ * 生成 zhichuan 固件的 PID 参数下发指令（按行协议，末尾换行由发送层统一补）。
+ *
+ * 固件契约（zhichuan_pid.c zhichuan_handle_pid）：
+ *   - 3 参：`PID <kp> <ki> <kd>`（单环）
+ *   - 6 参：`PID <speedKp> <speedKi> <speedKd> <positionKp> <positionKi> <positionKd>`
+ *     ⚠ 串级顺序为速度环三参在前、位置环三参在后（与上位机 currentPid 合并形态不同）
+ *
+ * @param {object} pid 规范形态参数（readCanonicalPid 产物：单环 kp/ki/kd 或串级六键）
+ * @param {{isCascade?:boolean}} [options] isCascade=true 时输出六参串级指令
+ * @returns {string} 如 "PID 2.5 0.5 0"
+ */
+export function buildPidCommand(pid, { isCascade = false } = {}) {
+  const num = (value) => {
+    const n = Number(value)
+    return Number.isFinite(n) ? n : 0
+  }
+  if (!pid || typeof pid !== 'object') pid = {}
+  if (isCascade) {
+    return `PID ${num(pid.speedKp)} ${num(pid.speedKi)} ${num(pid.speedKd)} ` +
+      `${num(pid.positionKp)} ${num(pid.positionKi)} ${num(pid.positionKd)}`
+  }
+  return `PID ${num(pid.kp)} ${num(pid.ki)} ${num(pid.kd)}`
+}
+
 // 宽松取有限数字：undefined / null / 空串 / 非数字一律视为「未提供」返回 undefined
 // （表单空值与缺省键不应覆盖仿真策略默认值）
 const finiteNumber = (value) => {

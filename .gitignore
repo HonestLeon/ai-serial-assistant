@@ -12,6 +12,10 @@
 /**/out
 /**/release
 /**/release-builds
+/**/release-temp
+/**/release-v1
+/**/release-v2
+/**/.builder-cache
 *.log
 
 # ---------- 可执行安装包 ----------
@@ -34,6 +38,9 @@ Thumbs.db
 # ---------- AI工具缓存 ----------
 /**/.workbuddy
 /**/.trae
+
+# ---------- 临时调试脚本 ----------
+/**/tests/tmp-*
 
 # ---------- 设计源文件（无关交付物）----------
 /**/AI串口助手前端界面设计
