@@ -29,6 +29,7 @@ import { createPidAgentTools } from '../services/pidAgent/tools/index.mjs'
 import { runAgentLoop, createPendingMessageQueue } from '../services/pidAgent/agentLoop.mjs'
 import { createSafetyGuard } from '../services/pidAgent/safety.mjs'
 import { measureDataBytes, compactIfNeeded } from '../services/pidAgent/compaction.mjs'
+import { scoreMetrics } from '../services/pidSafety.mjs'
 import { PID_STRATEGIES, simulatePidStrategy } from '../services/pidSimulation.mjs'
 import {
   readCanonicalPid,
@@ -47,9 +48,6 @@ const COMPACT_THRESHOLD_BYTES = 50 * 1024
 // 尚未收敛，指标全失真（SLOW_RESPONSE / 包络虚高）；留裕量覆盖斜坡 + 稳态段。
 const SERIAL_STEP_WINDOW_SEC = 12
 
-/** 串级策略判定（目前仅 cascade_position 为串级） */
-const isCascadeStrategy = (strategyId) => strategyId === 'cascade_position'
-
 /**
  * 组装仿真模型物理特性摘要（供 buildSystemPrompt 的 modelSpec 段渲染）。
  * 仅仿真模式提供（策略 defaults 来自 PID_STRATEGIES）；串口模式返回 null，
@@ -63,10 +61,29 @@ function buildModelSpec(strategyId, testMode) {
   const j = Number(defaults.J)
   const b = Number(defaults.B)
   const tau = j > 0 && b > 0 ? Number((j / b).toFixed(2)) : undefined
+  const acceptance = strategy.acceptance
+  // 宽松取有限数字（缺省返回 undefined，提示词层据此跳过渲染）
+  const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : undefined)
   return {
     name: strategy.name,
     description: strategy.description,
-    outputLimit: defaults.outputLimit,
+    // 仿真教学模式：无 PID 输出限幅（输出幅值由增益与误差决定）
+    outputLimits: 'none',
+    // 目标物理范围（仿真按策略 targetRange，倒立摆为小角度线性区 ±0.18 rad≈±10°；
+    // 串口模式无策略概念，回退用户安全范围）
+    targetRange: strategy.targetRange,
+    // 不稳定系统标记（倒立摆：纯 P 等幅振荡不收敛，需 Kd 阻尼）
+    unstable: strategy.unstable === true,
+    // 策略验收线（仿真模式达标判断参照：userConfig 的 overshoot/oscillation 同源）
+    acceptance: acceptance && {
+      overshootLimit: num(acceptance.overshootLimit),
+      riseTimeLimit: num(acceptance.riseTimeLimit),
+      settlingTimeLimit: num(acceptance.settlingTimeLimit),
+      oscillationLimit: num(acceptance.oscillationLimit),
+      settlingBandPercent: num(acceptance.settlingBand) !== undefined
+        ? Number(acceptance.settlingBand) * 100
+        : undefined
+    },
     duration: defaults.duration,
     dt: defaults.dt,
     noise: defaults.noise,
@@ -110,11 +127,16 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
   /** 前馈项定义表 [{ id, label, init, min, max }] */
   const feedforwardItems = reactive([])
 
-  /** 场景描述提示词（被控对象、调参目标、特殊约束，不能为空） */
+  /** 场景描述提示词（串口模式必填；仿真模式可空，启动时自动按策略说明补齐） */
   const scenePrompt = ref('')
 
   /** 调参测试模式：'simulation' 仿真 | 'serial' 串口实机 */
   const testMode = ref('simulation')
+
+  /** 调参策略（自由文本，仅串口模式使用；仿真模式由 LLM 自主决策） */
+  const tuningStrategy = ref('')
+  /** 串口模式参数结构：'single' 单环 kp/ki/kd | 'cascade' 位置-速度串级六参 */
+  const pidStructure = ref('single')
 
   /** 追加前馈项（id 重复时忽略；缺省字段按兜底值补齐） */
   function addFeedforwardItem(item) {
@@ -183,6 +205,17 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
   /** UI 消息自增序号（与 Date.now 组合保证 id 唯一） */
   let uiMessageSeq = 0
 
+  // ------ 达标自动收敛状态（会话级，startAgent 重置） ------
+  /** 是否已注入过"达标收敛"提示（一次会话只提示一次） */
+  let acceptanceNotified = false
+  /** 达标后"持续无改善"的轮数（≥2 则主循环自动正常结束） */
+  let stagnantTurns = 0
+  /** 达标时的 scoreMetrics 基线（后续轮次对照是否确有改善） */
+  let lastScore = null
+  /** 达标自动收敛的最小调参轮次：前 MIN_ACCEPTANCE_TURN 轮只观察/整定，不判定达标、不自动结束
+   *  （防止 set_target 首轮即达标导致 agent 过早总结，剥夺完整调参过程） */
+  const MIN_ACCEPTANCE_TURN = 5
+
   const nextUiMessageId = () => {
     uiMessageSeq += 1
     return `ui-${uiMessageSeq}-${Date.now()}`
@@ -215,33 +248,41 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
   }
 
   /**
-   * 按策略默认参数重建 pidConfig 定义表：
-   * 单环策略 → kp/ki/kd 三项；cascade_position → 位置环 + 速度环六项
+   * 按 PID 参数结构重建 pidConfig 定义表：
+   * 'single' → kp/ki/kd 三项；'cascade' → 位置环 + 速度环六项
    * （键名与 set_pid_params 工具 schema 的 position 环 / speed 环键一一对应）。
+   * defaults 提供初始值（缺省键按兜底默认值，兼容串口模式无策略 defaults 的场景）。
    */
-  function applyStrategyPidConfig(id) {
-    const strategy = PID_STRATEGIES[id] ?? PID_STRATEGIES.motor_speed
-    const defaults = strategy.defaults
-    if (id === 'cascade_position') {
+  function applyPidStructureConfig(structure, defaults = {}) {
+    if (structure === 'cascade') {
       pidConfig.splice(
         0,
         pidConfig.length,
-        { key: 'positionKp', label: '位置环Kp', init: defaults.positionKp, min: 0, max: 20 },
-        { key: 'positionKi', label: '位置环Ki', init: defaults.positionKi, min: 0, max: 10 },
-        { key: 'positionKd', label: '位置环Kd', init: defaults.positionKd, min: 0, max: 10 },
-        { key: 'speedKp', label: '速度环Kp', init: defaults.speedKp, min: 0, max: 20 },
-        { key: 'speedKi', label: '速度环Ki', init: defaults.speedKi, min: 0, max: 10 },
-        { key: 'speedKd', label: '速度环Kd', init: defaults.speedKd, min: 0, max: 10 }
+        { key: 'positionKp', label: '位置环Kp', init: defaults.positionKp ?? 3, min: 0, max: 20 },
+        { key: 'positionKi', label: '位置环Ki', init: defaults.positionKi ?? 0, min: 0, max: 10 },
+        { key: 'positionKd', label: '位置环Kd', init: defaults.positionKd ?? 0, min: 0, max: 10 },
+        { key: 'speedKp', label: '速度环Kp', init: defaults.speedKp ?? 1, min: 0, max: 20 },
+        { key: 'speedKi', label: '速度环Ki', init: defaults.speedKi ?? 0, min: 0, max: 10 },
+        { key: 'speedKd', label: '速度环Kd', init: defaults.speedKd ?? 0, min: 0, max: 10 }
       )
       return
     }
     pidConfig.splice(
       0,
       pidConfig.length,
-      { key: 'kp', label: 'Kp', init: defaults.kp, min: 0, max: 20 },
-      { key: 'ki', label: 'Ki', init: defaults.ki, min: 0, max: 10 },
-      { key: 'kd', label: 'Kd', init: defaults.kd, min: 0, max: 10 }
+      { key: 'kp', label: 'Kp', init: defaults.kp ?? 1, min: 0, max: 20 },
+      { key: 'ki', label: 'Ki', init: defaults.ki ?? 0, min: 0, max: 10 },
+      { key: 'kd', label: 'Kd', init: defaults.kd ?? 0, min: 0, max: 10 }
     )
+  }
+
+  /**
+   * 仿真策略切换：按策略默认参数建键集（cascade_position → 串级六参，其余单环三键），
+   * 初始值取该策略 defaults；行为与原实现一致。
+   */
+  function applyStrategyPidConfig(id) {
+    const strategy = PID_STRATEGIES[id] ?? PID_STRATEGIES.motor_speed
+    applyPidStructureConfig(id === 'cascade_position' ? 'cascade' : 'single', strategy.defaults)
   }
 
   // 策略切换：重建参数定义表（下一次会话生效）；运行中不重置 currentPid（避免破坏当前会话）
@@ -249,6 +290,19 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
     applyStrategyPidConfig(id)
     if (!running.value) resetRuntimeParams()
   })
+
+  // 串口模式 PID 结构切换：同样重建参数定义表（仿真策略选择与串口结构互不影响）
+  watch(pidStructure, (structure) => {
+    applyPidStructureConfig(structure)
+    if (!running.value) resetRuntimeParams()
+  })
+
+  /** 串级判定：按模式取值——仿真看策略 id，串口看 PID 结构 */
+  const effectiveCascade = computed(() =>
+    testMode.value === 'serial'
+      ? pidStructure.value === 'cascade'
+      : strategyId.value === 'cascade_position'
+  )
 
   // ---------------- 智能体事件 → UI 消息流 / 运行状态同步 ----------------
 
@@ -406,11 +460,44 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
       throw new Error('串口模式下请先连接设备，再启动调参智能体')
     }
 
-    // 会话启动前强制同步策略参数键集（applyStrategyPidConfig 由 watch(strategyId)
+    // 串口模式调参策略必填（自由文本：指导 LLM 如何整定实机）
+    if (testMode.value === 'serial' && !tuningStrategy.value.trim()) {
+      throw new Error('串口模式请先填写调参策略（如：分阶段 P→PI→PID，先压超调再降稳态误差）')
+    }
+
+    // 会话启动前强制同步参数键集（applyStrategyPidConfig / applyPidStructureConfig 由 watch
     // 异步触发，可能晚于本函数执行——若沿用旧键集，串级模式下 set_pid_params 会用错参数键
     // （kp 键静默无效或直接被判"未提供任何参数"）。此处显式同步，保证 userConfig.pid 与
-    // 当前策略（position*/speed* 或 kp/ki/kd）一致；currentPid 由下方 resetRuntimeParams 初始化。
-    applyStrategyPidConfig(strategyId.value)
+    // 当前键集（串口按结构 position*/speed* 或 kp/ki/kd；仿真按策略）一致；
+    // currentPid 由下方 resetRuntimeParams 初始化。
+    if (testMode.value === 'serial') applyPidStructureConfig(pidStructure.value)
+    else applyStrategyPidConfig(strategyId.value)
+
+    // 仿真模式场景描述自动补齐：策略自带物理模型说明，无需用户输入；
+    // 已填内容优先，否则按所选策略拼接默认场景（校验因此不会因空场景报错）
+    const resolvedScene = (() => {
+      const manual = scenePrompt.value.trim()
+      if (testMode.value !== 'simulation') return manual
+      if (manual) return manual
+      const strategy = PID_STRATEGIES[strategyId.value] ?? PID_STRATEGIES.motor_speed
+      return `${strategy.name}（${strategy.description}）。调参目标：驱动响应在参数与信号安全范围内达成稳定、低超调。`
+    })()
+
+    // 验收线：串口模式保持通用 20%/10%（不动实机验收行为）；
+    // 仿真模式按所选策略 acceptance 注入（cascade=15/8，motor=10/10，pendulum=25/12），
+    // 使 agent 的达标判断与仿真模型验收一致（此前硬编码 20/10 与策略验收线脱节）。
+    const serialAcceptance = { overshootLimit: 20, oscillationLimit: 10 }
+    const strategyAcceptance = PID_STRATEGIES[strategyId.value]?.acceptance ?? {}
+    const acceptance = testMode.value === 'serial'
+      ? serialAcceptance
+      : {
+          overshootLimit: Number.isFinite(Number(strategyAcceptance.overshootLimit))
+            ? Number(strategyAcceptance.overshootLimit)
+            : serialAcceptance.overshootLimit,
+          oscillationLimit: Number.isFinite(Number(strategyAcceptance.oscillationLimit))
+            ? Number(strategyAcceptance.oscillationLimit)
+            : serialAcceptance.oscillationLimit
+        }
 
     // ① 组装 userConfig（buildSystemPrompt 契约形态：pidParams / safetyRange / feedforwardItems）
     //    深拷贝并做字段适配：定义表 {key,label,init} → 提示词 {name,initial,min,max}
@@ -432,9 +519,11 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
         min: Number(item.min),
         max: Number(item.max)
       })),
-      scenePrompt: scenePrompt.value,
-      overshootLimit: 20,
-      oscillationLimit: 10,
+      scenePrompt: resolvedScene,
+      // 串口模式调参策略（自由文本）注入，仿真模式不提供
+      tuningStrategy: testMode.value === 'serial' ? tuningStrategy.value.trim() : '',
+      overshootLimit: acceptance.overshootLimit,
+      oscillationLimit: acceptance.oscillationLimit,
       // 运行模式（systemPrompt 渲染串口模式专属引导用）
       mode: testMode.value,
       // 仿真模式注入模型物理特性（串口模式不提供，模型按实测数据说话）
@@ -450,14 +539,17 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
         target: { min: safetyRange.target.min, max: safetyRange.target.max }
       },
       feedforward: feedforwardItems.map((item) => ({ ...item })),
-      scenePrompt: scenePrompt.value
+      scenePrompt: resolvedScene
     })
     if (!check.ok) {
       throw new Error(`${check.reason}：${check.missing.join(',')}`)
     }
 
     // ③ 初始化会话状态（缓冲 / 时钟 / 消息流 / 计数全部重置）
-    dataBuffer = createDataBuffer()
+    // 缓冲携带验收线（limits 与提示词/护栏同源，避免 agent 看到"两条线"）
+    dataBuffer = createDataBuffer({
+      acceptance: { overshootLimit: acceptance.overshootLimit, oscillationLimit: acceptance.oscillationLimit }
+    })
     sessionClock = 0
     serialStartTime = null
     messages.value = []
@@ -465,6 +557,10 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
     ctxBytes.value = 0
     stopReason.value = ''
     Object.keys(paramHighlight).forEach((key) => delete paramHighlight[key])
+    // 达标收敛状态重置（新会话从零开始）
+    acceptanceNotified = false
+    stagnantTurns = 0
+    lastScore = null
 
     // 内部用户配置（types.mjs 的 UserConfig 形态：工具集与安全护栏使用）
     const internalUserConfig = {
@@ -475,8 +571,8 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
         target: { min: safetyRange.target.min, max: safetyRange.target.max }
       },
       feedforward: feedforwardItems.map((item) => ({ ...item })),
-      scenePrompt: scenePrompt.value,
-      acceptance: { overshootLimit: 20, oscillationLimit: 10 }
+      scenePrompt: resolvedScene,
+      acceptance: { overshootLimit: acceptance.overshootLimit, oscillationLimit: acceptance.oscillationLimit }
     }
 
     // ④ 当前参数初始化
@@ -490,13 +586,13 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
     // ⑥ controller 实现（createPidAgentTools 的运行时环境契约）
 
     /** 当前参数快照（规范形态：单环三键 / 串级六键，值均为数字；串级判定动态读取当前策略） */
-    const getPidSnapshot = () => readCanonicalPid({ ...currentPid }, isCascadeStrategy(strategyId.value))
+    const getPidSnapshot = () => readCanonicalPid({ ...currentPid }, effectiveCascade.value)
 
     /** 写回参数（合并形态 + 变化高亮；applyCanonicalPid 沿用旧实现，写回字符串值） */
     const setPidHandler = (newPid) => {
       if (!newPid || typeof newPid !== 'object') return
       const before = { ...currentPid }
-      applyCanonicalPid(currentPid, newPid, isCascadeStrategy(strategyId.value))
+      applyCanonicalPid(currentPid, newPid, effectiveCascade.value)
       // 参数变化高亮：与快照比对，变化的键打时间戳
       Object.keys(currentPid).forEach((key) => {
         if (Number(currentPid[key]) !== Number(before[key])) {
@@ -537,7 +633,7 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
         // 若不下发，设备仍跑越限参数，上位机/设备参数分裂（回退形同虚设）。
         if (result.rollbackPid && testMode.value === 'serial') {
           const cmd = buildPidCommand(result.rollbackPid, {
-            isCascade: isCascadeStrategy(strategyId.value)
+            isCascade: effectiveCascade.value
           })
           Promise.resolve(onSerialSend?.(cmd)).catch(() => {
             // 下发失败静默：串口错误已有 serial:error 通道上报，不阻塞安全流程
@@ -568,6 +664,14 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
         currentTarget.value = Number(value)
       },
       getMode: () => testMode.value,
+      // 目标物理范围：仿真按策略 targetRange（倒立摆小角度线性区），串口回退用户安全范围
+      getTargetRange: () => {
+        if (testMode.value !== 'simulation') {
+          return { min: safetyRange.target.min, max: safetyRange.target.max }
+        }
+        const strategy = PID_STRATEGIES[strategyId.value]
+        return strategy?.targetRange ?? { min: safetyRange.target.min, max: safetyRange.target.max }
+      },
       // 阶跃仿真：用当前参数/前馈/目标组装 overrides 后跑一次仿真，样本上抛面板显示波形
       runSimulation: async () => {
         const overrides = buildSimOverrides({
@@ -578,7 +682,11 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
           baseConfig: {}
         })
         const result = simulatePidStrategy(strategyId.value, overrides)
-        onSimulationData?.(result.samples)
+        const samples = result.samples
+        // 发散截断标记随样本数组传播（数组可挂属性，tools set_target 读取后提示 agent）
+        samples.truncated = result.truncated === true
+        if (result.truncated) samples.truncateReason = result.truncateReason
+        onSimulationData?.(samples)
         return result.samples
       },
       sendSerialCommand: async (cmd) => {
@@ -590,6 +698,8 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
       },
       getDataBuffer: () => dataBuffer,
       getUserConfig: () => internalUserConfig,
+      // 当前已完成调参轮次（工具层/编排层判定"达标"的门槛依据）
+      getTurnCount: () => turnCount.value,
       // 串口阶跃采集窗口时长（set_target 串口分支组装 suggestedQuery 用）
       getStepWindowSec: () => SERIAL_STEP_WINDOW_SEC,
       // 样本采集完成后的安全检测（仿真模式 set_target 调用；串口模式由窗口采集器完成回调驱动）
@@ -597,6 +707,48 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
       // 串口阶跃已下发：开启/重置窗口采集（真实数据流入 onSerialData 后在此窗口内收样）
       onStepTriggered: () => {
         serialCollector?.trigger()
+      },
+      /**
+       * 达标收敛（get_channel_stats 返回 acceptanceCheck.passed=true 时由工具层调用）：
+       * 首次注入"已满足验收线"收敛提示；之后记录停滞轮数（无改善累计），
+       * 由 runAgentLoop 的 shouldStopAfterTurn 在停滞 ≥2 轮时以 'stop' 正常结束。
+       */
+      onAcceptancePassed: (statsResult) => {
+        const sm = statsResult?.stepMetrics
+        if (!sm || !running.value) return
+        // 前 MIN_ACCEPTANCE_TURN 轮为观察/整定期：首轮即达标不视为"已完成任务"，
+        // 不注入收敛提示、不启动停滞计数（防止 set_target 首轮达标就过早总结）
+        if (turnCount.value < MIN_ACCEPTANCE_TURN) return
+        const score = Number.isFinite(Number(sm.rmse)) ? scoreMetrics(sm) : null
+        if (!acceptanceNotified) {
+          acceptanceNotified = true
+          lastScore = score
+          stagnantTurns = 0
+          const limits = sm.limits ?? {}
+          const text =
+            `✅ 当前参数已满足全部验收线：超调 ${sm.overshoot}% ≤ ${limits.overshoot}%、` +
+            `振荡 ${sm.oscillation} ≤ ${limits.oscillation}、已收敛（converged）、` +
+            `稳态误差 |${sm.steadyError}| ≤ 5% 阶跃幅值。` +
+            `调参目标已达成：请输出最终调参结论（含最终参数与指标表）并结束本轮调参；除非用户明确要求继续优化。`
+          steerQueue.push(createUserMessage(text, 'steer'))
+          messages.value.push({
+            id: nextUiMessageId(),
+            kind: 'steerUser',
+            text,
+            toolName: null,
+            toolStatus: null,
+            durationMs: null,
+            shownLen: text.length
+          })
+          return
+        }
+        // 已提示过：仅更新停滞计数（确有改善则刷新基线）
+        if (Number.isFinite(score) && Number.isFinite(lastScore) && score < lastScore - 0.05) {
+          lastScore = score
+          stagnantTurns = 0
+        } else {
+          stagnantTurns += 1
+        }
       }
     }
 
@@ -637,7 +789,14 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
         signal: abortController.signal,
         emit,
         maxTurns: 50,
-        onBeforeLlm
+        onBeforeLlm,
+        // 达标自动收敛：已提示达标且 agent 仍持续微调无改善（连续 ≥2 轮）→ 以 'stop' 正常结束，
+        // 不再依赖 LLM 自觉 / maxTurns 兜底（根治"达标后拉到 50 轮"）
+        shouldStopAfterTurn: async () => {
+          if (!acceptanceNotified) return false
+          if (stagnantTurns >= 2) return { stop: true, reason: 'stop' }
+          return false
+        }
       })
     } finally {
       running.value = false
@@ -740,6 +899,8 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
     feedforwardItems,
     scenePrompt,
     testMode,
+    tuningStrategy,
+    pidStructure,
     addFeedforwardItem,
     removeFeedforwardItem,
     // 运行状态

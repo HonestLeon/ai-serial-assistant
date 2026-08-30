@@ -301,19 +301,36 @@ const modelSpecPrompt = buildSystemPrompt({
   userConfig,
   tools: agentTools,
   modelSpec: {
-    name: '电机速度环（一阶模型）',
-    description: 'J·dω/dt + B总·ω = Kt·i',
-    outputLimit: 12,
-    duration: 4,
-    dt: 0.01,
-    noise: 0.08,
-    tau: 0.25
+    name: '不稳定二阶系统（倒立摆）',
+    description: 'J·θ¨ − mgl·θ = −T；被控量为摆角，控制量为力矩。',
+    outputLimits: 'none',
+    targetRange: [-0.18, 0.18],
+    unstable: true,
+    duration: 5,
+    dt: 0.005,
+    noise: 0.0015,
+    acceptance: { overshootLimit: 25, oscillationLimit: 12 }
   }
 })
 assert.ok(modelSpecPrompt.includes('模型特性（仿真模式'))
-assert.ok(modelSpecPrompt.includes('输出限幅: 12'))
-assert.ok(modelSpecPrompt.includes('采样: 4s @ 100Hz（噪声 0.08）'))
-assert.ok(modelSpecPrompt.includes('时间常数 τ: 0.25s'))
+assert.ok(modelSpecPrompt.includes('无 PID 输出限幅'))
+assert.ok(modelSpecPrompt.includes('目标物理范围: [-0.18, 0.18]'))
+assert.ok(modelSpecPrompt.includes('PID 仅在小角度线性区成立'))
+assert.ok(modelSpecPrompt.includes('采样: 5s @ 200Hz（噪声 0.0015）'))
+assert.ok(modelSpecPrompt.includes('验收线:'))
+assert.ok(modelSpecPrompt.includes('超调 ≤ 25%'))
+assert.ok(modelSpecPrompt.includes('振荡 ≤ 12%'))
+// 不稳定系统（倒立摆）专属指引 + 防振荡引导 + 收敛纪律
+assert.ok(modelSpecPrompt.includes('不稳定系统（倒立摆）指引'))
+assert.ok(modelSpecPrompt.includes('小角度线性近似'))
+assert.ok(modelSpecPrompt.includes('|θ| ≤ 0.18 rad'))
+assert.ok(modelSpecPrompt.includes('仿真因发散截断'))
+assert.ok(modelSpecPrompt.includes('等幅振荡'))
+assert.ok(modelSpecPrompt.includes('仿真无输出限幅 · 防振荡引导'))
+assert.ok(modelSpecPrompt.includes('Kd 提示'))
+// 行为准则：达标以场景目标为准（缩小目标不构成达标）
+assert.ok(modelSpecPrompt.includes('缩小目标不构成达标'))
+assert.ok(modelSpecPrompt.includes('验收达标即完成任务'))
 assert.ok(modelSpecPrompt.includes('以 get_channel_stats 返回的 finalFeedback 与目标值对照为准'))
 
 // 串口/缺省 modelSpec：不渲染「模型特性」段
@@ -328,6 +345,19 @@ assert.ok(serialPrompt.includes('斜坡'))
 assert.ok(serialPrompt.includes('真实下发到设备'))
 // 仿真/缺省 mode：不渲染串口引导
 assert.ok(!nullSpecPrompt.includes('串口模式要点'))
+
+// ---------- 8++. buildSystemPrompt tuningStrategy：串口模式自由文本调参策略 ----------
+// 提供调参策略时渲染「调参策略」段与原文
+const withStrategyPrompt = buildSystemPrompt({
+  userConfig: { ...userConfig, mode: 'serial', tuningStrategy: '分阶段 P→PI→PID，先压超调再降稳态误差' },
+  tools: agentTools
+})
+assert.ok(withStrategyPrompt.includes('调参策略（用户指定，请严格执行）'))
+assert.ok(withStrategyPrompt.includes('分阶段 P→PI→PID，先压超调再降稳态误差'))
+// 未提供调参策略（串口）或非串口模式：不渲染该段
+const serialNoStrategyPrompt = buildSystemPrompt({ userConfig: { ...userConfig, mode: 'serial' }, tools: agentTools })
+assert.ok(!serialNoStrategyPrompt.includes('调参策略（用户指定'))
+assert.ok(!prompt.includes('调参策略（用户指定'))
 
 // P3a 使用建议：引导先 set_target 采集，再查询（消除空缓冲首查报错）
 assert.ok(prompt.includes('先调用 set_target 触发一次阶跃采集'))

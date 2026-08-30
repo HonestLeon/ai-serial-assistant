@@ -27,6 +27,7 @@ const agent = usePidAgent({
 const {
   // 配置状态
   strategyId, strategyOptions, pidConfig, safetyRange, feedforwardItems, scenePrompt, testMode,
+  tuningStrategy, pidStructure,
   addFeedforwardItem, removeFeedforwardItem,
   // 运行状态
   messages, running, turnCount, ctxBytes, stopReason, currentPid, currentFf, paramHighlight,
@@ -164,6 +165,12 @@ function onInputKeydown(e) {
   }
 }
 
+/** 模式切换（合并为单按键）：仿真 ⇄ 真实串口；运行中禁用避免数据/参数错乱 */
+function toggleTestMode() {
+  if (running.value) return
+  testMode.value = testMode.value === 'simulation' ? 'serial' : 'simulation'
+}
+
 /** 开始调参：取输入框文本（空则用默认任务描述），校验失败经 ElMessage 提示原因 */
 async function onStartAgent() {
   if (running.value) return
@@ -233,10 +240,20 @@ onUnmounted(() => {
     <!-- ============ 左栏：调参前配置 ============ -->
     <div class="pa-left">
 
-      <!-- 仿真策略 + 测试来源 -->
+      <!-- 测试模式（单按键切换）+ 仿真策略 -->
       <div class="card">
-        <div class="card-title">仿真策略 · 测试来源</div>
-        <div class="strategy-block">
+        <div class="card-title">测试模式 · 仿真策略</div>
+        <button
+          class="mode-toggle"
+          :class="{ serial: testMode === 'serial' }"
+          type="button"
+          :disabled="running"
+          @click="toggleTestMode"
+        >
+          <span class="mode-name">{{ testMode === 'simulation' ? '仿真测试' : '真实串口' }}</span>
+          <span class="mode-switch">{{ testMode === 'simulation' ? '切换为真实串口' : '切换为仿真测试' }}</span>
+        </button>
+        <div v-if="testMode === 'simulation'" class="strategy-block">
           <el-select v-model="strategyId" size="small">
             <el-option
               v-for="item in strategyOptions"
@@ -245,16 +262,22 @@ onUnmounted(() => {
               :value="item.id"
             />
           </el-select>
-          <el-radio-group v-model="testMode" size="small" class="mode-group">
-            <el-radio-button value="simulation">仿真测试</el-radio-button>
-            <el-radio-button value="serial">真实串口</el-radio-button>
-          </el-radio-group>
+          <p class="mode-hint">仿真模式仅需选择策略，场景描述自动按策略说明生成</p>
         </div>
+        <p v-else class="mode-hint serial-hint">真实串口：请填写下方「控制场景提示词」与「调参策略」</p>
       </div>
 
-      <!-- ① PID 参数 · 初始值与范围 -->
+      <!-- ① PID 参数 · 初始值与范围（串口模式附加 PID 结构选择） -->
       <div class="card">
-        <div class="card-title"><span class="num">1</span> PID 参数 · 初始值与范围</div>
+        <div class="card-title">
+          <span class="num">1</span> PID 参数 · 初始值与范围
+          <span v-if="testMode === 'serial'" class="structure-select">
+            <el-radio-group v-model="pidStructure" size="small">
+              <el-radio-button value="single">单环</el-radio-button>
+              <el-radio-button value="cascade">串级</el-radio-button>
+            </el-radio-group>
+          </span>
+        </div>
         <table class="param-table">
           <thead>
             <tr><th>参数</th><th>初始值</th><th>最小</th><th>最大</th></tr>
@@ -304,13 +327,23 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- ④ 控制场景提示词 -->
-      <div class="card">
+      <!-- ④ 控制场景提示词（仅真实串口模式；仿真模式自动按策略说明补齐） -->
+      <div v-if="testMode === 'serial'" class="card">
         <div class="card-title"><span class="num">4</span> 控制场景提示词<span class="hint">必填 · 永不压缩</span></div>
         <textarea
           v-model="scenePrompt"
           class="prompt-area"
           placeholder="描述控制场景 / 被控对象、调参目标与特殊约束…"
+        ></textarea>
+      </div>
+
+      <!-- ⑤ 调参策略（仅真实串口模式，自由文本指导 LLM 整定实机） -->
+      <div v-if="testMode === 'serial'" class="card">
+        <div class="card-title"><span class="num">5</span> 调参策略<span class="hint">必填 · 自由描述</span></div>
+        <textarea
+          v-model="tuningStrategy"
+          class="prompt-area"
+          placeholder="如：分阶段 P→PI→PID；先压超调再降稳态误差；设备目标为斜坡，等待收敛后再评估…"
         ></textarea>
       </div>
 
@@ -573,13 +606,70 @@ onUnmounted(() => {
   gap: 8px;
 }
 
-.strategy-block .mode-group {
+/* 模式切换单按键：全宽、当前模式描边、副文案提示可切换 */
+.mode-toggle {
   width: 100%;
   display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-default);
+  border-radius: 5px;
+  cursor: pointer;
+  font-family: inherit;
+  color: var(--color-text-primary);
 }
 
-.strategy-block .mode-group :deep(.el-radio-button) {
-  flex: 1;
+.mode-toggle:hover:not(:disabled) {
+  border-color: var(--color-border-active);
+}
+
+.mode-toggle.serial {
+  border-color: var(--color-ai);
+  background: var(--color-ai-muted);
+}
+
+.mode-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.mode-toggle .mode-name {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mode-toggle .mode-switch {
+  font-size: 9px;
+  color: var(--color-text-tertiary);
+}
+
+.mode-toggle.serial .mode-switch {
+  color: var(--color-ai);
+}
+
+.mode-hint {
+  margin: 0;
+  font-size: 9.5px;
+  line-height: 1.5;
+  color: var(--color-text-tertiary);
+}
+
+.mode-hint.serial-hint {
+  padding-top: 2px;
+}
+
+/* PID 结构选择（串口模式附加在参数卡标题行右侧） */
+.structure-select {
+  margin-left: auto;
+  display: inline-flex;
+}
+
+.structure-select :deep(.el-radio-button__inner) {
+  font-size: 9px;
+  padding: 4px 8px;
 }
 
 /* ---- ① PID 参数表 ---- */

@@ -217,6 +217,19 @@ const makeTool = (name, impl) => ({
   assert.equal(hookCalls, 1)
 }
 
+// 8b. shouldStopAfterTurn 返回 { stop: true, reason: 'stop' } → 以自定义原因 'stop' 结束（达标自动收敛的兜底路径）
+{
+  const result = await runAgentLoop({
+    llmFn: async () => ({ ok: true, content: 'ok', toolCalls: [], finishReason: 'stop' }),
+    systemPrompt: 'sys',
+    tools: [],
+    initialMessages: [createUserMessage('开始')],
+    shouldStopAfterTurn: async () => ({ stop: true, reason: 'stop' })
+  })
+  assert.equal(result.stopReason, 'stop', '支持 {stop,reason} 自定义终止原因（正常结束）')
+  assert.equal(result.turnCount, 1)
+}
+
 // 9. 事件顺序：以 agent_start 开头、agent_end 结尾，每轮 turn_start 在 message_start 之前
 {
   const events = []

@@ -228,12 +228,18 @@ export async function runAgentLoop(config) {
         stopReason = 'aborted'
         break outerLoop
       }
-      if (
-        typeof shouldStopAfterTurn === 'function' &&
-        (await shouldStopAfterTurn({ turn, messages }))
-      ) {
-        stopReason = 'user-stop'
-        break outerLoop
+      // shouldStopAfterTurn 支持两种返回：
+      //   true（或 falsy）→ 沿用 'user-stop'（用户停止/安全熔断）
+      //   { stop: true, reason?: 'stop' | ... } → 使用 reason（默认 'stop'），
+      //   供编排层"达标自动收敛"以正常结束呈现（UI 不显示"用户停止"）
+      if (typeof shouldStopAfterTurn === 'function') {
+        const stopDecision = await shouldStopAfterTurn({ turn, messages })
+        if (stopDecision === true || (stopDecision && stopDecision.stop)) {
+          stopReason = (stopDecision && typeof stopDecision.reason === 'string')
+            ? stopDecision.reason
+            : 'user-stop'
+          break outerLoop
+        }
       }
     }
 

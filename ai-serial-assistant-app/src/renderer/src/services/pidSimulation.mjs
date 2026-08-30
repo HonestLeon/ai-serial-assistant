@@ -19,6 +19,10 @@ function finite(value, fallback = 0) {
   return Number.isFinite(number) ? number : fallback
 }
 
+// 仿真教学模式：去除 PID 输出限幅（用户要求，让增益与响应直接可见、调参有真实空间）。
+// pidStep 的积分抗饱和仍需有限限幅避免数值溢出，取远超物理量级的大数等效"无输出限幅"。
+const NO_OUTPUT_LIMIT = 1e9
+
 // 前馈项计算：遍历已勾选项求和。feedforwardSelection 形如 { linear: 0.5, gravity: 1 }
 // 未勾选（不在对象中）的项不参与；coeff 为该项系数
 // derivatives 形如 { dot, dotDot }，为目标值的一阶/二阶导数，供目标导数前馈项使用
@@ -90,6 +94,8 @@ export const PID_STRATEGIES = {
     // 验收标准：超调/振荡/稳态误差 + 响应速度（上升时间/调节时间）
     // 一阶系统 τ=J/B=0.25s，要求上升时间 < 0.3s、调节时间 < 1s
     acceptance: { overshootLimit: 10, settlingBand: 0.05, oscillationLimit: 10, riseTimeLimit: 0.3, settlingTimeLimit: 1.0 },
+    // 目标物理范围（转速，语义同默认 target=10）
+    targetRange: [0, 100],
     defaults: {
       duration: 4,
       dt: 0.01,
@@ -118,8 +124,10 @@ export const PID_STRATEGIES = {
     // 验收标准：超调/振荡/稳态误差 + 响应速度（上升时间/调节时间）
     // 二阶系统要求上升时间 < 0.5s、调节时间 < 1.5s
     acceptance: { overshootLimit: 15, settlingBand: 0.04, oscillationLimit: 8, riseTimeLimit: 0.5, settlingTimeLimit: 1.5 },
+    // 目标物理范围（位置行程，语义同默认 target=1）
+    targetRange: [0, 100],
     defaults: {
-      duration: 5,
+      duration: 15,
       dt: 0.01,
       noise: 0.002,
       target: 1,
@@ -149,6 +157,9 @@ export const PID_STRATEGIES = {
     acceptance: { overshootLimit: 25, settlingBand: 0.03, oscillationLimit: 12 },
     // 不稳定系统标记：必须有 Kd 提供阻尼，调参策略走 PD → PID 路径，不走纯 P
     unstable: true,
+    // 目标物理范围（弧度）：倒立摆 PID 仅在小角度线性区成立（常规 -10°~10° ≈ ±0.18 rad），
+    // 大角度阶跃超出线性近似范围，物理上无法用 PID 镇定
+    targetRange: [-0.18, 0.18],
     defaults: {
       duration: 5,
       dt: 0.005,
@@ -425,6 +436,10 @@ export function simulatePidStrategy(strategyId, overrides = {}, seed = 20260723)
   // 信号类型：默认 'step'（与原行为一致），可选 'multiStep' / 'sine'
   const signal = config.signal || 'step'
 
+  // 发散截断标记：状态超出发散保护阈值提前 break 时置位（供 set_target 等调用方提示 agent）
+  let truncated = false
+  let truncateReason = ''
+
   if (strategy.id === 'motor_speed') {
     let omega = 0
     const state = { integral: 0, previousError: 0 }
@@ -434,10 +449,17 @@ export function simulatePidStrategy(strategyId, overrides = {}, seed = 20260723)
       const measured = omega + noise(random, config.noise)
       const error = activeTarget - measured
       // D项基于测量变化（derivative on measurement），避免阶跃时D项爆炸
-      const pidOut = pidStep(state, error, config.dt, config, config.outputLimit, config.outputLimit, measured)
-      const current = clamp(pidOut + computeFeedforward(config, activeTarget, derivs), -config.outputLimit, config.outputLimit)
+      const pidOut = pidStep(state, error, config.dt, config, NO_OUTPUT_LIMIT, NO_OUTPUT_LIMIT, measured)
+      const current = pidOut + computeFeedforward(config, activeTarget, derivs)
       omega += ((config.Kt * current - config.B * omega) / config.J) * config.dt
       samples.push({ t: index * config.dt, target: activeTarget, feedback: measured, output: current })
+      // 发散保护（非输出限幅）：无界输出下增益过大会使状态指数爆炸（飞车），
+      // 达到物理不合理量级即截断仿真；避免 15s 后 feedback 变成千万级而指标失真
+      if (!Number.isFinite(omega) || Math.abs(omega) > 1e4) {
+        truncated = true
+        truncateReason = '电机转速发散（|ω| 超出发散保护阈值），仿真提前截断'
+        break
+      }
     }
   } else if (strategy.id === 'cascade_position') {
     let position = 0
@@ -455,17 +477,17 @@ export function simulatePidStrategy(strategyId, overrides = {}, seed = 20260723)
         kp: config.positionKp,
         ki: config.positionKi,
         kd: config.positionKd
-      }, config.speedLimit, config.speedLimit, measuredPosition)
-      const speedTarget = clamp(positionPidOut + polyTrigSignFF, -config.speedLimit, config.speedLimit)
+      }, NO_OUTPUT_LIMIT, NO_OUTPUT_LIMIT, measuredPosition)
+      const speedTarget = positionPidOut + polyTrigSignFF
       const measuredSpeed = omega + noise(random, config.noise * 4)
       const speedPidOut = pidStep(speedState, speedTarget - measuredSpeed, config.dt, {
         kp: config.speedKp,
         ki: config.speedKi,
         kd: config.speedKd
-      }, config.outputLimit, config.outputLimit, measuredSpeed)
+      }, NO_OUTPUT_LIMIT, NO_OUTPUT_LIMIT, measuredSpeed)
       // 速度环：输出电流/力矩。重力补偿/常数偏置 + 目标二阶导（前馈加速度）作用于内环
       const innerFF = computeFeedforwardOnly(config, activeTarget, ['gravity', 'bias', 'targetSecondDeriv'], derivs)
-      const current = clamp(speedPidOut + innerFF, -config.outputLimit, config.outputLimit)
+      const current = speedPidOut + innerFF
       omega += ((config.Kt * current - config.B * omega) / config.J) * config.dt
       position += omega * config.dt
       samples.push({
@@ -476,6 +498,14 @@ export function simulatePidStrategy(strategyId, overrides = {}, seed = 20260723)
         speedTarget,
         speed: measuredSpeed
       })
+      // 发散保护（非输出限幅）：无界输出下增益过大会使状态指数爆炸（飞车/位置失控），
+      // 达到物理不合理量级即截断仿真；避免 15s 后 feedback 变成千万级而指标失真
+      if (!Number.isFinite(position) || !Number.isFinite(omega)
+        || Math.abs(position) > 1e4 || Math.abs(omega) > 1e4) {
+        truncated = true
+        truncateReason = '状态发散（位置/速度超出发散保护阈值），仿真提前截断'
+        break
+      }
     }
   } else {
     let theta = config.initialAngle
@@ -487,17 +517,21 @@ export function simulatePidStrategy(strategyId, overrides = {}, seed = 20260723)
       const measured = theta + noise(random, config.noise)
       // 该模型中正力矩 T 出现在方程右侧的负号前，故以 measured-target 作为控制误差。
       // 倒立摆为不稳定系统，D项需响应target跳变以产生初始回复力矩，故保持 error-based
-      const pidOut = pidStep(state, measured - activeTarget, config.dt, config, config.outputLimit)
-      const torque = clamp(pidOut + computeFeedforward(config, activeTarget, derivs), -config.outputLimit, config.outputLimit)
+      const pidOut = pidStep(state, measured - activeTarget, config.dt, config, NO_OUTPUT_LIMIT, NO_OUTPUT_LIMIT)
+      const torque = pidOut + computeFeedforward(config, activeTarget, derivs)
       const thetaAcceleration = (config.m * config.g * config.l * theta - torque) / config.J
       thetaDot += thetaAcceleration * config.dt
       theta += thetaDot * config.dt
       samples.push({ t: index * config.dt, target: activeTarget, feedback: measured, output: torque })
-      if (!Number.isFinite(theta) || Math.abs(theta) > 3) break
+      if (!Number.isFinite(theta) || Math.abs(theta) > 3) {
+        truncated = true
+        truncateReason = '倒立摆角度发散（|θ|>3 rad），仿真提前截断'
+        break
+      }
     }
   }
 
-  return { strategy, config, samples }
+  return { strategy, config, samples, truncated, truncateReason }
 }
 
 // 读取嵌入式模板文件：

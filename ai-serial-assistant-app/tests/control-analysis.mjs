@@ -163,4 +163,52 @@ assert.equal(customStandards.limits.steadyErrorRatio, 0.02)
   )
 }
 
+// P4 未收敛检测：窗口尾部 feedback 仍在明显上升（响应未完成）→ 指标标注为非稳态，不得当稳态判断
+{
+  // 场景 A：有差系统（P-only）停在稳态误差处，但尾段仍以每秒 ~4.5 缓慢爬升（目标 50）
+  // → 原判定 SLOW_RESPONSE 保留，并附加"尚未收敛"提示；converged=false
+  const stillRisingSlow = Array.from({ length: 200 }, (_, i) => {
+    const t = i * 0.05
+    return { t, target: i < 5 ? 0 : 50, feedback: Math.min(45, 4.5 * t), output: 0 }
+  })
+  const r1 = analyzeControlSamples(stillRisingSlow, { overshootLimit: 20, oscillationLimit: 10 })
+  assert.equal(r1.valid, true)
+  assert.equal(r1.converged, false, '尾段仍在爬升应判定未收敛')
+  assert.equal(r1.status, 'SLOW_RESPONSE', '未收敛 + 有差系统仍为 SLOW_RESPONSE')
+  assert.ok(String(r1.convergenceNote).includes('尚未收敛'), '应带未收敛提示语')
+  assert.ok(String(r1.convergenceNote).includes('速度环'), '提示应引导先整定速度环')
+
+  // 场景 B：响应基本到位（误差 < 5%、RMSE 小）但尾段仍以每秒 ~2 缓慢逼近（目标 100）
+  // → 初判 STABLE，因未收敛改写为 STILL_RISING（新枚举）
+  const stillRisingStable = Array.from({ length: 200 }, (_, i) => {
+    const t = i * 0.05
+    const feedback = t < 9 ? 96 * (t / 9) : 96 + (t - 9) * 2
+    return { t, target: i < 5 ? 0 : 100, feedback, output: 0 }
+  })
+  const r2 = analyzeControlSamples(stillRisingStable, { overshootLimit: 20, oscillationLimit: 10 })
+  assert.equal(r2.valid, true)
+  assert.equal(r2.converged, false, '场景 B 尾段仍在上升应未收敛')
+  assert.equal(r2.status, 'STILL_RISING', '未收敛且原本 STABLE 应改写为 STILL_RISING')
+  assert.ok(String(r2.convergenceNote).includes('尚未收敛'), '提示语应说明未收敛')
+
+  // 场景 C：等幅振荡（振幅占阶跃 30%，无衰减）——尾段均值差≈0，但振幅未衰减 → 未收敛且判 OSCILLATING
+  const sustainedOsc = Array.from({ length: 400 }, (_, i) => {
+    const t = i * 0.01
+    const base = i < 30 ? 0 : 50
+    const osc = t < 0.3 ? 0 : 15 * Math.sin(2 * Math.PI * 3 * (t - 0.3))
+    return { t, target: base, feedback: base + osc, output: 15 }
+  })
+  const r3 = analyzeControlSamples(sustainedOsc, { overshootLimit: 20, oscillationLimit: 12 })
+  assert.equal(r3.valid, true)
+  assert.equal(r3.converged, false, '等幅振荡尾段振幅未衰减应判未收敛')
+  assert.equal(r3.status, 'OSCILLATING', '等幅振荡应矫正为 OSCILLATING（防伪达标）')
+  assert.ok(String(r3.convergenceNote).includes('振荡'), '提示语应说明持续振荡')
+
+  // 已收敛（振幅衰减）的常规响应不受影响（既有用例回归）
+  const settledMetrics = analyzeControlSamples(createResponse())
+  assert.equal(settledMetrics.converged, true, '已收敛响应 converged 应为 true')
+  assert.notEqual(settledMetrics.status, 'STILL_RISING')
+  assert.notEqual(settledMetrics.status, 'OSCILLATING')
+}
+
 console.log('control-analysis: all assertions passed')

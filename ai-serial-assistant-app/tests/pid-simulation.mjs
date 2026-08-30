@@ -14,6 +14,39 @@ for (const strategyId of Object.keys(PID_STRATEGIES)) {
   assert.notEqual(result.samples[0].feedback, result.samples[1].feedback, `${strategyId} 应含反馈噪声/动态`)
 }
 
+// 去限幅冒烟：级联默认参数 + 大目标（同 agent 测试工况 target=50）
+// 修复前：速度指令被 speedLimit=8 钳制 → 5s 只到 ~36；输出被 outputLimit=12 钳制
+// 修复后：输出幅值由增益决定，5s 内应显著接近/超过目标
+{
+  const r = simulatePidStrategy('cascade_position', { target: 50 })
+  const maxOut = Math.max(...r.samples.map((s) => Math.abs(s.output)))
+  assert.ok(maxOut > 12, `去限幅后 output 峰值应超过原 outputLimit=12（实际 ${maxOut.toFixed(1)}）`)
+  const t5 = r.samples.filter((s) => s.t <= 5)
+  const fbMax5 = Math.max(...t5.map((s) => s.feedback))
+  assert.ok(fbMax5 > 45, `无速度指令限幅后 5s 内反馈应 >45（原被卡在 ~36，实际 ${fbMax5.toFixed(1)}）`)
+  // 级联默认窗口 15s（>1000 样本），覆盖完整收敛段
+  assert.ok(r.samples.length > 1000, `级联默认仿真窗口约 15s（样本 ${r.samples.length}）`)
+  assert.ok(r.samples.every((s) => Number.isFinite(s.output)), '无界输出下数值仍须有限')
+}
+
+// 发散截断标记：倒立摆大角度阶跃（超出小角度线性区，如 target=50 弧度）→ 仿真提前截断并标记
+{
+  const r = simulatePidStrategy('inverted_pendulum', { target: 50 })
+  assert.equal(r.truncated, true, '倒立摆大角度目标应因发散截断')
+  assert.ok(String(r.truncateReason).includes('发散'), '截断原因应说明发散')
+  assert.ok(r.samples.length < 500, '发散截断后样本应远少于完整 5s（1001 点）')
+
+  // 小角度目标（平衡点镇定）正常完整仿真
+  const ok = simulatePidStrategy('inverted_pendulum', { target: 0 })
+  assert.equal(ok.truncated, false)
+  assert.ok(ok.samples.length > 900, '小角度镇定应完整仿真')
+
+  // 策略目标物理范围存在且在合理范围
+  const tr = PID_STRATEGIES['inverted_pendulum'].targetRange
+  assert.ok(Array.isArray(tr) && tr.length === 2, '倒立摆应配置 targetRange')
+  assert.ok(tr[0] >= -0.18 && tr[1] <= 0.18, '倒立摆目标范围应在小角度线性区 ±0.18 rad（≈±10°）')
+}
+
 // 验证嵌入式通信层生成：.c/.h 只含通信层函数，不含 PID 计算；前馈项以掩码形式写入 .h
 const files = generateEmbeddedControllerFiles({
   name: 'motor_controller',

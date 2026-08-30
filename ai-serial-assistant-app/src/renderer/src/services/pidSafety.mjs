@@ -149,6 +149,8 @@ export function buildFallbackSuggestion(metrics, current, options = {}) {
       else { factor.P = 0.85; reason += '检测到超调，降低当前活跃项' }
       break
     case 'SLOW_RESPONSE':
+    case 'STILL_RISING':
+      // STILL_RISING（窗口未收敛仍在爬升）与 SLOW_RESPONSE 同策略：响应过慢，加大当前活跃项
       if (phase === 'P') { factor.P = 1.25 }
       else if (phase === 'PI') { factor.I = 1.2 }
       else { factor.P = 1.1; factor.I = 1.1 }
@@ -240,6 +242,7 @@ export function scoreMetrics(metrics) {
     case 'OSCILLATING':   statusPenalty = 12; break
     case 'OVERSHOOTING':  statusPenalty = 8;  break
     case 'SLOW_RESPONSE': statusPenalty = 6;  break
+    case 'STILL_RISING':  statusPenalty = 6;  break   // 未收敛爬升，等同响应慢的劣化程度
     default:              statusPenalty = 0         // STABLE
   }
   return avgErr + steadyErr * 1.2 + overshoot * 0.6 + oscillation * 0.3 + statusPenalty

@@ -7,7 +7,7 @@ import { createPidAgentTools } from '../src/renderer/src/services/pidAgent/tools
  * 构造 stub controller：内存态 pid/前馈/目标 + 真实 createDataBuffer + 固定 500 点阶跃仿真。
  * 记录 setPid / setFeedforward / setTarget / sendSerialCommand / onSamplesCollected 调用供断言。
  */
-const createStubController = ({ userConfig, mode = 'simulation', pid } = {}) => {
+const createStubController = ({ userConfig, mode = 'simulation', pid, turnCount, targetRange } = {}) => {
   const state = {
     pid: { ...(pid ?? { kp: 1, ki: 0, kd: 0 }) },
     feedforward: {},
@@ -15,12 +15,22 @@ const createStubController = ({ userConfig, mode = 'simulation', pid } = {}) => 
     sessionClock: 0
   }
   const dataBuffer = createDataBuffer()
-  const calls = { setPid: [], setFeedforward: [], setTarget: [], sendSerialCommand: [], onSamples: [], onStepTriggered: 0 }
+  const calls = { setPid: [], setFeedforward: [], setTarget: [], sendSerialCommand: [], onSamples: [], onStepTriggered: 0, onAcceptancePassed: [] }
   return {
     calls,
     getMode: () => mode,
     getUserConfig: () => userConfig,
     getDataBuffer: () => dataBuffer,
+    // 轮次：默认未提供（视为已满 5 轮）；传 0~4 模拟观察期
+    getTurnCount: () => (turnCount === undefined ? 99 : turnCount),
+    // 目标物理范围：默认未提供（回退 userConfig.safety.target）；可传 [min,max] 模拟策略约束
+    getTargetRange: () => {
+      if (targetRange) return { min: targetRange[0], max: targetRange[1] }
+      return userConfig?.safety?.target
+    },
+    onAcceptancePassed: (result) => {
+      calls.onAcceptancePassed.push(result)
+    },
     getPid: () => ({ ...state.pid }),
     setPid: (newPid, notes) => {
       calls.setPid.push({ newPid: { ...newPid }, notes: [...(notes ?? [])] })
@@ -372,6 +382,129 @@ const findTool = (tools, name) => {
   const r3 = await setPid.execute({ positionKp: 5, speedKp: 2 })
   assert.equal(r3.applied.positionKp, 5)
   assert.equal(r3.applied.speedKp, 2)
+}
+
+// 11. get_channel_stats 结构化达标判定 acceptanceCheck：达标→passed=true 且触发 onAcceptancePassed
+{
+  const controller = createStubController({ userConfig: createDefaultUserConfig() })
+  const tools = createPidAgentTools({ controller })
+  const statsTool = findTool(tools, 'get_channel_stats')
+
+  // 达标样本：快速收敛（ζ=1 临界阻尼）阶跃 0→100，尾段已稳定、无超调、稳态误差≈0
+  {
+    const samples = []
+    for (let i = 0; i <= 500; i += 1) {
+      const t = i * 0.02
+      const target = t < 1 ? 0 : 100
+      const env = t < 1 ? 0 : Math.exp(-6 * (t - 1))
+      samples.push({ t, target, feedback: t < 1 ? 0 : 100 * (1 - env * (1 + 6 * (t - 1))), output: 0 })
+    }
+    controller.getDataBuffer().push(samples)
+    const result = await statsTool.execute({ timeRange: [0, 10] })
+    assert.equal(result.acceptanceCheck.passed, true, '收敛且稳态应判达标')
+    assert.equal(result.acceptanceCheck.reason, '达标')
+    assert.equal(controller.calls.onAcceptancePassed.length, 1, '达标应触发 onAcceptancePassed 回调')
+    assert.equal(controller.calls.onAcceptancePassed[0].stepMetrics.status, 'STABLE')
+  }
+
+  // 未达标样本：欠阻尼 ζ=0.3（超调 ~37% > 20 上限）→ passed=false 且不触发回调
+  {
+    const zeta = 0.3
+    const omegaN = 5
+    const omegaD = omegaN * Math.sqrt(1 - zeta * zeta)
+    const samples = []
+    for (let i = 0; i <= 250; i += 1) {
+      const t = i / 50
+      const target = t < 1 ? 0 : 100
+      let feedback = 0
+      if (t >= 1) {
+        const elapsed = t - 1
+        const env = Math.exp(-zeta * omegaN * elapsed)
+        feedback = 100 * (1 - env * (Math.cos(omegaD * elapsed) + (zeta / Math.sqrt(1 - zeta * zeta)) * Math.sin(omegaD * elapsed)))
+      }
+      samples.push({ t, target, feedback, output: feedback })
+    }
+    controller.getDataBuffer().clear()
+    controller.getDataBuffer().push(samples)
+    const result = await statsTool.execute({ timeRange: [0, 5] })
+    assert.equal(result.acceptanceCheck.passed, false, '欠阻尼超调超限应判未达标')
+    assert.ok(result.acceptanceCheck.reason.includes('未达标'), 'reason 应说明未达标状态')
+    assert.equal(controller.calls.onAcceptancePassed.length, 1, '未达标不应追加触发回调')
+  }
+
+  // 观察期（前 5 轮）门槛：即便指标 STABLE 达标，turn<5 时 passed=false 且不触发收敛回调
+  {
+    const obsController = createStubController({ userConfig: createDefaultUserConfig(), turnCount: 3 })
+    const obsTools = createPidAgentTools({ controller: obsController })
+    const obsData = []
+    for (let i = 0; i <= 500; i += 1) {
+      const t = i * 0.02
+      const target = t < 1 ? 0 : 100
+      const env = t < 1 ? 0 : Math.exp(-6 * (t - 1))
+      obsData.push({ t, target, feedback: t < 1 ? 0 : 100 * (1 - env * (1 + 6 * (t - 1))), output: 0 })
+    }
+    obsController.getDataBuffer().push(obsData)
+    const obsResult = await findTool(obsTools, 'get_channel_stats').execute({ timeRange: [0, 10] })
+    assert.equal(obsResult.stepMetrics.status, 'STABLE', '指标本身确实达标')
+    assert.equal(obsResult.acceptanceCheck.passed, false, '观察期内（turn<5）不应判达标')
+    assert.ok(obsResult.acceptanceCheck.reason.includes('调参初期'), 'reason 应说明观察期')
+    assert.equal(obsController.calls.onAcceptancePassed.length, 0, '观察期内不触发收敛回调')
+  }
+}
+
+// 12. set_target 物理适用范围（倒立摆小角度线性区）：越界裁剪 + 超范围拒绝
+{
+  // 倒立摆场景：targetRange=[-0.18, 0.18]
+  const pendulum = createStubController({
+    userConfig: createDefaultUserConfig(),
+    targetRange: [-0.18, 0.18]
+  })
+  const pendulumTools = createPidAgentTools({ controller: pendulum })
+  const targetTool = findTool(pendulumTools, 'set_target')
+
+  // 范围内目标正常
+  const ok = await targetTool.execute({ value: 0.1 })
+  assert.equal(ok.target, 0.1)
+  assert.deepEqual(ok.guardrailNotes, [])
+
+  // 轻微越界 → 裁剪到边界 + 说明
+  const clipped = await targetTool.execute({ value: 0.3 })
+  assert.equal(clipped.target, 0.18, '0.3 超出 ±0.18 应裁剪到上界')
+  assert.ok(clipped.guardrailNotes.some((note) => note.includes('0.3')))
+  assert.ok(clipped.guardrailNotes.some((note) => note.includes('物理适用范围')))
+
+  // 严重越界（大角度阶跃，如 50 弧度≈2865°）→ 直接拒绝
+  await assert.rejects(targetTool.execute({ value: 50 }), /严重超出物理适用范围/)
+}
+
+// 13. set_target 发散截断提示：runSimulation 返回带 truncated 标记的样本数组 → message 说明
+{
+  let truncatedFlag = false
+  const sim = {
+    ...createStubController({ userConfig: createDefaultUserConfig() }),
+    runSimulation: async () => {
+      const { runSimulation } = createStubController({ userConfig: createDefaultUserConfig() })
+      const samples = await runSimulation()
+      if (truncatedFlag) {
+        samples.truncated = true
+        samples.truncateReason = '倒立摆角度发散（|θ|>3 rad），仿真提前截断'
+      }
+      return samples
+    }
+  }
+  const tools = createPidAgentTools({ controller: sim })
+  const targetTool = findTool(tools, 'set_target')
+
+  truncatedFlag = false
+  const normal = await targetTool.execute({ value: 10 })
+  assert.equal(normal.truncated, false)
+  assert.equal(normal.message, undefined)
+
+  truncatedFlag = true
+  const div = await targetTool.execute({ value: 10 })
+  assert.equal(div.truncated, true)
+  assert.ok(String(div.message).includes('发散截断'), '发散时应提示截断')
+  assert.ok(String(div.message).includes('|θ|>3'), '提示应含截断原因')
 }
 
 console.log('✅ tests/pid-agent-tools.mjs 全部通过')

@@ -20,13 +20,16 @@ const round6 = (value) => Number(value.toFixed(6))
 
 // 缓冲支持的数据通道
 const KNOWN_CHANNELS = ['target', 'feedback', 'output']
+// 可选诊断通道（串级仿真的速度指令/实际速度）：仅显式请求时返回，不参与默认查询
+const EXTRA_CHANNELS = ['speedTarget', 'speed']
+const ALL_CHANNELS = [...KNOWN_CHANNELS, ...EXTRA_CHANNELS]
 
 // 归一化通道列表：仅保留已知通道并去重；全部非法时回退为默认三通道
 const sanitizeChannels = (channels) => {
   const list = Array.isArray(channels) && channels.length ? channels : KNOWN_CHANNELS
   const result = []
   for (const channel of list) {
-    if (KNOWN_CHANNELS.includes(channel) && !result.includes(channel)) result.push(channel)
+    if (ALL_CHANNELS.includes(channel) && !result.includes(channel)) result.push(channel)
   }
   return result.length ? result : [...KNOWN_CHANNELS]
 }
@@ -94,13 +97,19 @@ const channelStats = (values) => {
 
 /**
  * 创建通道数据环形缓冲。
- * @param {{capacitySec?:number, maxSamples?:number}} [options]
+ * @param {{capacitySec?:number, maxSamples?:number, acceptance?:{overshootLimit:number, oscillationLimit:number}}} [options]
  *   - capacitySec：时间容量（秒），淘汰 t < 最新t - capacitySec 的旧样本
  *   - maxSamples：样本总量上限，超出时淘汰最旧样本
+ *   - acceptance：验收线（超调/振荡上限），决定 analyzeControlSamples 的 limits；
+ *     缺省 20/10（串口模式与缺省路径）
  */
-export function createDataBuffer({ capacitySec = 600, maxSamples = 60000 } = {}) {
+export function createDataBuffer({ capacitySec = 600, maxSamples = 60000, acceptance } = {}) {
   const capacity = Math.max(1, finite(capacitySec, 600))
   const sampleLimit = Math.max(2, Math.round(finite(maxSamples, 60000)))
+  // 验收线：与提示词/护栏保持一致（仿真按策略注入，串口/缺省回退 20/10）
+  const acceptanceLimits = acceptance && Number.isFinite(Number(acceptance.overshootLimit))
+    ? acceptance
+    : { overshootLimit: 20, oscillationLimit: 10 }
   /** @type {Array<{t:number, target:number, feedback:number, output:number}>} */
   const samples = []
 
@@ -127,11 +136,17 @@ export function createDataBuffer({ capacitySec = 600, maxSamples = 60000 } = {})
       if (!item || typeof item !== 'object') continue
       const t = Number(item.t)
       if (!Number.isFinite(t)) continue
+      // 可选诊断字段（串级仿真样本的 speedTarget/speed）：有限数才写入，
+      // 串口/单环样本缺省时不写（查询序列化为 null，agent 可辨"不可用"）
+      const sp = Number(item.speedTarget)
+      const v = Number(item.speed)
       samples.push({
         t,
         target: finite(item.target),
         feedback: finite(item.feedback),
-        output: finite(item.output)
+        output: finite(item.output),
+        ...(Number.isFinite(sp) ? { speedTarget: sp } : {}),
+        ...(Number.isFinite(v) ? { speed: v } : {})
       })
       added += 1
     }
@@ -252,8 +267,11 @@ export function createDataBuffer({ capacitySec = 600, maxSamples = 60000 } = {})
       feedback: finite(tail.map((s) => s.feedback).reduce((a, b) => a + b, 0) / tail.length),
       output: finite(tail.map((s) => s.output).reduce((a, b) => a + b, 0) / tail.length)
     }
-    // 阶跃响应指标复用确定性分析（阈值与默认验收线一致）
-    const analysis = analyzeControlSamples(segment, { overshootLimit: 20, oscillationLimit: 10 })
+    // 阶跃响应指标复用确定性分析（阈值与默认验收线一致；acceptance 支持按模式/策略注入）
+    const analysis = analyzeControlSamples(segment, {
+      overshootLimit: acceptanceLimits.overshootLimit,
+      oscillationLimit: acceptanceLimits.oscillationLimit
+    })
     const stepMetrics = analysis.valid
       ? {
           valid: true,
@@ -263,6 +281,9 @@ export function createDataBuffer({ capacitySec = 600, maxSamples = 60000 } = {})
           rmse: analysis.rmse,
           oscillation: analysis.oscillation,
           status: analysis.status,
+          // 未收敛标记：尾段仍在变化时指标为非稳态中途值（STILL_RISING / 提示语）
+          converged: analysis.converged,
+          convergenceNote: analysis.convergenceNote,
           // 扩展字段：帮助 LLM 精准对照验收线、区分峰值与稳态（消除数值误读）
           riseTime: analysis.riseTime,                                    // 上升时间（秒）
           stepSize: analysis.stepSize,                                    // 阶跃幅值（归一化基线）

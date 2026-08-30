@@ -10,6 +10,12 @@ const mean = (values) => {
   return valid.length ? valid.reduce((sum, value) => sum + value, 0) / valid.length : 0
 }
 
+// 峰峰值（最大值 - 最小值），用于振荡振幅估计
+const peak2peak = (values) => {
+  const valid = values.filter(Number.isFinite)
+  return valid.length ? Math.max(...valid) - Math.min(...valid) : 0
+}
+
 const rms = (values) => Math.sqrt(mean(values.map((value) => value * value)))
 
 const fmt = (value, digits = 3) =>
@@ -331,6 +337,44 @@ export function analyzeControlSamples(inputSamples, options = {}) {
   const sampleRate = averageDt > 0 ? 1 / averageDt : null
   const outputPeak = Math.max(...postStep.map((sample) => Math.abs(sample.output)))
 
+  // —— 未收敛检测（核心）：窗口尾部 feedback 仍在明显变化（上升/下降）时，
+  // finalFeedback / steadyError / RMSE / overshoot 等都是"非稳态中途值"，不能当稳态指标用。
+  // 既有 targetRamping 只检测 target 是否变化；仿真阶跃的 target 恒定故不触发，
+  // 这里直接检测 feedback 尾段趋势，覆盖"响应未收敛"场景（仿真窗口过短、P-only 有差系统等）。
+  // 实现：取窗口最后 20%（≥4 点）为独立滑动窗，比较其前/后两半的均值差得到每秒漂移，
+  //   ——均值平滑对噪声免疫（首尾两点差会被单点噪声主导，小幅值+带噪仿真会误判）。
+  // 阈值：漂移（每秒变化）超过阶跃幅值的 trendThresholdRatio（默认 2%）视为未收敛。
+  const trendThresholdRatio = clamp(finite(options.trendThresholdRatio, 0.02), 0, 1)
+  const convCount = Math.max(4, Math.round(samples.length * 0.2))
+  const convWindow = samples.slice(-convCount)
+  const half = Math.max(2, Math.floor(convWindow.length / 2))
+  const firstHalf = convWindow.slice(0, half)
+  const secondHalf = convWindow.slice(convWindow.length - half)
+  const convSpan = Math.max(
+    1e-9,
+    secondHalf[secondHalf.length - 1].t - firstHalf[0].t
+  )
+  const firstMeanFeedback = mean(firstHalf.map((sample) => sample.feedback))
+  const secondMeanFeedback = mean(secondHalf.map((sample) => sample.feedback))
+  const convSlope = (secondMeanFeedback - firstMeanFeedback) / convSpan
+  // 等幅/不衰减振荡识别（排除阶跃段干扰：基准取后 40% 的振幅，等幅振荡会用末段同样振幅持续波动）：
+  //   尾段峰峰值 ≥ max(后段时间段峰峰值 × 0.6, 阶跃幅值 × 2%) → 视为仍未安定（等幅振荡）
+  //   ——等幅振荡尾段均值差≈0，仅靠趋势斜率会误判收敛，必须检查振幅衰减情况
+  const back40 = samples.slice(Math.floor(samples.length * 0.6))
+  const back40Amp = peak2peak(back40.map((s) => s.feedback))
+  const tailAmp = peak2peak(tail.map((s) => s.feedback))
+  const amplitudeGate = Math.max(back40Amp * 0.6, Math.abs(stepSize) * 0.02)
+  const oscillatingTail = back40Amp > 1e-9 && tailAmp >= amplitudeGate
+  const converged = !(Math.abs(convSlope) > Math.abs(stepSize) * trendThresholdRatio) && !oscillatingTail
+  let convergenceNote = ''
+  if (!converged) {
+    convergenceNote = oscillatingTail
+      ? '窗口内响应未见安定（尾段振幅未衰减，仍在持续振荡），以上指标不可作为稳态结论：' +
+        '请检查是否为等幅振荡（如纯 P 控制不稳定系统），增大幅值项（P/Kd）或加 Kd 阻尼后重测'
+      : '窗口内响应尚未收敛（尾段反馈仍在变化），以上指标为非稳态中途值：' +
+        '若为仿真串级模式，请优先提高速度环增益（speedKp/speedKi）让误差先退出饱和区，或延长查询窗口后重测'
+  }
+
   const risks = []
   if (overshoot > overshootLimit) risks.push(`超调 ${fmt(overshoot, 1)}% 超过 ${overshootLimit}% 安全线`)
   if (oscillation > oscillationLimit) risks.push(`稳态波动 ${fmt(oscillation, 1)}% 超过 ${oscillationLimit}% 安全线`)
@@ -354,6 +398,17 @@ export function analyzeControlSamples(inputSamples, options = {}) {
   if (zeroCrossings > errors.length * 0.15) status = 'OSCILLATING'
   else if (overshoot > overshootLimit) status = 'OVERSHOOTING'
   else if (rmse > amplitude * 0.3 && Math.abs(steadyError) > amplitude * steadyErrorLimitRatio) status = 'SLOW_RESPONSE'
+  // 未收敛细分：
+  //   - 尾段振幅未衰减（等幅/持续振荡）→ 显式矫正为 OSCILLATING（振荡比爬升更关键）
+  //   - 原判 STABLE → STILL_RISING（缓慢爬升/漂移）
+  //   - SLOW_RESPONSE 保持 + 未收敛提示；OVERSHOOTING/已判 OSCILLATING 不覆盖
+  if (!converged) {
+    if (oscillatingTail) {
+      status = 'OSCILLATING'
+    } else if (status === 'STABLE') {
+      status = 'STILL_RISING'
+    }
+  }
 
   return {
     valid: true,
@@ -379,6 +434,8 @@ export function analyzeControlSamples(inputSamples, options = {}) {
     oscillationFrequency: fmt(oscillationFrequency, 2),
     maxPeakAmplitudePct: fmt(maxPeakAmplitudePct, 2),
     hasSignificantOscillation,
+    converged,
+    convergenceNote,
     status,
     limits: {
       overshoot: overshootLimit,

@@ -50,8 +50,11 @@ const TIME_RANGE_SCHEMA = {
 
 const CHANNELS_SCHEMA = {
   type: 'array',
-  items: { type: 'string', enum: ['target', 'feedback', 'output'] },
-  description: '可选，默认全部'
+  items: {
+    type: 'string',
+    enum: ['target', 'feedback', 'output', 'speedTarget', 'speed']
+  },
+  description: '可选，默认全部。speedTarget（速度指令）/speed（实际速度）仅串级仿真提供，用于诊断外环饱和与内环跟踪'
 }
 
 /**
@@ -86,7 +89,10 @@ export function createPidAgentTools({ controller } = {}) {
       '获取指定时间段内各通道统计特征（均值/标准差/极值/峰值/RMS/采样数），若段内含阶跃响应还返回控制指标'
       + '（超调/稳定时间/稳态误差/RMSE/振荡/状态）。调参开始与每次修改参数后应先调用了解系统特性。'
       + '何时用：评估上一轮阶跃效果、判断超调/震荡/稳态误差。怎么传参：timeRange 传 [起始秒, 结束秒]'
-      + '（相对调参开始的秒数，set_target 返回的 timeRange 可直接使用）；channels 可选，默认全部通道。',
+      + '（相对调参开始的秒数，set_target 返回的 timeRange 可直接使用）；channels 可选，默认全部通道'
+      + '（串级仿真可用 speedTarget/speed 诊断外环饱和与内环跟踪）。'
+      + '注意：若状态为 STILL_RISING 或提示"窗口内响应尚未收敛"，说明查询窗口未覆盖响应完成段，'
+      + '指标均为非稳态中途值，请延长查询区间或提高速度环增益后再查询。',
     parameters: {
       type: 'object',
       properties: {
@@ -95,8 +101,31 @@ export function createPidAgentTools({ controller } = {}) {
       },
       required: ['timeRange']
     },
-    execute: async ({ timeRange, channels } = {}) =>
-      controller.getDataBuffer().stats({ timeRange, channels })
+    execute: async ({ timeRange, channels } = {}) => {
+      const result = controller.getDataBuffer().stats({ timeRange, channels })
+      // 结构化达标判定：随 toolResult 直接返回给 LLM（无需自行对照 limits）
+      // STABLE 已隐含超调/振荡 ≤ limits；补 converged 与稳态误差排除"未收敛假稳定"
+      // 轮次门槛：前 5 轮为观察/整定期（controller.getTurnCount()，缺失视为已满 5 轮），
+      //   首轮即达标不判"任务完成"，避免 agent 过早总结、剥夺完整调参过程
+      const turn = controller.getTurnCount?.()
+      const inObservation = Number.isFinite(Number(turn)) && Number(turn) < 5
+      const sm = result?.stepMetrics
+      const check = sm?.valid
+        ? {
+            passed: !inObservation && sm.status === 'STABLE' && sm.converged !== false
+              && Math.abs(sm.steadyError) <= Math.abs(sm.stepSize) * 0.05,
+            reason: !inObservation
+              ? (sm.status === 'STABLE'
+                  ? (sm.converged === false ? '已稳定但窗口未收敛' : '达标')
+                  : `未达标（${sm.status}）`)
+              : `调参初期（前 5 轮观察期），暂不判定达标（当前状态 ${sm.status}）`
+          }
+        : { passed: false, reason: '无有效阶跃指标' }
+      if (check.passed && typeof controller.onAcceptancePassed === 'function') {
+        await controller.onAcceptancePassed(result)
+      }
+      return { ...result, acceptanceCheck: check }
+    }
   }
 
   // ---------- 工具 2：get_channel_data（通道原始数据查询，透传 dataBuffer.query，自动下采样） ----------
@@ -126,6 +155,8 @@ export function createPidAgentTools({ controller } = {}) {
       '修改 PID 参数（只传需要修改的项，如 {"kp": 2.0}）。参数会经三重安全校验：用户配置范围裁剪、系统上限'
       + '（Kp≤20，Ki/Kd≤10）、单步增幅限制（Kp×3，Ki/Kd×4），越界会被裁剪并在结果 guardrailNotes 中说明原因。'
       + '串口模式下参数会真实下发到设备（PID 指令，串级时速度环三参在前）。'
+      + '注意：仿真模式下 PID 输出无限幅，输出幅值由增益与误差决定；目标误差大时优先整定速度环'
+      + '（speedKp/speedKi）避免输出过大导致振荡。'
       + '何时用：根据 get_channel_stats 的指标调整参数后。修改后需调用 set_target 触发阶跃验证效果。',
     parameters: {
       type: 'object',
@@ -251,9 +282,12 @@ export function createPidAgentTools({ controller } = {}) {
   const setTargetTool = {
     name: 'set_target',
     description:
-      '修改目标值并触发阶跃响应采集（调参验证的必经步骤）。目标值经用户安全范围校验，轻微软出会被裁剪。'
+      '修改目标值并触发阶跃响应采集（调参验证的必经步骤）。目标值经物理适用范围校验'
+      + '（仿真按策略物理范围，如倒立摆为小角度线性区 ±0.18 rad≈±10°；串口按用户安全范围），'
+      + '轻微软出会被裁剪。'
       + '仿真模式下立即采集并返回摘要（timeRange 为本次阶跃数据区间，可直接传给 get_channel_stats/'
-      + 'get_channel_data 查询）；串口模式下发指令后异步采集（返回 suggestedQuery 建议查询区间，'
+      + 'get_channel_data 查询；若系统发散返回"仿真因发散截断"提示，说明该目标/增益下不可控，应降低增益或让目标回到物理范围）；'
+      + '串口模式下发指令后异步采集（返回 suggestedQuery 建议查询区间，'
       + '约一个采集窗口后按该区间查询），采集完成会自动进行安全检测，若触发回退会收到 [安全机制] 通知。'
       + '何时用：每次修改 PID/前馈参数后，或需要重新验证当前参数时。',
     parameters: {
@@ -269,15 +303,17 @@ export function createPidAgentTools({ controller } = {}) {
         throw new Error('缺少合法的目标值：请在 value 字段传入数字')
       }
 
-      // 目标安全范围校验：轻微软出裁剪到边界并说明；严重越界（超出安全范围一个量程以上）直接拒绝
+      // 目标范围校验：仿真按策略物理范围（倒立摆小角度线性区），串口回退用户安全范围；
+      // 轻微软出裁剪到边界并说明，严重越界（超出范围一个量程以上）直接拒绝
       const userConfig = controller.getUserConfig()
-      const range = userConfig?.safety?.target ?? { min: -Infinity, max: Infinity }
+      const fallbackRange = userConfig?.safety?.target ?? { min: -Infinity, max: Infinity }
+      const range = controller.getTargetRange?.() ?? fallbackRange
       const span = range.max - range.min
       if (rawValue > range.max + span || rawValue < range.min - span) {
-        throw new Error(`目标值 ${rawValue} 严重超出安全范围 [${range.min}, ${range.max}]，已拒绝执行`)
+        throw new Error(`目标值 ${rawValue} 严重超出物理适用范围 [${range.min}, ${range.max}]，已拒绝执行`)
       }
       const guardrailNotes = []
-      const value = clampByRange('target', rawValue, range, guardrailNotes, '用户安全范围')
+      const value = clampByRange('target', rawValue, range, guardrailNotes, '物理适用范围')
       controller.setTarget(value)
 
       // 串口模式：下发目标指令，响应由外部采样流异步进入数据缓冲；
@@ -315,12 +351,20 @@ export function createPidAgentTools({ controller } = {}) {
       if (typeof controller.onSamplesCollected === 'function') {
         await controller.onSamplesCollected(pushed)
       }
+      // 发散截断提示：状态超出发散保护阈值提前结束仿真时告知 agent（反馈并非正常响应）
+      const truncated = list?.truncated === true
+      const truncateMessage = truncated
+        ? `⚠ 仿真因发散截断：${list?.truncateReason || '状态发散'}；本次仅采集 ${pushed.length} 点（约 ${duration.toFixed(2)}s），` +
+          '反馈并非正常响应，请先降低增益或让目标回到物理可行范围'
+        : ''
       return {
         ok: true,
         mode: 'simulation',
         target: value,
         samplesCollected: pushed.length,
         timeRange: [offset, offset + duration],
+        truncated,
+        ...(truncateMessage ? { message: truncateMessage } : {}),
         guardrailNotes
       }
     }

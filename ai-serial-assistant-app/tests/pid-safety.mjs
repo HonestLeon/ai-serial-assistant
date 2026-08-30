@@ -184,6 +184,25 @@ console.log('9. isMetricsAcceptable 终止条件')
   assert('非 STABLE 不应 done', !r3.done)
 }
 
+console.log('10. STILL_RISING（未收敛爬升）护栏行为：非 STABLE 语义，等同响应慢')
+{
+  const stillRising = { valid: true, status: 'STILL_RISING', rmse: 6.7, steadyError: 15, overshoot: 0, oscillation: 2 }
+  const stableForBuild = { valid: true, status: 'STABLE', rmse: 0.5, steadyError: 0.1, overshoot: 5, oscillation: 2 }
+
+  // ① 不更新最佳记录（非 STABLE）
+  let best = null
+  best = maybeUpdateBestResult(best, { pid: { kp: 1 }, metrics: stillRising, round: 1 })
+  assert('STILL_RISING 不应更新最佳', best === null)
+  // ② 终止条件不合格
+  const done = isMetricsAcceptable(stillRising, { rmseLimit: 2, steadyErrorLimit: 1, overshootLimit: 10 })
+  assert('STILL_RISING 不应判达标', done.done === false)
+  // ③ 评分劣于 STABLE（等同 SLOW_RESPONSE）
+  assert('STILL_RISING 评分应低于 STABLE', scoreMetrics(stillRising) > scoreMetrics(stableForBuild))
+  // ④ 保底建议走"响应慢，增大当前活跃项"路径
+  const fb = buildFallbackSuggestion(stillRising, { kp: 1, ki: 0, kd: 0 })
+  assert('STILL_RISING 建议应增大活跃项', String(fb.reason).includes('增大当前活跃项'))
+}
+
 console.log('\n========================================')
 console.log(`通过 ${pass} 项, 失败 ${fail} 项`)
 console.log('========================================')

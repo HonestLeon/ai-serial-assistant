@@ -215,7 +215,7 @@ import { simulatePidStrategy } from '../src/renderer/src/services/pidSimulation.
   const stat = buffer.stats({ timeRange: [12.3, 16.3] })
   assert.equal(stat.stepMetrics.valid, true, '含段首样本后应能识别阶跃')
   assert.ok(Number.isFinite(stat.stepMetrics.overshoot), 'overshoot 应为有限值（无归一化爆炸）')
-  assert.ok(stat.stepMetrics.overshoot < 1000, 'overshoot 不应为亿级爆炸值')
+  assert.ok(stat.stepMetrics.overshoot < 1e6, 'overshoot 不应为亿级爆炸值（去限幅后真实超调虽大但不至于归一化爆炸）')
 }
 
 // 9. P2 stats 末段分析：多阶跃窗口只分析最后一次目标变化段 + stepCount / finalValues
@@ -264,6 +264,55 @@ import { simulatePidStrategy } from '../src/renderer/src/services/pidSimulation.
   assert.ok(Math.abs(result.finalValues.target - 50) < 1e-9)
   assert.ok(Math.abs(result.finalValues.feedback - 48) < 1)
   assert.ok(Math.abs(result.finalValues.output - 15) < 1e-9)
+}
+
+// 11. 可选诊断通道：speedTarget/speed 保留与显式查询（默认三通道结构不变；缺字段 → undefined/null 语义）
+{
+  const buffer = createDataBuffer()
+  buffer.push([
+    { t: 0, target: 100, feedback: 0, output: 0, speedTarget: 8, speed: 0 },
+    { t: 1, target: 100, feedback: 50, output: 12, speedTarget: 8, speed: 50 },
+    { t: 2, target: 100, feedback: 100, output: 1.25, speedTarget: 0.1, speed: 100 }
+  ])
+  // 显式请求可选通道时返回对应数值
+  const q = buffer.query({ timeRange: [0, 2], channels: ['target', 'speedTarget', 'speed'] })
+  assert.deepEqual(q.data.target, [100, 100, 100])
+  assert.deepEqual(q.data.speedTarget, [8, 8, 0.1])
+  assert.deepEqual(q.data.speed, [0, 50, 100])
+  // 默认（不传 channels）不包含可选诊断通道 → 既有行为不变
+  const defQ = buffer.query({ timeRange: [0, 2] })
+  assert.equal('speedTarget' in defQ.data, false)
+  assert.equal('speed' in defQ.data, false)
+  // stats 对可选通道做统计
+  const st = buffer.stats({ timeRange: [0, 2], channels: ['speedTarget'] })
+  assert.equal(st.channels.speedTarget.sampleCount, 3)
+  assert.ok(st.channels.speedTarget.mean > 0)
+  // 缺字段样本（串口实测无速度通道）→ undefined（上层序列化为 null）
+  const serialLike = createDataBuffer()
+  serialLike.push([
+    { t: 0, target: 1, feedback: 0.5, output: 1 },
+    { t: 0.1, target: 1, feedback: 0.8, output: 1 }
+  ])
+  const sq = serialLike.query({ timeRange: [0, 0.1], channels: ['speedTarget', 'speed'] })
+  assert.equal(sq.data.speedTarget[0], undefined)
+  assert.equal(sq.data.speed[0], undefined)
+}
+
+// 12. acceptance 注入：createDataBuffer({acceptance}) 决定 stepMetrics.limits（与提示词/护栏同源）
+{
+  // 无参 → 默认 20/10（既有行为）
+  const def = createDataBuffer()
+  def.push(Array.from({ length: 50 }, (_, i) => ({ t: i * 0.1, target: i < 5 ? 0 : 100, feedback: i === 0 ? 0 : 99, output: 0 })))
+  const defStat = def.stats({ timeRange: [0, 5] })
+  if (defStat.stepMetrics) assert.equal(defStat.stepMetrics.limits.overshoot, 20)
+  if (defStat.stepMetrics) assert.equal(defStat.stepMetrics.limits.oscillation, 10)
+
+  // 注入验收线 15/8 → limits 跟随
+  const custom = createDataBuffer({ acceptance: { overshootLimit: 15, oscillationLimit: 8 } })
+  custom.push(Array.from({ length: 50 }, (_, i) => ({ t: i * 0.1, target: i < 5 ? 0 : 100, feedback: i === 0 ? 0 : 99, output: 0 })))
+  const customStat = custom.stats({ timeRange: [0, 5] })
+  if (customStat.stepMetrics) assert.equal(customStat.stepMetrics.limits.overshoot, 15)
+  if (customStat.stepMetrics) assert.equal(customStat.stepMetrics.limits.oscillation, 8)
 }
 
 console.log('✅ tests/pid-agent-buffer.mjs 全部通过')
