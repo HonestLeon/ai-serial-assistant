@@ -1,5 +1,6 @@
 import { applyPidGuardrails } from '../../pidSafety.mjs'
 import { buildPidCommand } from '../utils.mjs'
+import { createStrategyTools } from './strategies.mjs'
 
 /**
  * PID 调参智能体 —— 工具集模块。
@@ -77,7 +78,8 @@ const CHANNELS_SCHEMA = {
  *   - getUserConfig()                → 用户配置（types.mjs 的 UserConfig）
  * @returns {Array<{name:string, description:string, parameters:object, execute:Function}>}
  */
-export function createPidAgentTools({ controller } = {}) {
+export function createPidAgentTools({ controller, enableStrategies = true } = {}) {
+  let observation = null
   if (!controller || typeof controller !== 'object') {
     throw new Error('createPidAgentTools 缺少 controller 运行时环境对象')
   }
@@ -315,6 +317,8 @@ export function createPidAgentTools({ controller } = {}) {
       const guardrailNotes = []
       const value = clampByRange('target', rawValue, range, guardrailNotes, '物理适用范围')
       controller.setTarget(value)
+      observation = null
+      const snapshot = { pid: { ...controller.getPid() }, feedforward: { ...controller.getFeedforward() }, target: value }
 
       // 串口模式：下发目标指令，响应由外部采样流异步进入数据缓冲；
       // 同时声明「已发起阶跃」，由上游串口窗口采集器在采集完成后自动做安全检测。
@@ -326,6 +330,7 @@ export function createPidAgentTools({ controller } = {}) {
         const windowSec = controller.getStepWindowSec?.() ?? 12
         const rangeInfo = controller.getDataBuffer().getRange()
         const tStart = rangeInfo.end ?? 0
+        observation = { ...snapshot, timeRange: [tStart, tStart + windowSec] }
         return {
           ok: true,
           mode: 'serial',
@@ -348,11 +353,11 @@ export function createPidAgentTools({ controller } = {}) {
       }
       const duration = pushed.length ? list[list.length - 1].t : 0
       controller.advanceSessionClock(duration + 0.1)
-      if (typeof controller.onSamplesCollected === 'function') {
-        await controller.onSamplesCollected(pushed)
-      }
+      const safety = typeof controller.onSamplesCollected === 'function'
+        ? await controller.onSamplesCollected(pushed) : null
       // 发散截断提示：状态超出发散保护阈值提前结束仿真时告知 agent（反馈并非正常响应）
       const truncated = list?.truncated === true
+      observation = { ...snapshot, timeRange: [offset, offset + duration], truncated, safety }
       const truncateMessage = truncated
         ? `⚠ 仿真因发散截断：${list?.truncateReason || '状态发散'}；本次仅采集 ${pushed.length} 点（约 ${duration.toFixed(2)}s），` +
           '反馈并非正常响应，请先降低增益或让目标回到物理可行范围'
@@ -364,11 +369,15 @@ export function createPidAgentTools({ controller } = {}) {
         samplesCollected: pushed.length,
         timeRange: [offset, offset + duration],
         truncated,
+        safety,
         ...(truncateMessage ? { message: truncateMessage } : {}),
         guardrailNotes
       }
     }
   }
 
-  return [getChannelStatsTool, getChannelDataTool, setPidParamsTool, setFeedforwardParamsTool, setTargetTool]
+  const baseTools = [getChannelStatsTool, getChannelDataTool, setPidParamsTool, setFeedforwardParamsTool, setTargetTool]
+  return enableStrategies
+    ? [...baseTools, ...createStrategyTools({ controller, baseTools, getObservation: () => observation })]
+    : baseTools
 }

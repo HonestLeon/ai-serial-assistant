@@ -1,7 +1,29 @@
 # AI 串口调试助手 · 开发文档
 
 > 本文档面向**开发者**，介绍代码架构、模块职责、进程通信、数据处理与开发命令。
-> 最终用户请阅读仓库根目录 [`README.md`](../../README.md)（界面、使用说明）。
+> 最终用户请阅读仓库根目录 [`README.md`](../README.md)（界面、使用说明）。
+
+## 策略工具扩展（第一版）
+
+`createPidAgentTools({ controller, enableStrategies: true })` 默认返回五个基础工具和两个策略入口；传入 `enableStrategies: false` 保留原有五工具流程。界面通过「启用确定性策略工具（单环试验）」控制该选项，每次会话启动时生效。
+
+| 文件 / 入口 | 职责 |
+| --- | --- |
+| `src/renderer/src/services/pidAgent/tools/strategies.mjs` | 策略注册清单与单次执行编排；复用 `pidSafety.buildFallbackSuggestion` |
+| `list_pid_strategies` | 返回策略清单、适用范围与执行边界 |
+| `run_pid_strategy` | 接受 `strategy: staged_pid` 或 `recover_pid`；读最近采集证据、调用基础工具调整与验证 |
+| `tools/index.mjs` | 维护最近一次采集的参数/前馈/目标快照，并向策略提供基础工具与安全结果 |
+| `tests/pid-agent-strategies.mjs` | 策略测试、stub LLM 路由集成和真实电机仿真/统计/回退链路测试 |
+
+策略不直接写设备、不额外调用模型。每次最多一次调整，统一复用 `set_pid_params` 和 `set_target`；串口采集异步完成，返回等待状态。暂只支持标准单环参数，串级与自定义参数继续走基础工具。
+
+```bash
+npm run test:analysis
+npm run test:strategies
+npm run build
+```
+
+第二条命令独立运行新增策略测试，不包含在 `test:analysis` 中。关闭开关可用于同初始条件的新旧 Agent 对照；真实 API 与硬件对照尚未执行。详见 [策略工具设计与验证方案](docs/pid-strategy-tools.md)。
 
 ---
 

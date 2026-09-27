@@ -101,6 +101,7 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
 
   /** 仿真策略 id（PID_STRATEGIES 键） */
   const strategyId = ref('motor_speed')
+  const enableStrategyTools = ref(true)
   /** 策略下拉选项 [{ id, name }] */
   const strategyOptions = Object.values(PID_STRATEGIES).map((strategy) => ({
     id: strategy.id,
@@ -651,6 +652,7 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
     })
 
     const controller = {
+      isStopped: () => abortController?.signal.aborted === true,
       getPid: getPidSnapshot,
       setPid: setPidHandler,
       getFeedforward: () => ({ ...currentFf }),
@@ -752,7 +754,7 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
       }
     }
 
-    const tools = createPidAgentTools({ controller })
+    const tools = createPidAgentTools({ controller, enableStrategies: enableStrategyTools.value })
 
     // ⑦ 动态系统提示词
     const systemPrompt = buildSystemPrompt({ userConfig, tools })
@@ -893,6 +895,7 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
   return {
     // 配置状态
     strategyId,
+    enableStrategyTools,
     strategyOptions,
     pidConfig,
     safetyRange,
