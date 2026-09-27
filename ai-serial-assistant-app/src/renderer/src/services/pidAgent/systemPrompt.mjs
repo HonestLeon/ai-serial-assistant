@@ -65,6 +65,9 @@ export function buildSystemPrompt({ userConfig = {}, tools = [], modelSpec = nul
   const feedforwardItems = toParamList(userConfig.feedforwardItems)
   const safety = userConfig.safetyRange ?? {}
   const sections = []
+  if (tools.some(tool => tool.name === 'run_pid_strategy')) {
+    sections.push('策略工具使用规则：单环可先 list_pid_strategies，再按情况 run_pid_strategy。staged_pid 复用本地分阶段算法，recover_pid 用于超调/振荡保守降参。每次只执行一次调整与验证；工具结果是证据，不是必然改善的保证。waiting/pending_validation 表示串口采集尚未完成，请等待完整窗口，不要重复改参；needs_data/stale_data 先重新采集；unsupported 改用基础工具；safety_stop 优先处理安全消息。串级与自定义参数不适用本版策略。保留用户指定顺序，禁止策略与基础工具在同一轮连续盲调。')
+  }
 
   // ① 基础身份与工作方式
   sections.push(

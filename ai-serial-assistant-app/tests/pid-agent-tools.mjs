@@ -80,10 +80,10 @@ const findTool = (tools, name) => {
 {
   const controller = createStubController({ userConfig: createDefaultUserConfig() })
   const tools = createPidAgentTools({ controller })
-  assert.equal(tools.length, 5)
+  assert.equal(tools.length, 7)
   assert.deepEqual(
     tools.map((tool) => tool.name),
-    ['get_channel_stats', 'get_channel_data', 'set_pid_params', 'set_feedforward_params', 'set_target']
+    ['get_channel_stats', 'get_channel_data', 'set_pid_params', 'set_feedforward_params', 'set_target', 'list_pid_strategies', 'run_pid_strategy']
   )
   for (const tool of tools) {
     assert.equal(typeof tool.name, 'string')

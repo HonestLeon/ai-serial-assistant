@@ -26,7 +26,7 @@ const agent = usePidAgent({
 
 const {
   // 配置状态
-  strategyId, strategyOptions, pidConfig, safetyRange, feedforwardItems, scenePrompt, testMode,
+  strategyId, enableStrategyTools, strategyOptions, pidConfig, safetyRange, feedforwardItems, scenePrompt, testMode,
   tuningStrategy, pidStructure,
   addFeedforwardItem, removeFeedforwardItem,
   // 运行状态
@@ -243,6 +243,8 @@ onUnmounted(() => {
       <!-- 测试模式（单按键切换）+ 仿真策略 -->
       <div class="card">
         <div class="card-title">测试模式 · 仿真策略</div>
+        <label class="mode-hint"><input type="checkbox" v-model="enableStrategyTools" :disabled="running" /> 启用确定性策略工具（单环试验）</label>
+        <p class="mode-hint">每次执行一次调整与验证。关闭后使用原有基础工具，可用于同场景对照。</p>
         <button
           class="mode-toggle"
           :class="{ serial: testMode === 'serial' }"
