@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#123d31" />
+  <meta name="description" content="TUNER 智串 AI：面向嵌入式开发的串口波形、数据分析与 PID 调参助手。在线体验电机速度环仿真，了解咕电子队的创客项目。" />
+  <title>TUNER 智串 AI · 让每一次调参都有依据</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23123d31'/%3E%3Cpath d='M12 34h10l7-18 8 33 7-15h8' fill='none' stroke='%23bcf47c' stroke-width='5'/%3E%3C/svg%3E" />
+</head>
+<body>
+  <a class="skip" href="#main">跳到正文</a>
+  <header class="site-header">
+    <a class="brand" href="#" aria-label="TUNER 首页"><span class="brand-icon" aria-hidden="true">∿</span> TUNER<span class="brand-sub">智串 AI</span></a>
+    <nav aria-label="主导航"><a href="#product">产品</a><a href="#playground">在线演示</a><a href="#evidence">项目进展</a><a class="nav-code" href="https://github.com/HonestLeon/ai-serial-assistant" target="_blank" rel="noopener noreferrer">GitHub ↗</a></nav>
+  </header>
+  <main id="main">
+    <section class="hero wrap">
+      <div class="hero-copy">
+        <p class="eyebrow"><span class="pulse-dot"></span> 为嵌入式开发者而造</p>
+        <h1>让每一次调参<br>都有<span class="accent">依据。</span></h1>
+        <p class="hero-description">从串口数据到响应曲线，从经验试错到可追溯的调整。<br class="desktop-break">TUNER 将波形、分析与 AI 调参，放在同一个工作区。</p>
+        <div class="actions"><a class="button primary" href="#playground">亲手调一次 PID <span>↗</span></a><a class="text-link" href="#product">看看产品怎么用 <span>↓</span></a></div>
+        <div class="hero-tags"><span>串口数据可视化</span><span>本地响应分析</span><span>AI 辅助调参</span></div>
+      </div>
+      <div class="hero-instrument" aria-label="电机阶跃响应示意图，非实测数据">
+        <div class="instrument-top"><span><i></i> TUNER / SIGNAL LAB</span><span>SIMULATION</span></div>
+        <div class="instrument-heading"><span>把反馈，变成下一步。</span><small>闭环思考 · 可见的过程</small></div>
+        <svg class="hero-wave" viewBox="0 0 620 265" role="img" aria-label="响应曲线从波动逐渐接近目标的示意">
+          <defs><pattern id="hero-grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="#fff" stroke-opacity=".07"/></pattern><linearGradient id="wave-fill" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#c4f48a" stop-opacity=".16"/><stop offset="1" stop-color="#c4f48a" stop-opacity="0"/></linearGradient></defs>
+          <rect width="620" height="265" fill="url(#hero-grid)"/><path d="M20 100H600" stroke="#a2b7c0" stroke-dasharray="5 7"/>
+          <path d="M20 230H65C90 230 102 50 140 55S185 151 221 124S259 80 295 96S344 105 390 100H600V265H20Z" fill="url(#wave-fill)"/>
+          <path d="M20 230H65C90 230 102 50 140 55S185 151 221 124S259 80 295 96S344 105 390 100H600" fill="none" stroke="#c4f48a" stroke-width="3"/>
+          <circle cx="390" cy="100" r="5" fill="#c4f48a"/><text x="20" y="254" fill="#829d90" font-size="12">0 s</text><text x="565" y="254" fill="#829d90" font-size="12">t →</text>
+        </svg>
+        <div class="instrument-footer"><span><i class="legend-dot"></i>反馈值 <i class="legend-dash"></i>目标值</span><span>概念示意 / 非实测</span></div>
+        <div class="floating-note"><span>01 / OBSERVE → ADJUST → VERIFY</span><strong>先看数据，再作判断。</strong></div>
+      </div>
+    </section>
+    <div class="context-strip"><div class="wrap"><span>从课堂走向真实调试</span><p>电赛与智能车 <b>·</b> 嵌入式课程实验 <b>·</b> 电机控制开发</p><span class="mono">BY 咕电子队</span></div></div>
+
+    <section id="product" class="section wrap">
+      <div class="section-head"><div><p class="eyebrow">01 / THE WORKSPACE</p><h2>调试的线索，<br>终于在同一个屏幕里。</h2></div><p>不必反复切换窗口。观察波形、定位问题、调整参数，<br>每一步都能回到数据本身。</p></div>
+      <div class="product-frame"><div class="window-bar"><span><i></i><i></i><i></i></span><span id="screenshot-caption">TUNER · 桌面工作区</span><span>DESKTOP APP</span></div><button id="screenshot-open" class="screenshot-button" aria-label="放大查看桌面工作区截图"><img id="product-image" alt="TUNER 桌面软件主界面" loading="lazy" width="1920" height="1080" /></button></div>
+      <div class="product-tabs" role="group" aria-label="切换产品截图"><button data-shot="0" class="active" aria-pressed="true">01 工作区</button><button data-shot="1" aria-pressed="false">02 数据分析</button><button data-shot="2" aria-pressed="false">03 PID 调参</button><button data-shot="3" aria-pressed="false">04 深色主题</button></div>
+      <div class="feature-grid"><article><span class="feature-number">01</span><h3>先看清信号</h3><p>多通道实时波形、缩放平移与数据回放，让异常有迹可循。</p></article><article><span class="feature-number">02</span><h3>再读懂响应</h3><p>本地计算超调、稳态误差与稳定时间，让参数变化可以比较。</p></article><article><span class="feature-number">03</span><h3>有依据地调整</h3><p>AI 选择工具，确定性策略执行，参数护栏与回退记录保留过程。</p></article></div>
+    </section>
+
+    <section id="playground" class="playground-section">
+      <div class="wrap"><div class="section-head"><div><p class="eyebrow">02 / TRY IT YOURSELF</p><h2>参数动一点，<br>响应有什么不同？</h2></div><p>无需安装、无需 API Key。<br>用电机速度环，亲手理解 PID 的取舍。</p></div>
+        <div class="lab"><div class="lab-header"><span class="lab-title"><span class="pulse-dot"></span> 电机速度环实验台</span><span class="chip">浏览器本地仿真</span></div>
+          <div class="lab-body"><form class="lab-controls" id="controls" onsubmit="return false">
+            <label class="field-label" for="preset">从一个场景开始</label><select id="preset"><option value="pure">纯 P · 看稳态误差</option><option value="slow">响应偏慢</option><option value="overshoot">明显超调</option><option value="balanced">参考参数</option><option value="custom" disabled>自定义参数</option></select>
+            <div class="slider-control"><label for="kp">比例 <b>Kp</b></label><output id="kp-value" for="kp">1.00</output><input id="kp" type="range" min="0" max="8" step="0.01" value="1"/><p>增大比例作用，让响应更快。</p></div>
+            <div class="slider-control"><label for="ki">积分 <b>Ki</b></label><output id="ki-value" for="ki">0.00</output><input id="ki" type="range" min="0" max="20" step="0.01" value="0"/><p>消除持续误差，也可能带来超调。</p></div>
+            <div class="slider-control"><label for="kd">微分 <b>Kd</b></label><output id="kd-value" for="kd">0.000</output><input id="kd" type="range" min="0" max="0.02" step="0.001" value="0"/><p>改变瞬态响应，对测量噪声敏感。</p></div>
+            <div class="target-row"><label for="target">目标转速 <small>rad/s</small></label><input id="target" type="number" min="1" max="30" step="1" value="10"/></div>
+            <label class="check-label"><input type="checkbox" id="noise"/>加入少量测量噪声</label>
+            <div class="lab-buttons"><button class="button small" type="button" id="save-baseline">保存当前曲线作对照</button><button class="reset" type="button" id="reset">重置实验 ↺</button></div>
+          </form><div class="lab-results"><div class="plot-heading"><span>阶跃响应 <small>转速 / rad·s⁻¹</small></span><button id="export" type="button" class="export-button">导出 CSV ↓</button></div>
+              <div class="plot-legend"><span><i class="legend-dot"></i>当前反馈</span><span><i class="legend-dash"></i>目标</span><span id="baseline-legend" hidden><i class="legend-dot baseline-color"></i>已保存对照</span><label class="zoom-label"><input type="checkbox" id="zoom-transient"/>放大前 1 秒</label></div>
+              <div class="plot-container"><svg id="response-chart" viewBox="0 0 780 340" role="img" aria-label="当前参数的电机阶跃响应曲线"></svg></div>
+              <div class="plot-status"><span id="hover-readout">移动鼠标查看采样值</span><span>时间 / s</span></div>
+              <div class="metrics" aria-live="polite"><div><span>超调率</span><strong id="overshoot">—</strong></div><div><span>稳态误差 · rad/s</span><strong id="steady-error">—</strong></div><div><span>稳定时间 · s</span><strong id="settling-time">—</strong></div><div><span>均方根误差 · rad/s</span><strong id="rmse">—</strong></div></div>
+              <p id="simulation-note" class="simulation-note" role="status"></p><p id="baseline-note" class="baseline-note">先保存一条曲线，再调整参数，观察前后差异。</p>
+          </div></div>
+          <details class="model-notes"><summary>这个演示如何计算？<span>模型与指标口径 ＋</span></summary><div><p><strong>J·dω/dt + B·ω = Kt·i</strong>。复用桌面项目的电机仿真与响应分析代码。J = 0.02 kg·m²，B = 0.08 N·m·s/rad，Kt = 0.5 N·m/A；采样步长 2 ms，时长 4 s，阶跃目标 1–30 rad/s。</p><p>稳定时间采用目标阶跃幅值的 ±5% 带宽；“窗口内未进入”表示 4 秒内未持续处于该范围。稳态误差用最后 15% 样本的目标与反馈均值之差估计，未收敛时仅代表尾段误差。均方根误差统计阶跃后的响应；放大视图不改变指标计算窗口。噪声幅度为 ±0.02 rad/s，使用固定种子便于重复比较。</p><p>教学模型沿用项目无输出限幅设置，参数不是硬件使用建议。这里只展示本地仿真，没有在线调用 AI 或连接串口。</p></div></details>
+        </div>
+      </div>
+    </section>
+
+    <section class="section wrap" id="workflow"><div class="section-head"><div><p class="eyebrow">03 / HOW IT WORKS</p><h2>AI 负责判断，<br>每一步都有数据回应。</h2></div><p>桌面端 Agent 的工作方式：<br>让一次建议，走完一次验证。</p></div><ol class="workflow"><li><span>01</span><h3>采集与观察</h3><p>保留数据背景，读取通道统计与响应指标。</p></li><li><span>02</span><h3>选择调整方式</h3><p>使用基础工具，或选择单环确定性策略。</p></li><li><span>03</span><h3>受约束地执行</h3><p>参数经过范围与增幅检查，再触发响应采集。</p></li><li><span>04</span><h3>复测与回退</h3><p>比较结果；触发安全机制时记录原因与回退。</p></li></ol><a class="text-link" href="https://github.com/HonestLeon/ai-serial-assistant/blob/master/ai-serial-assistant-app/docs/pid-strategy-tools.md" target="_blank" rel="noopener noreferrer">阅读策略工具设计 ↗</a></section>
+
+    <section class="progress-section" id="evidence"><div class="wrap"><div class="section-head"><div><p class="eyebrow">04 / BUILT, TESTED, STILL LEARNING</p><h2>把做到了什么，<br>和还要验证什么讲清楚。</h2></div><p>用代码、测试和实际界面展示进展。<br>用后续测试回答真正的使用价值。</p></div><div class="evidence-grid"><article><span class="status-label complete">已实现</span><h3>可运行的桌面工作区</h3><p>串口波形、数据分析、Agent 调参与三类内置仿真模型，配套使用说明和代码。</p><a href="https://github.com/HonestLeon/ai-serial-assistant/tree/master/ai-serial-assistant-app" target="_blank" rel="noopener noreferrer">查看源码 ↗</a></article><article><span class="status-label complete">本地验证</span><h3>策略与安全路径测试</h3><p>本次开发已通过原有 12 组测试、新增策略测试、电机仿真集成及构建检查。</p><a href="https://github.com/HonestLeon/ai-serial-assistant/tree/master/ai-serial-assistant-app/tests" target="_blank" rel="noopener noreferrer">查看测试用例 ↗</a></article><article><span class="status-label pending">待进一步验证</span><h3>真实场景中的价值</h3><p>继续验证硬件闭环、独立用户调参效果和真实付费。仿真结果不等同于实机收益。</p><a href="https://github.com/HonestLeon/ai-serial-assistant/issues" target="_blank" rel="noopener noreferrer">提交反馈 ↗</a></article></div></div></section>
+
+    <section class="section wrap" id="get-started"><div class="get-started"><div><p class="eyebrow">LET’S MAKE THE NEXT ADJUSTMENT COUNT.</p><h2>下一次调试，<br>从看懂波形开始。</h2><p>获取 TUNER，了解完整的桌面调试体验。</p><div class="actions"><a class="button primary" href="https://github.com/HonestLeon/ai-serial-assistant/releases" target="_blank" rel="noopener noreferrer">查看发布与下载 ↗</a><a class="button secondary" href="https://github.com/HonestLeon/ai-serial-assistant/blob/master/发布包/使用说明书.md" target="_blank" rel="noopener noreferrer">阅读使用说明</a></div><p class="download-note">安装包以 Releases 页面实际提供的内容为准，也可按 README 从源码运行。</p></div><div class="team"><span class="mono">THE TEAM / 咕电子队</span><h3>从课堂创意，<br>到可验证的工具。</h3><dl><div><dt>刘双瑞</dt><dd>代码开发</dd></div><div><dt>吴程龙秀</dt><dd>代码开发</dd></div><div><dt>胡雨杨</dt><dd>设计 · 展示 · 调研</dd></div></dl></div></div></section>
+  </main>
+  <footer class="site-footer wrap"><a class="brand" href="#">∿ TUNER</a><span>华中科技大学未来技术学院《创客训练营》课程作品</span><a href="https://github.com/HonestLeon/ai-serial-assistant/blob/master/LICENSE" target="_blank" rel="noopener noreferrer">开源许可 ↗</a></footer>
+  <dialog id="image-dialog"><button id="close-dialog" aria-label="关闭截图">关闭 ×</button><img id="dialog-image" alt="产品截图放大预览"/></dialog>
+  <noscript><p class="noscript">请启用 JavaScript 使用在线仿真。产品介绍与源码链接仍可浏览。</p></noscript>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>

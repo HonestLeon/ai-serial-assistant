@@ -11,6 +11,10 @@
     "preview": "electron-vite preview",
     "test:analysis": "node tests/control-analysis.mjs && node tests/ai-data-context.mjs && node tests/pid-simulation.mjs && node tests/pid-safety.mjs && node tests/pid-prompt.mjs && node tests/pid-agent-buffer.mjs && node tests/pid-agent-llm.mjs && node tests/pid-agent-tools.mjs && node tests/pid-agent-loop.mjs && node tests/pid-agent-safety-compact.mjs && node tests/pid-agent-utils.mjs && node tests/vue-sfc-compile.cjs",
     "test:strategies": "node tests/pid-agent-strategies.mjs",
+    "site:dev": "vite --config ../website/vite.config.mjs",
+    "site:build": "vite build --config ../website/vite.config.mjs",
+    "site:preview": "vite preview --config ../website/vite.config.mjs",
+    "test:site": "node ../website/tests/simulation.test.mjs",
     "postinstall": "electron-builder install-app-deps",
     "dist": "electron-vite build && electron-builder"
   },

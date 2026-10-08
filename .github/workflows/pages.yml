@@ -1,0 +1,54 @@
+name: Deploy TUNER website
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'website/**'
+      - '发布包/images/**'
+      - 'ai-serial-assistant-app/src/renderer/src/services/**'
+      - 'ai-serial-assistant-app/package*.json'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ai-serial-assistant-app/package-lock.json
+      - name: Install build dependencies without Electron download
+        working-directory: ai-serial-assistant-app
+        run: npm ci --ignore-scripts
+      - name: Test simulation and build website
+        working-directory: ai-serial-assistant-app
+        run: |
+          npm run test:site
+          npm run site:build
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: website/dist
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

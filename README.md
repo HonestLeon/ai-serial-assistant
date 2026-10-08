@@ -9,6 +9,16 @@
 
 ## 它能帮你做什么
 
+### 产品展示与在线演示
+
+新增 `website/` 静态官网：产品实拍界面、项目进展，以及无需安装或 API Key 的电机速度环 PID 实验台。支持参数调整、曲线对照和 CSV 导出；演示只在浏览器本地仿真，不连接真实硬件。
+
+GitHub Pages 目标地址：<https://HonestLeon.github.io/ai-serial-assistant/>（首次发布需启用仓库 Pages 的 GitHub Actions 来源）。
+
+本地在 `ai-serial-assistant-app` 目录运行 `npm run site:dev`，打开 `http://127.0.0.1:4173`。构建和发布说明见 [网站说明](website/README.md)。
+
+### 桌面端功能
+
 - **实时波形**：串口数据自动绘制成多通道曲线，可缩放、平移、显隐通道、导出 CSV / JSON
 - **数据表与录制回放**：结构化查看通道数值（I0–I7），一键录制数据流，回放时自动断开实时串口
 - **AI 能力**：对接 OpenAI 兼容 API（默认 DeepSeek），数据分析可一键「AI 解释」、PID 调参由对话式智能体自主驱动（原「AI 助手」自由对话已合并进调参面板），并自动携带串口上下文
