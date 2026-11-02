@@ -118,15 +118,18 @@ import { simulatePidStrategy } from '../src/renderer/src/services/pidSimulation.
     buffer.push({ t: i / 10, target: 100, feedback: i, output: i })
   }
   const range = buffer.getRange()
-  assert.ok(range.start >= 15)
+  // 摊还淘汰：时间窗口允许超出 capacity 的 2%（最少 0.2s），
+  // 以此换取"不再是每帧都 splice 一次"（饱和后单帧成本从 ~100µs 回到 ~0.5µs）
+  assert.ok(range.start >= 15 - 0.2 - 1e-9, `start 应接近窗口下界，实际 ${range.start}`)
   assert.equal(range.end, 20)
-  assert.equal(range.count, 51)
+  assert.ok(range.count >= 51 && range.count <= 54, `count 应在 51~54，实际 ${range.count}`)
 
-  // maxSamples 总量淘汰：100 条上限 50 → 只留最新 50 条
+  // maxSamples 总量淘汰：100 条上限 50 → 只留最新 50 条（软上限允许超出 5%）
   const capped = createDataBuffer({ maxSamples: 50 })
   capped.push(Array.from({ length: 100 }, (_, i) => ({ t: i, target: 0, feedback: i, output: 0 })))
-  assert.equal(capped.getRange().count, 50)
-  assert.equal(capped.getRange().start, 50)
+  const cappedRange = capped.getRange()
+  assert.ok(cappedRange.count >= 50 && cappedRange.count <= 53, `总量应受软上限约束，实际 ${cappedRange.count}`)
+  assert.ok(cappedRange.start >= 47, `超限后应淘汰最旧样本，实际 start=${cappedRange.start}`)
   capped.clear()
   assert.deepEqual(capped.getRange(), { start: null, end: null, count: 0 })
 }
@@ -287,15 +290,23 @@ import { simulatePidStrategy } from '../src/renderer/src/services/pidSimulation.
   const st = buffer.stats({ timeRange: [0, 2], channels: ['speedTarget'] })
   assert.equal(st.channels.speedTarget.sampleCount, 3)
   assert.ok(st.channels.speedTarget.mean > 0)
-  // 缺字段样本（串口实测无速度通道）→ undefined（上层序列化为 null）
+  // 缺字段样本（串口实测无速度通道）→ 整通道列入 unavailableChannels，不再返回全 null 数组
   const serialLike = createDataBuffer()
   serialLike.push([
     { t: 0, target: 1, feedback: 0.5, output: 1 },
     { t: 0.1, target: 1, feedback: 0.8, output: 1 }
   ])
   const sq = serialLike.query({ timeRange: [0, 0.1], channels: ['speedTarget', 'speed'] })
-  assert.equal(sq.data.speedTarget[0], undefined)
-  assert.equal(sq.data.speed[0], undefined)
+  assert.equal('speedTarget' in sq.data, false, '不可用通道不应返回全 null 数组')
+  assert.equal('speed' in sq.data, false)
+  assert.deepEqual(sq.unavailableChannels, ['speedTarget', 'speed'])
+
+  const sst = serialLike.stats({ timeRange: [0, 0.1], channels: ['speedTarget'] })
+  assert.equal(sst.channels.speedTarget.unavailable, true)
+  assert.equal(sst.channels.speedTarget.mean, null)
+  assert.equal(sst.channels.speedTarget.peak, null, 'peak 不能是 0 掩盖"通道不可用"')
+  assert.equal(sst.channels.speedTarget.sampleCount, 0)
+  assert.deepEqual(sst.unavailableChannels, ['speedTarget'])
 }
 
 // 12. acceptance 注入：createDataBuffer({acceptance}) 决定 stepMetrics.limits（与提示词/护栏同源）
@@ -313,6 +324,40 @@ import { simulatePidStrategy } from '../src/renderer/src/services/pidSimulation.
   const customStat = custom.stats({ timeRange: [0, 5] })
   if (customStat.stepMetrics) assert.equal(customStat.stepMetrics.limits.overshoot, 15)
   if (customStat.stepMetrics) assert.equal(customStat.stepMetrics.limits.oscillation, 8)
+}
+
+// 13. 饱和后的写入成本（BE-06）：摊还淘汰后 20k 次单条 push 必须远低于 200ms
+//     （未摊还时每次 push 都 splice 掉最旧一条，实测 2100~2900ms）
+{
+  const buffer = createDataBuffer()
+  let t = 0
+  for (let i = 0; i < 60000; i += 1) {
+    t += 0.001
+    buffer.push({ t, target: 50, feedback: 49, output: 1 })
+  }
+  const startedAt = performance.now()
+  for (let i = 0; i < 20000; i += 1) {
+    t += 0.001
+    buffer.push({ t, target: 50, feedback: 49, output: 1 })
+  }
+  const elapsed = performance.now() - startedAt
+  assert.ok(elapsed < 200, `饱和后 20k push 应 < 200ms，实际 ${elapsed.toFixed(1)}ms`)
+  const count = buffer.getRange().count
+  assert.ok(count <= 63000, `总量应受软上限约束（60000 + 5%），实际 ${count}`)
+  assert.ok(count >= 60000, `淘汰后应仍保留接近上限的样本量，实际 ${count}`)
+}
+
+// 14. maxPoints 上限（BE-11）：模型传超大值也不能把几 MB 数据灌进上下文
+{
+  const buffer = createDataBuffer()
+  buffer.push(Array.from({ length: 2000 }, (_, i) => ({ t: i * 0.01, target: 50, feedback: 49, output: 1 })))
+  const huge = buffer.query({ timeRange: [0, 20], maxPoints: 1e9 })
+  assert.equal(huge.downsampled, true)
+  assert.equal(huge.data.t.length, 500, 'maxPoints 应被钳制到 500')
+  assert.equal(huge.sampleCount, 2000, 'sampleCount 仍应反映原始样本数')
+
+  const tiny = buffer.query({ timeRange: [0, 20], maxPoints: 0 })
+  assert.ok(tiny.data.t.length >= 2, 'maxPoints 下限为 2')
 }
 
 console.log('✅ tests/pid-agent-buffer.mjs 全部通过')

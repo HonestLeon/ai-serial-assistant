@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { convertToLlm, callLlm } from '../src/renderer/src/services/pidAgent/llm.mjs'
+import { convertToLlm, callLlm, resetToolsSupportCache } from '../src/renderer/src/services/pidAgent/llm.mjs'
 import { buildSystemPrompt } from '../src/renderer/src/services/pidAgent/systemPrompt.mjs'
 
 const originalFetch = globalThis.fetch
@@ -402,6 +402,89 @@ assert.ok(prompt.includes('先调用 set_target 触发一次阶跃采集'))
   } finally {
     globalThis.fetch = originalFetch
   }
+}
+
+// 退避等待必须可被中止（BE-02）：此前用裸 setTimeout，停止按钮最坏要等满 16s
+{
+  const calls = []
+  const ctrl = new AbortController()
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push(url)
+    return errorResponse(500, 'server boom')
+  }
+  try {
+    const startedAt = Date.now()
+    const pending = callLlm({
+      aiConfig: AI_CONFIG,
+      systemPrompt: 's',
+      messages: [],
+      signal: ctrl.signal,
+      retryDelays: [0, 2] // 第二次尝试前要等 2s
+    })
+    setTimeout(() => ctrl.abort(), 80)
+    const result = await pending
+    const elapsed = Date.now() - startedAt
+    assert.equal(result.ok, false)
+    assert.equal(result.error, '请求已中止')
+    assert.ok(elapsed < 600, `退避应可被中止，实际耗时 ${elapsed}ms`)
+    assert.equal(calls.length, 1, '中止后不应继续发起请求')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+}
+
+// 9. 不可恢复的 4xx 立即失败（BE-03）：401 只发一次请求，文案可操作
+{
+  await withStubbedFetch([errorResponse(401, '{"error":"invalid api key"}')], async (calls) => {
+    const startedAt = Date.now()
+    const result = await callLlm({
+      aiConfig: AI_CONFIG,
+      systemPrompt: 's',
+      messages: [],
+      retryDelays: [0, 2, 4, 8] // 若仍按旧策略重试，至少要等 14s
+    })
+    assert.equal(result.ok, false)
+    assert.equal(calls.length, 1, '401 不应重试')
+    assert.match(result.error, /API Key 无效/, `错误文案应可操作，实际：${result.error}`)
+    assert.ok(Date.now() - startedAt < 1000, '不该走退避')
+  })
+}
+
+// 10. 5xx 仍会重试（可恢复错误）
+{
+  await withStubbedFetch([errorResponse(500, 'boom')], async (calls) => {
+    const result = await callLlm({
+      aiConfig: AI_CONFIG,
+      systemPrompt: 's',
+      messages: [],
+      retryDelays: [0, 0]
+    })
+    assert.equal(result.ok, false)
+    assert.equal(calls.length, 2, '500 应重试')
+    assert.match(result.error, /HTTP 500/)
+  })
+}
+
+// 11. function calling 能力缓存（BE-14）：不支持 tools 的端点第二次不再白撞一次 400
+{
+  resetToolsSupportCache()
+  const tool = { name: 'noop', description: 'noop', parameters: { type: 'object', properties: {} } }
+  const okNoTools = okResponse({ choices: [{ message: { content: 'ok', tool_calls: [] }, finish_reason: 'stop' }] })
+  await withStubbedFetch([errorResponse(400, 'tools unsupported'), okNoTools, okNoTools], async (calls) => {
+    const first = await callLlm({
+      aiConfig: AI_CONFIG, systemPrompt: 's', messages: [], tools: [tool], retryDelays: [0]
+    })
+    assert.equal(first.ok, true)
+    assert.equal(calls.length, 2, '首次应带 tools 撞一次 400 再降级重试')
+
+    const second = await callLlm({
+      aiConfig: AI_CONFIG, systemPrompt: 's', messages: [], tools: [tool], retryDelays: [0]
+    })
+    assert.equal(second.ok, true)
+    assert.equal(calls.length, 3, '第二次应直接不带 tools，只发一次请求')
+    assert.equal(calls[2].body.tools, undefined, '缓存命中后请求体不应包含 tools')
+  })
+  resetToolsSupportCache()
 }
 
 console.log('✅ tests/pid-agent-llm.mjs 全部通过')

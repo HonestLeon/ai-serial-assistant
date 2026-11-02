@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, reactive, watch } from 'vue'
+import { ref, onMounted, onUnmounted, reactive, watch } from 'vue'
 import { Refresh, Link, SetUp, MagicStick, QuestionFilled } from '@element-plus/icons-vue'
 
 const props = defineProps({
@@ -44,8 +44,9 @@ const localProtocol = ref(props.protocolEngine)
 
 watch(() => props.protocolEngine, (v) => { localProtocol.value = v })
 
-function onProtocolChange() {
-  emit('update-protocol')
+function onProtocolChange(value) {
+  // 必须把新值一起回传：父组件此前写回的是自己那份从未更新的旧值
+  emit('update-protocol', typeof value === 'string' ? value : localProtocol.value)
 }
 
 function onAiConfigChange() {
@@ -59,8 +60,11 @@ function onAiSwitchChange() {
 async function refreshPorts() {
   try {
     ports.value = await window.electronAPI.serial.list()
-    if (ports.value.length > 0 && !config.path) {
+    const available = ports.value.some((port) => port.path === config.path)
+    if (ports.value.length > 0 && !available) {
       config.path = ports.value[0].path
+    } else if (ports.value.length === 0) {
+      config.path = ''
     }
   } catch (e) {
     emit('error', e.message || '获取串口列表失败')
@@ -112,16 +116,31 @@ async function toggleRts() {
   }
 }
 
+let unsubscribeStatus = null
+let unsubscribeError = null
+
 onMounted(() => {
   refreshPorts()
-  window.electronAPI?.serial?.onStatus?.((status) => {
+  unsubscribeStatus = window.electronAPI?.serial?.onStatus?.((status) => {
     connected.value = status.connected
     statusPath.value = status.path || ''
-    emit('status-change', { ...status, baudRate: config.baudRate })
-  })
-  window.electronAPI?.serial?.onError?.((msg) => {
+    if (!status.connected) {
+      // 断开后 DTR/RTS 不再有效，复位避免下次连接显示错误状态
+      dtrState.value = false
+      rtsState.value = false
+    }
+    emit('status-change', status)
+  }) || null
+  unsubscribeError = window.electronAPI?.serial?.onError?.((msg) => {
     emit('error', msg)
-  })
+  }) || null
+})
+
+onUnmounted(() => {
+  unsubscribeStatus?.()
+  unsubscribeError?.()
+  unsubscribeStatus = null
+  unsubscribeError = null
 })
 </script>
 

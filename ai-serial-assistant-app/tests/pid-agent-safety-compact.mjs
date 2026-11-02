@@ -400,18 +400,18 @@ const buildFiveBlockMessages = () => [
   assert.equal(result.compactedCount, 2)
 
   // 插入的 compact 消息：kind='compact'、含 [历史数据摘要] 与摘要文本、meta.compactInfo 正确
+  // 批量摘要：多个组只产生一条 summary 消息（避免同一段摘要重复多份占上下文）
   const compactMsgs = result.messages.filter((m) => m.kind === 'compact')
-  assert.equal(compactMsgs.length, 2)
+  assert.equal(compactMsgs.length, 1)
   compactMsgs.forEach((m) => {
     assert.equal(m.role, 'user')
     assert.ok(m.content.includes('[历史数据摘要]'))
     assert.ok(m.content.includes('参数探索摘要文本'))
     assert.deepEqual(m.meta.compactInfo, { beforeBytes: result.beforeBytes, afterBytes: result.afterBytes })
   })
-  // 摘要消息插在原组起始位置（原 assistant 的位置，紧跟首条 user 消息之后）
+  // 摘要消息插在最早一组的位置（原 assistant 的位置，紧跟首条 user 消息之后）
   assert.equal(result.messages[0].content, '任务开始：请把超调压到 10% 以内')
   assert.equal(result.messages[1].kind, 'compact')
-  assert.equal(result.messages[2].kind, 'compact')
 
   // 被压缩组的 assistant / toolResult 已移除（call-1、call-2）
   assert.equal(result.messages.filter((m) => m.meta?.toolCallId === 'call-1' || m.meta?.toolCallId === 'call-2').length, 0)
@@ -433,11 +433,11 @@ const buildFiveBlockMessages = () => [
   assert.equal(result.messages.some((m) => m === messages[0]), true)
   assert.equal(result.messages.filter((m) => m.role === 'user' && m.kind === 'normal').length, 3)
 
-  // summarizeFn 收到含工具名/参数/结果 JSON 的 dumpText
-  assert.equal(dumpTexts.length, 2)
+  // summarizeFn 只被调用一次，dumpText 同时包含两个组的内容（含工具名/参数/结果 JSON）
+  assert.equal(dumpTexts.length, 1, '多组应合并为一次摘要请求')
   assert.ok(dumpTexts[0].includes('get_channel_stats'))
   assert.ok(dumpTexts[0].includes('块-1'))
-  assert.ok(dumpTexts[1].includes('块-2'))
+  assert.ok(dumpTexts[0].includes('块-2'))
 
   // emit 事件
   assert.equal(events.length, 1)
@@ -495,6 +495,31 @@ const buildFiveBlockMessages = () => [
   assert.equal(result.messages.filter((m) => m.role === 'toolResult' && m.meta.isDataQuery).length, 5)
   assert.equal(result.messages.some((m) => m.kind === 'compact'), false)
   assert.equal(result.messages.some((m) => m === assistant), true)
+}
+
+// 9. 摘要输入超长：本地首尾截断后仍只发一次请求（避免把数 MB dump 原样喂给摘要模型）
+{
+  const headMark = 'HEAD-MARK'
+  const tailMark = 'TAIL-MARK'
+  const bigContent = headMark + 'x'.repeat(6000) + tailMark
+  const messages = [
+    createUserMessage('开始'),
+    createAssistantMessage({ text: '', toolCalls: [{ id: 'big-1', name: 'get_channel_stats', arguments: {} }] }),
+    createToolResultMessage({ toolCallId: 'big-1', toolName: 'get_channel_stats', result: bigContent })
+  ]
+  let dump = ''
+  const result = await compactIfNeeded({
+    messages,
+    thresholdBytes: 100,
+    retainedTail: 0,
+    maxDumpChars: 1000,
+    summarizeFn: async (text) => { dump = text; return '截断摘要' }
+  })
+  assert.equal(result.compacted, true)
+  assert.ok(dump.includes('已截断'), '超长 dump 应带截断标记')
+  assert.ok(dump.length < 1100, `截断后长度应接近上限，实际 ${dump.length}`)
+  assert.ok(dump.includes(headMark), '应保留头部内容')
+  assert.ok(dump.includes(tailMark), '应保留尾部内容（最新数据）')
 }
 
 console.log('✅ tests/pid-agent-safety-compact.mjs 全部通过')

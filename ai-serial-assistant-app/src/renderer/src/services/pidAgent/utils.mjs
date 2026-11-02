@@ -159,7 +159,7 @@ export function buildSimOverrides({
  * @param {object} options
  * @param {number} [options.windowSec=5] 窗口时长（秒，以首帧样本 t 为起点）
  * @param {(state: {target:number, t0:number, t1:number, samples:Array}) => void} options.onWindowComplete 窗口完成回调
- * @returns {{ trigger: () => void, push: (sample: object) => void, isActive: () => boolean }}
+ * @returns {{ trigger: () => void, push: (sample: object) => void, isActive: () => boolean, reset: () => void }}
  */
 export function createSerialStepCollector({ windowSec = 5, onWindowComplete = null } = {}) {
   let active = false
@@ -204,6 +204,15 @@ export function createSerialStepCollector({ windowSec = 5, onWindowComplete = nu
         finish(first?.target ?? sample.target)
       }
     },
-    isActive: () => active
+    isActive: () => active,
+    /**
+     * 丢弃当前窗口（会话停止时调用）：此后 push 的数据不再累积，
+     * 也不会再回调 onWindowComplete —— 避免"停止后窗口收满仍触发安全回退"。
+     */
+    reset() {
+      active = false
+      windowStart = null
+      samples = []
+    }
   }
 }

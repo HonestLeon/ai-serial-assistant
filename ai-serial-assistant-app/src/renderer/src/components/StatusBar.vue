@@ -1,8 +1,8 @@
 <script setup>
-import { ref } from 'vue'
 import { Sunny, Moon } from '@element-plus/icons-vue'
+import { useTheme } from '../composables/useTheme.js'
 
-const props = defineProps({
+defineProps({
   connected: Boolean,
   statusText: String,
   rx: Number,
@@ -12,24 +12,20 @@ const props = defineProps({
 
 const emit = defineEmits(['toggle-hex'])
 
-const isDark = ref(document.documentElement.classList.contains('dark'))
-
-function toggleTheme() {
-  isDark.value = !isDark.value
-  if (isDark.value) {
-    document.documentElement.classList.add('dark')
-  } else {
-    document.documentElement.classList.remove('dark')
-  }
-  localStorage.setItem('theme', isDark.value ? 'dark' : 'light')
-  window.dispatchEvent(new CustomEvent('theme-change', { detail: { dark: isDark.value } }))
-}
+// 主题状态与切换逻辑统一由 composable 提供（main.js 初始化、图表监听同名事件）
+const { isDark, toggleTheme } = useTheme()
 </script>
 
 <template>
   <footer class="status-bar">
     <div class="status-left">
-      <button class="hex-toggle" :class="{ active: showHex }" title="切换接收数据的 HEX 显示（仅影响查看，不影响发送编码）" @click="emit('toggle-hex')">HEX</button>
+      <button
+        class="hex-toggle"
+        :class="{ active: showHex }"
+        :aria-pressed="showHex ? 'true' : 'false'"
+        title="切换接收数据的 HEX 显示（仅影响查看，不影响发送编码）"
+        @click="emit('toggle-hex')"
+      >HEX</button>
       <div class="connection">
         <div class="status-dot" :style="{ background: connected ? 'var(--state-success)' : 'var(--color-text-tertiary)' }"></div>
         <span class="status-text">{{ statusText }}</span>
@@ -42,7 +38,12 @@ function toggleTheme() {
     </div>
 
     <div class="status-right">
-      <button class="theme-toggle" @click="toggleTheme" :title="isDark ? '切换到亮色模式' : '切换到暗色模式'">
+      <button
+        class="theme-toggle"
+        :aria-label="isDark ? '切换到亮色模式' : '切换到暗色模式'"
+        :title="isDark ? '切换到亮色模式' : '切换到暗色模式'"
+        @click="toggleTheme"
+      >
         <el-icon size="13"><Moon v-if="isDark" /><Sunny v-else /></el-icon>
       </button>
       <span class="mono">Rx: <strong>{{ rx.toLocaleString() }}</strong></span>

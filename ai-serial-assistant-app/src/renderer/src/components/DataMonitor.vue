@@ -1,24 +1,34 @@
 <script setup>
-import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue'
+import { ref, onUnmounted, computed, watch, nextTick } from 'vue'
 import { DataLine, Grid, VideoPause, VideoPlay, Delete, Refresh, Cpu } from '@element-plus/icons-vue'
 import { ElMessageBox } from 'element-plus'
+import { parseChannelValues } from '../services/parseChannelValues.mjs'
 
 const props = defineProps({
   connected: Boolean,
   showHex: Boolean,
-  activeView: { type: String, default: 'stream' },
-  showViewTabs: { type: Boolean, default: true },
+  /** 当前是否处于可见的「数据」页签：隐藏时只保底保留少量消息，不建表格行 */
+  active: { type: Boolean, default: true },
   recording: { type: Object, default: () => ({ active: false, data: [], startTime: 0 }) }
 })
-const emit = defineEmits(['data', 'send', 'start-recording', 'stop-recording', 'clear-recording'])
+const emit = defineEmits([
+  'send',
+  'start-recording',
+  'stop-recording',
+  'clear-recording',
+  'replay-batch',
+  'clear-data'
+])
 
 const input = ref('')
 const encoding = ref('utf8')
-const activeSubTab = ref(props.activeView === 'table' ? 'table' : 'stream')
+const activeSubTab = ref('stream')
 const messages = ref([])
 const tableRows = ref([])
-const MAX_TABLE_ROWS = 1000
-const MAX_MESSAGES = 5000
+const MAX_TABLE_ROWS = 300
+const MAX_MESSAGES = 1000
+// 隐藏页签时只保留少量消息：v-show 不会停止 DOM patch，上限必须压下来
+const INACTIVE_MESSAGES = 200
 
 // 消息自增 id，用于稳定的 v-for key
 let messageId = 0
@@ -56,7 +66,7 @@ let autoSendTimer = null
 
 // 回放
 const replaying = ref(false)
-let replayTimers = []
+let replayToken = 0
 
 // 模拟数据
 const simulating = ref(false)
@@ -95,6 +105,10 @@ function createControlSimulationLine() {
   return `CTRL: ${target.toFixed(3)} ${(simulationState.feedback + deterministicNoise).toFixed(3)} ${control.toFixed(3)} ${error.toFixed(3)}`
 }
 
+function textToHex(text) {
+  return Array.from(String(text)).map((c) => c.charCodeAt(0).toString(16).padStart(2, '0')).join('')
+}
+
 function toggleSimulate() {
   if (simulating.value) {
     simulating.value = false
@@ -109,14 +123,14 @@ function toggleSimulate() {
   resetSimulation()
   const doPush = () => {
     const text = createControlSimulationLine()
-    const now = Date.now()
     const payload = {
       raw: text,
-      hex: Array.from(text).map(c => c.charCodeAt(0).toString(16).padStart(2, '0')).join(''),
-      time: now,
+      hex: textToHex(text),
+      time: Date.now(),
       simulated: true
     }
-    onSerialData(payload)
+    appendBatch([payload])
+    emit('replay-batch', [payload])
   }
 
   doPush()
@@ -130,34 +144,46 @@ const placeholder = computed(() => encoding.value === 'hex' ? '输入十六进�
 
 async function send() {
   if (!input.value.trim() || !props.connected) return
+  const text = input.value
   try {
-    await window.electronAPI.serial.send(input.value, encoding.value)
-    const len = input.value.length
+    await window.electronAPI.serial.send(text, encoding.value)
+    const len = encoding.value === 'hex'
+      ? text.replace(/\s+/g, '').length / 2
+      : new TextEncoder().encode(text).length
     messages.value.unshift({
       id: ++messageId,
       type: 'send',
-      text: input.value,
+      raw: text,
+      hex: textToHex(text),
       time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
       ms: new Date().getMilliseconds().toString().padStart(3, '0')
     })
     emit('send', len)
     input.value = ''
   } catch (e) {
-    messages.value.unshift({ id: ++messageId, type: 'error', text: e, time: '--:--:--', ms: '000' })
+    messages.value.unshift({
+      id: ++messageId,
+      type: 'error',
+      raw: String(e?.message || e),
+      hex: '',
+      time: '--:--:--',
+      ms: '000'
+    })
   }
 }
 
 function startAutoSend() {
   if (!props.connected || !input.value.trim()) return
-  // 钳制间隔下限，避免过小的间隔导致的性能问题
-  if (autoSendInterval.value < 100) autoSendInterval.value = 100
+  // 钳制间隔下限；同时兜住 NaN/空值，避免 setInterval 以 1ms 频率刷串口
+  const interval = Number(autoSendInterval.value)
+  autoSendInterval.value = Number.isFinite(interval) && interval >= 100 ? interval : 100
   autoSendEnabled.value = true
   const doSend = async () => {
     if (!props.connected || !autoSendEnabled.value) return
     try {
       await window.electronAPI.serial.send(input.value, encoding.value)
-      emit('send', input.value.length)
-    } catch (e) {
+      emit('send', new TextEncoder().encode(input.value).length)
+    } catch {
       stopAutoSend()
     }
   }
@@ -174,13 +200,9 @@ function stopAutoSend() {
 }
 
 watch(() => props.connected, (v) => {
-  if (!v) stopAutoSend()
-})
-
-watch(() => props.activeView, (view) => {
-  if (view === 'stream' || view === 'table') {
-    activeSubTab.value = view
-    scrollToTop()
+  if (!v) {
+    stopAutoSend()
+    stopReplay()
   }
 })
 
@@ -197,12 +219,11 @@ async function clear() {
   }
   messages.value = []
   tableRows.value = []
-  // 待处理队列一并清空，避免清空后 100ms 内又补进一批旧数据
-  pendingSerialData.length = 0
+  emit('clear-data')
 }
 
 function formatTime(payload) {
-  const d = new Date(payload.time)
+  const d = new Date(payload.time || Date.now())
   return {
     t: d.toLocaleTimeString('zh-CN', { hour12: false }),
     ms: d.getMilliseconds().toString().padStart(3, '0')
@@ -210,50 +231,16 @@ function formatTime(payload) {
 }
 
 function parseToNumbers(raw) {
-  const text = String(raw)
-  // FireWater 格式：标签1,标签2,...: 值1,值2,...，只提取冒号后的数值
-  const colonIdx = text.indexOf(':')
-  const dataPart = colonIdx >= 0 ? text.slice(colonIdx + 1) : text
-  const nums = dataPart.match(/[-+]?\d*\.?\d+/g)
-  return nums ? nums.slice(0, 8).map(Number) : []
+  // FireWater 格式：标签1,标签2,...: 值1,值2,...；解析实现统一在 services/parseChannelValues
+  return parseChannelValues(raw, { numeric: true })
 }
 
-function onSerialData(payload) {
-  // 高频串口流批处理：设备遥测可达数百条/秒，逐条 IPC → 响应式更新 → DOM 重渲染
-  // 会把渲染进程打满（UI 卡死、消息流时间戳积压数分钟、按钮无响应）。
-  // 这里只入队（普通数组，零响应式成本），由 100ms 定时器批量消费：
-  // 同一 tick 内完成全部 unshift 与 emit，Vue 自动合并为一次组件重渲染。
-  // 主进程已按 25ms 时间窗聚合 IPC，payload 可能是单对象或数组（数组批）。
-  if (Array.isArray(payload)) {
-    for (const item of payload) pendingSerialData.push(item)
-  } else {
-    pendingSerialData.push(payload)
-  }
-  scheduleFlush()
-}
-
-/** 批量刷新间隔：消息流 10Hz 刷新肉眼依然流畅，且渲染开销恒定与数据速率无关 */
-const SERIAL_FLUSH_MS = 100
-const pendingSerialData = []
-let flushTimer = null
-
-function scheduleFlush() {
-  if (flushTimer != null) return
-  flushTimer = setTimeout(() => {
-    flushTimer = null
-    if (pendingSerialData.length) {
-      flushSerialData()
-      // flush 期间又有新数据到达：继续排队下一轮
-      if (pendingSerialData.length) scheduleFlush()
-    }
-  }, SERIAL_FLUSH_MS)
-}
-
-function flushSerialData() {
-  const batch = pendingSerialData.splice(0, pendingSerialData.length)
-  // 先在普通数组里构建整批新消息/新表格行，最后一次性 unshift：
-  // 逐条对响应式数组 unshift 是 O(n) 移动/条（n=5000 时高频批下开销显著），
-  // 一次 spread unshift 把移动成本合并为单次 O(n+m)。
+/**
+ * 批量追加接收帧（由 App 的 100ms 展示批调用）。
+ * 同一 tick 内一次性 unshift，Vue 合并为一次重渲染。
+ */
+function appendBatch(batch) {
+  if (!Array.isArray(batch) || !batch.length) return
   const newMessages = []
   const newRows = []
   for (const payload of batch) {
@@ -261,19 +248,16 @@ function flushSerialData() {
     newMessages.push({
       id: ++messageId,
       type: 'receive',
-      text: props.showHex ? payload.hex : payload.raw,
+      raw: String(payload.raw ?? ''),
+      hex: payload.hex || textToHex(payload.raw ?? ''),
       time: t,
       ms
     })
-
-    // 数据表（稳定自增 id 作 v-for key：若用数组下标作 key，头部插入导致
-    // 所有行索引偏移，Vue 会全量重 patch 1000 行 × 9 单元格，低配机直接卡死）
-    const nums = parseToNumbers(payload.raw)
-    if (nums.length > 0) {
-      newRows.push({ id: ++rowId, time: t, ms, values: nums })
+    // 隐藏时跳过表格行构建（数据分析页用不到，且能显著降低内存与 patch 量）
+    if (props.active) {
+      const nums = parseToNumbers(payload.raw)
+      if (nums.length > 0) newRows.push({ id: ++rowId, time: t, ms, values: nums })
     }
-
-    emit('data', payload)
   }
   if (newMessages.length) messages.value.unshift(...newMessages)
   if (newRows.length) {
@@ -282,11 +266,9 @@ function flushSerialData() {
       tableRows.value.splice(tableRows.value.length - MAX_TABLE_ROWS)
     }
   }
-  // 批量截断一次（而非逐条），同 tick 内全部响应式修改合并为一次重渲染
-  if (messages.value.length > MAX_MESSAGES) {
-    messages.value.length = MAX_MESSAGES
-  }
-  if (autoScroll.value) scrollToTop()
+  const messageCap = props.active ? MAX_MESSAGES : INACTIVE_MESSAGES
+  if (messages.value.length > messageCap) messages.value.length = messageCap
+  if (props.active && autoScroll.value) scrollToTop()
 }
 
 // 录制控制
@@ -311,6 +293,10 @@ async function clearRecording() {
   emit('clear-recording')
 }
 
+/**
+ * 回放：单一调度器按 recTime 差值逐帧播放（不再为每帧创建一个 setTimeout）。
+ * 回放帧同时上抛给波形与智能体，并保持消息列表跟随滚动。
+ */
 async function replayRecording() {
   if (props.recording.data.length === 0 || replaying.value) return
   // 回放会中断当前串口通信，必须在动作发生前向用户确认
@@ -330,7 +316,8 @@ async function replayRecording() {
       messages.value.unshift({
         id: ++messageId,
         type: 'system',
-        text: '开始回放前已自动关闭串口，避免实时数据与回放数据混合',
+        raw: '开始回放前已自动关闭串口，避免实时数据与回放数据混合',
+        hex: '',
         time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
         ms: new Date().getMilliseconds().toString().padStart(3, '0')
       })
@@ -338,53 +325,61 @@ async function replayRecording() {
       messages.value.unshift({
         id: ++messageId,
         type: 'error',
-        text: `关闭串口失败，已取消回放：${error.message || error}`,
+        raw: `关闭串口失败，已取消回放：${error?.message || error}`,
+        hex: '',
         time: '--:--:--',
         ms: '000'
       })
       return
     }
   }
+
+  const token = ++replayToken
   replaying.value = true
-  replayTimers = []
   const data = [...props.recording.data]
   const baseDelay = data[0]?.recTime || 0
+  let previous = 0
 
-  data.forEach((item) => {
-    const delay = item.recTime - baseDelay
-    const timer = setTimeout(() => {
-      const { t, ms } = formatTime(item)
-      messages.value.unshift({
-        id: ++messageId,
-        type: 'receive',
-        text: `[回放] ${props.showHex ? item.hex : item.raw}`,
-        time: t,
-        ms
-      })
+  for (const item of data) {
+    if (token !== replayToken) break
+    const target = Math.max(0, item.recTime - baseDelay)
+    const wait = target - previous
+    previous = target
+    if (wait > 0) {
+      await new Promise((resolve) => setTimeout(resolve, wait))
+      if (token !== replayToken) break
+    }
+
+    const { t, ms } = formatTime(item)
+    messages.value.unshift({
+      id: ++messageId,
+      type: 'receive',
+      raw: `[回放] ${item.raw ?? ''}`,
+      hex: item.hex || textToHex(item.raw ?? ''),
+      time: t,
+      ms
+    })
+    if (props.active) {
       const nums = parseToNumbers(item.raw)
       if (nums.length > 0) {
-        // 回放行同样使用自增 id 作稳定 key（v-for 依赖 row.id）
         tableRows.value.unshift({ id: ++rowId, time: t, ms, values: nums })
-        if (tableRows.value.length > MAX_TABLE_ROWS) tableRows.value.pop()
+        if (tableRows.value.length > MAX_TABLE_ROWS) {
+          tableRows.value.splice(tableRows.value.length - MAX_TABLE_ROWS)
+        }
       }
-    }, delay)
-    replayTimers.push(timer)
-  })
+    }
+    if (messages.value.length > MAX_MESSAGES) messages.value.length = MAX_MESSAGES
+    if (autoScroll.value) scrollToTop()
+    emit('replay-batch', [{ ...item, time: item.time || Date.now() }])
+  }
 
-  const totalTime = (data[data.length - 1]?.recTime || 0) - baseDelay + 100
-  const endTimer = setTimeout(() => { replaying.value = false }, totalTime)
-  replayTimers.push(endTimer)
+  if (token === replayToken) replaying.value = false
 }
 
 function stopReplay() {
+  replayToken += 1
   replaying.value = false
-  replayTimers.forEach(t => clearTimeout(t))
-  replayTimers = []
 }
-
-onMounted(() => {
-  window.electronAPI?.serial?.onData?.(onSerialData)
-})
 
 onUnmounted(() => {
   stopAutoSend()
@@ -393,23 +388,20 @@ onUnmounted(() => {
     clearInterval(simulateTimer)
     simulateTimer = null
   }
-  if (flushTimer) {
-    clearTimeout(flushTimer)
-    flushTimer = null
-  }
-  pendingSerialData.length = 0
 })
+
+defineExpose({ appendBatch })
 </script>
 
 <template>
-  <div class="data-monitor">
+  <div v-if="active" class="data-monitor">
     <!-- Sub tabs -->
     <div class="sub-tabs">
-      <button v-if="showViewTabs" class="sub-tab" :class="{ active: activeSubTab === 'stream' }" @click="activeSubTab = 'stream'">
+      <button class="sub-tab" :class="{ active: activeSubTab === 'stream' }" @click="activeSubTab = 'stream'">
         <el-icon size="13"><DataLine /></el-icon>
         <span>数据流</span>
       </button>
-      <button v-if="showViewTabs" class="sub-tab" :class="{ active: activeSubTab === 'table' }" @click="activeSubTab = 'table'">
+      <button class="sub-tab" :class="{ active: activeSubTab === 'table' }" @click="activeSubTab = 'table'">
         <el-icon size="13"><Grid /></el-icon>
         <span>数据表</span>
       </button>
@@ -463,7 +455,7 @@ onUnmounted(() => {
         >
           <span class="timestamp">[{{ msg.time }}.{{ msg.ms }}]</span>
           <span class="direction" :class="msg.type">{{ msg.type === 'send' ? 'Tx:' : msg.type === 'receive' ? 'Rx:' : msg.type === 'system' ? 'Sy:' : 'Er:' }}</span>
-          <span class="payload">{{ msg.text }}</span>
+          <span class="payload">{{ showHex ? (msg.hex || msg.raw) : msg.raw }}</span>
         </div>
         <div v-if="messages.length === 0" class="empty">等待串口数据...</div>
       </div>
@@ -479,8 +471,8 @@ onUnmounted(() => {
       <table class="data-table">
         <thead>
           <tr>
-            <th>时间戳</th>
-            <th v-for="i in 8" :key="i">I{{ i - 1 }}</th>
+            <th scope="col">时间戳</th>
+            <th v-for="i in 8" :key="i" scope="col">I{{ i - 1 }}</th>
           </tr>
         </thead>
         <tbody>
@@ -509,7 +501,13 @@ onUnmounted(() => {
           <el-option label="文本" value="utf8" />
           <el-option label="HEX" value="hex" />
         </el-select>
-        <button class="btn-secondary" :disabled="!connected" @click="encoding = encoding === 'hex' ? 'utf8' : 'hex'">HEX</button>
+        <button
+          class="btn-secondary"
+          :class="{ active: encoding === 'hex' }"
+          :disabled="!connected"
+          title="切换发送编码（仅影响发送，不影响接收显示）"
+          @click="encoding = encoding === 'hex' ? 'utf8' : 'hex'"
+        >HEX</button>
         <button class="btn-primary" :disabled="!connected || autoSendEnabled" @click="send">发送</button>
         <button class="btn-secondary" @click="clear">清空</button>
         <div class="auto-send-group">
@@ -534,6 +532,7 @@ onUnmounted(() => {
       </div>
     </div>
   </div>
+  <div v-else class="data-monitor data-monitor-idle" aria-hidden="true"></div>
 </template>
 
 <style scoped>
@@ -548,7 +547,7 @@ onUnmounted(() => {
   display: flex;
   flex-wrap: wrap; /* 窄窗口下录制/回放控制组换行而非溢出裁切 */
   align-items: center;
-  min-height: 32px; /* 换行发生时高度自适应（原固定 height: 32px） */
+  min-height: 32px; /* 换行发生时高度自适应 */
   border-bottom: 1px solid var(--color-border-default);
   padding: 0 var(--space-4);
   flex-shrink: 0;
@@ -677,7 +676,7 @@ onUnmounted(() => {
 }
 
 /* 隔行底色用 CSS nth-child：若绑定 idx 计算的 alt class，头部插入会让
-   全部 5000 行 class 重算重写，高频流下是显著 DOM 开销 */
+   全部行 class 重算重写，高频流下是显著 DOM 开销 */
 .message-row:nth-child(even) {
   background: var(--message-alt-bg);
 }
@@ -701,10 +700,6 @@ onUnmounted(() => {
 .payload {
   color: var(--color-text-primary);
   word-break: break-all;
-}
-
-.payload.send {
-  color: var(--color-text-secondary);
 }
 
 .table-view {
@@ -775,7 +770,7 @@ onUnmounted(() => {
 
 .send-row .el-input {
   flex: 1;
-  min-width: 160px; /* 防止固定宽度控件（约 380-400px）把输入框压至不可用 */
+  min-width: 160px; /* 防止固定宽度控件把输入框压至不可用 */
 }
 
 .auto-send-group {
@@ -835,6 +830,12 @@ onUnmounted(() => {
   font-size: var(--text-sm);
   cursor: pointer;
   white-space: nowrap;
+}
+
+.btn-secondary.active {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background: var(--color-primary-muted);
 }
 
 .btn-secondary:disabled {

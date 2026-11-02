@@ -29,7 +29,9 @@ import { createPidAgentTools } from '../services/pidAgent/tools/index.mjs'
 import { runAgentLoop, createPendingMessageQueue } from '../services/pidAgent/agentLoop.mjs'
 import { createSafetyGuard } from '../services/pidAgent/safety.mjs'
 import { measureDataBytes, compactIfNeeded } from '../services/pidAgent/compaction.mjs'
+import { createRendererFetch } from '../services/llmTransport.mjs'
 import { scoreMetrics } from '../services/pidSafety.mjs'
+import { parseChannelValues } from '../services/parseChannelValues.mjs'
 import { PID_STRATEGIES, simulatePidStrategy } from '../services/pidSimulation.mjs'
 import {
   readCanonicalPid,
@@ -97,6 +99,9 @@ function buildModelSpec(strategyId, testMode) {
  * @returns 编排层接口（配置状态 / 运行状态 / 方法），见文件头与下方 return
  */
 export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSerialSend } = {}) {
+  // LLM 请求统一走主进程代理（无 electronAPI 时退回全局 fetch，如单测/浏览器预览）
+  const llmFetch = createRendererFetch()
+
   // ---------------- 配置状态（面板表单直接绑定） ----------------
 
   /** 仿真策略 id（PID_STRATEGIES 键） */
@@ -169,6 +174,8 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
   const turnCount = ref(0)
   /** 数据上下文占用量（KB，数据查询类 toolResult 统计） */
   const ctxBytes = ref(0)
+  /** 本会话累计 token 用量（agent_end 回填；服务端未返回 usage 时保持 0） */
+  const usage = ref({ prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 })
   /** 会话终止原因：'' | 'stop' | 'max-turns' | 'aborted' | 'user-stop' | 'error' */
   const stopReason = ref('')
 
@@ -185,34 +192,20 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
   /** 参数变化高亮时间戳（key → 最近一次变化的 Date.now()，面板据此做高亮动画） */
   const paramHighlight = reactive({})
 
-  // ---------------- 编排层内部状态（会话级闭包变量，startAgent 时重置） ----------------
+  // ---------------- 会话级状态 ----------------
 
-  /** 通道数据缓冲（串口采样流与仿真阶跃样本统一写入） */
-  let dataBuffer = createDataBuffer()
-  /** 会话时钟（秒，仿真模式：每次阶跃仿真后推进；串口数据时间轴独立换算） */
-  let sessionClock = 0
-  /** 串口模式数据时间轴起点（首帧样本时间戳，null 表示尚未收到数据） */
-  let serialStartTime = null
-  /** 中途纠偏队列（安全护栏消息也走这里） */
-  let steerQueue = createPendingMessageQueue()
-  /** 追问队列（内层循环结束后由外层循环 drain） */
-  let followUpQueue = createPendingMessageQueue()
-  /** 中止控制器（stopAgent 调用 abort） */
-  let abortController = null
-  /** 安全护栏实例（startAgent 时重建，bestStable 随之重置） */
-  let safetyGuard = null
-  /** 串口阶跃窗口采集器（startAgent 时重建）：set_target(serial) 触发、数据流入收样、窗口满自动安全检测 */
-  let serialCollector = null
+  /**
+   * 当前活跃会话上下文。
+   * 所有会话级可变状态（缓冲/队列/护栏/窗口采集器/时钟/中止器/参数快照）都挂在 ctx 上：
+   * 旧会话即使仍在运行，也只能读写自己那份对象，不会污染新会话
+   * （此前这些状态是 composable 级 `let`，重启后旧会话的 controller 会读到新会话的缓冲/队列）。
+   */
+  let activeCtx = null
+  /** 会话代际号（自增）：识别并丢弃旧会话的迟到回调 */
+  let sessionSeq = 0
   /** UI 消息自增序号（与 Date.now 组合保证 id 唯一） */
   let uiMessageSeq = 0
 
-  // ------ 达标自动收敛状态（会话级，startAgent 重置） ------
-  /** 是否已注入过"达标收敛"提示（一次会话只提示一次） */
-  let acceptanceNotified = false
-  /** 达标后"持续无改善"的轮数（≥2 则主循环自动正常结束） */
-  let stagnantTurns = 0
-  /** 达标时的 scoreMetrics 基线（后续轮次对照是否确有改善） */
-  let lastScore = null
   /** 达标自动收敛的最小调参轮次：前 MIN_ACCEPTANCE_TURN 轮只观察/整定，不判定达标、不自动结束
    *  （防止 set_target 首轮即达标导致 agent 过早总结，剥夺完整调参过程） */
   const MIN_ACCEPTANCE_TURN = 5
@@ -220,6 +213,37 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
   const nextUiMessageId = () => {
     uiMessageSeq += 1
     return `ui-${uiMessageSeq}-${Date.now()}`
+  }
+
+  /**
+   * 创建一次调参会话的上下文（每次 startAgent 新建；旧 ctx 通过 alive() 自动失效）。
+   * @param {{acceptance:{overshootLimit:number, oscillationLimit:number}, mode:'simulation'|'serial'}} options
+   */
+  function createSessionContext({ acceptance, mode }) {
+    const ctx = {
+      seq: (sessionSeq += 1),
+      mode,
+      dataBuffer: createDataBuffer({ acceptance }),
+      steerQueue: createPendingMessageQueue(),
+      followUpQueue: createPendingMessageQueue(),
+      abortController: new AbortController(),
+      safetyGuard: null,
+      serialCollector: null,
+      sessionClock: 0,
+      serialStartTime: null,
+      // 参数/前馈/目标的会话副本（currentPid / currentFf / currentTarget 只做 UI 镜像）
+      pid: { ...currentPid },
+      feedforward: { ...currentFf },
+      target: Number(currentTarget.value) || 0,
+      // 达标自动收敛状态
+      acceptanceNotified: false,
+      stagnantTurns: 0,
+      lastScore: null,
+      /** 压缩失败提示是否已推送（每会话一次，避免每回合刷屏） */
+      compactionErrorNotified: false
+    }
+    ctx.alive = () => activeCtx === ctx
+    return ctx
   }
 
   /** 按 pidConfig 定义表读取某键的 init 值（缺省回退 fallback） */
@@ -308,11 +332,14 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
   // ---------------- 智能体事件 → UI 消息流 / 运行状态同步 ----------------
 
   /**
-   * 事件回调（同时传给 runAgentLoop / compactIfNeeded / safetyGuard）。
+   * 创建事件回调（绑定到某次会话上下文，同时传给 runAgentLoop / compactIfNeeded / safetyGuard）。
+   * 旧会话（ctx 已失效）的迟到事件直接丢弃，避免污染新会话的消息流与计数。
    * 注意：safety_triggered 不在这里推 UI 消息（onSamplesCollected 统一推送，避免重复）。
+   * @param {object} ctx createSessionContext() 产物
+   * @returns {(event: object) => Promise<void>}
    */
-  const emit = async (event) => {
-    if (!event || typeof event !== 'object') return
+  const createEmit = (ctx) => async (event) => {
+    if (!ctx?.alive() || !event || typeof event !== 'object') return
     switch (event.type) {
       case 'message_end': {
         // assistant 消息完成：有可见文本才推（纯工具调用轮不推消息）
@@ -389,8 +416,31 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
         })
         break
       }
+      case 'compaction_error': {
+        // 压缩失败已由 agentLoop 降级为"本轮不压缩"，这里只做一次可见提示（不让会话中断）
+        if (ctx.compactionErrorNotified) break
+        ctx.compactionErrorNotified = true
+        const text = `上下文压缩失败，本轮未压缩（继续调参）：${event.error || '未知原因'}`
+        messages.value.push({
+          id: nextUiMessageId(),
+          kind: 'compact',
+          text,
+          toolName: null,
+          toolStatus: null,
+          durationMs: null,
+          shownLen: text.length
+        })
+        break
+      }
       case 'agent_end': {
         stopReason.value = String(event.stopReason ?? '')
+        if (event.usage && typeof event.usage === 'object') {
+          usage.value = {
+            prompt_tokens: Number(event.usage.prompt_tokens) || 0,
+            completion_tokens: Number(event.usage.completion_tokens) || 0,
+            total_tokens: Number(event.usage.total_tokens) || 0
+          }
+        }
         // 失败要进聊天流：此前仅更新顶部状态行，LLM 失败时对话区毫无反馈，
         // 用户看到的就是"发完任务卡住不动"。这里补一条醒目的错误消息。
         if (event.stopReason === 'error') {
@@ -414,32 +464,36 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
 
   // ---------------- 上下文压缩（独立摘要 LLM 请求） ----------------
 
-  /** 摘要函数：把历史数据块 dump 文本压缩为紧凑摘要（失败抛错，由 compactIfNeeded 捕获） */
-  const summarizeFn = async (dump) => {
+  /** 摘要函数：把历史数据块 dump 文本压缩为紧凑摘要（失败抛错，由 compactIfNeeded 捕获）。
+   *  绑定会话 ctx：用户点停止 / 会话切换时，摘要请求随主循环一起被中止。 */
+  const createSummarizeFn = (ctx) => async (dump) => {
     const result = await callLlm({
       aiConfig: getAiConfig?.() ?? null,
       systemPrompt:
         '你是控制数据压缩助手。把输入的历史调参数据总结为紧凑摘要，' +
         '保留：各时间段关键指标（超调/稳态误差/RMSE）、参数变更序列、异常特征。直接输出摘要正文。',
       messages: [{ role: 'user', content: dump }],
-      tools: []
+      tools: [],
+      signal: ctx.abortController.signal,
+      fetchImpl: llmFetch
     })
     if (!result.ok) throw new Error(result.error)
     return result.content
   }
 
   /** 每回合调 LLM 前的压缩钩子：更新 ctxBytes，超阈值时压缩历史数据块 */
-  const onBeforeLlm = async (msgs) => {
+  const createOnBeforeLlm = (ctx, emit) => async (msgs) => {
+    if (!ctx.alive()) return msgs
     ctxBytes.value = measureDataBytes(msgs) / 1024
     if (ctxBytes.value < COMPACT_THRESHOLD_BYTES / 1024) return msgs
     const result = await compactIfNeeded({
       messages: msgs,
       thresholdBytes: COMPACT_THRESHOLD_BYTES,
-      summarizeFn,
+      summarizeFn: createSummarizeFn(ctx),
       retainedTail: 3,
       emit
     })
-    ctxBytes.value = result.afterBytes / 1024
+    if (ctx.alive()) ctxBytes.value = result.afterBytes / 1024
     return result.messages
   }
 
@@ -546,22 +600,13 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
       throw new Error(`${check.reason}：${check.missing.join(',')}`)
     }
 
-    // ③ 初始化会话状态（缓冲 / 时钟 / 消息流 / 计数全部重置）
-    // 缓冲携带验收线（limits 与提示词/护栏同源，避免 agent 看到"两条线"）
-    dataBuffer = createDataBuffer({
-      acceptance: { overshootLimit: acceptance.overshootLimit, oscillationLimit: acceptance.oscillationLimit }
-    })
-    sessionClock = 0
-    serialStartTime = null
+    // ③ 重置 UI 侧会话状态（缓冲/队列/时钟等会话对象在 ⑤ 随 ctx 新建）
     messages.value = []
     turnCount.value = 0
     ctxBytes.value = 0
+    usage.value = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
     stopReason.value = ''
     Object.keys(paramHighlight).forEach((key) => delete paramHighlight[key])
-    // 达标收敛状态重置（新会话从零开始）
-    acceptanceNotified = false
-    stagnantTurns = 0
-    lastScore = null
 
     // 内部用户配置（types.mjs 的 UserConfig 形态：工具集与安全护栏使用）
     const internalUserConfig = {
@@ -579,48 +624,61 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
     // ④ 当前参数初始化
     resetRuntimeParams()
 
-    // ⑤ 队列与中止控制器
-    steerQueue = createPendingMessageQueue()
-    followUpQueue = createPendingMessageQueue()
-    abortController = new AbortController()
+    // ⑤ 新建会话上下文（缓冲/队列/中止器/时钟/参数快照全部随 ctx 隔离），
+    //    并切换 activeCtx：旧会话自此 alive()=false，迟到回调一律丢弃
+    const ctx = createSessionContext({
+      acceptance: { overshootLimit: acceptance.overshootLimit, oscillationLimit: acceptance.oscillationLimit },
+      mode: testMode.value
+    })
+    activeCtx = ctx
+    const emit = createEmit(ctx)
+    const onBeforeLlm = createOnBeforeLlm(ctx, emit)
 
     // ⑥ controller 实现（createPidAgentTools 的运行时环境契约）
 
     /** 当前参数快照（规范形态：单环三键 / 串级六键，值均为数字；串级判定动态读取当前策略） */
-    const getPidSnapshot = () => readCanonicalPid({ ...currentPid }, effectiveCascade.value)
+    const getPidSnapshot = () => readCanonicalPid({ ...ctx.pid }, effectiveCascade.value)
 
-    /** 写回参数（合并形态 + 变化高亮；applyCanonicalPid 沿用旧实现，写回字符串值） */
+    /**
+     * 写回参数（写入会话副本 ctx.pid，再镜像到 UI 的 currentPid 并打变化高亮）。
+     * 旧会话（ctx 已失效）的写入直接丢弃——否则会改写新会话的参数。
+     */
     const setPidHandler = (newPid) => {
-      if (!newPid || typeof newPid !== 'object') return
-      const before = { ...currentPid }
-      applyCanonicalPid(currentPid, newPid, effectiveCascade.value)
-      // 参数变化高亮：与快照比对，变化的键打时间戳
-      Object.keys(currentPid).forEach((key) => {
-        if (Number(currentPid[key]) !== Number(before[key])) {
+      if (!ctx.alive() || !newPid || typeof newPid !== 'object') return
+      const before = { ...ctx.pid }
+      applyCanonicalPid(ctx.pid, newPid, effectiveCascade.value)
+      Object.keys(ctx.pid).forEach((key) => {
+        currentPid[key] = ctx.pid[key]
+        if (Number(ctx.pid[key]) !== Number(before[key])) {
           paramHighlight[key] = Date.now()
         }
       })
     }
 
-    /** 安全护栏（bestStable 随重建重置；emit 走统一事件处理，safety_triggered 不重复推消息）。
+    /** 安全护栏（bestStable 随会话新建重置；emit 走统一事件处理，safety_triggered 不重复推消息）。
      *  mode 双策略：仿真全量回退；串口仅硬越限回退（劣化误触发实测会毁掉整局调参） */
-    safetyGuard = createSafetyGuard({
+    ctx.safetyGuard = createSafetyGuard({
       userConfig: internalUserConfig,
       getPid: getPidSnapshot,
       setPid: setPidHandler,
       emit,
-      mode: testMode.value
+      mode: ctx.mode
     })
 
     /**
      * 样本采集完成后的统一安全检测入口（仿真模式 set_target 与串口窗口完成共用）：
      * 触发安全兜底时把护栏消息推入 steer 队列并显示到消息流（emit 事件里不重复推）。
+     *
+     * ⚠ 必须先判定"会话仍在进行"：串口阶跃窗口是异步的，用户点停止后窗口仍可能收满，
+     * 若继续走护栏就会执行 setPid + 下发 PID 指令，把回退参数写进真实设备。
      */
     const notifySamplesCollected = (samples) => {
-      if (!safetyGuard) return { triggered: false, bestUpdated: false, metrics: null }
-      const result = safetyGuard.onSamplesCollected(samples)
+      if (!ctx.alive() || !running.value || !ctx.safetyGuard) {
+        return { triggered: false, bestUpdated: false, metrics: null }
+      }
+      const result = ctx.safetyGuard.onSamplesCollected(samples)
       if (result && result.triggered) {
-        steerQueue.push(createUserMessage(result.message, 'safety'))
+        ctx.steerQueue.push(createUserMessage(result.message, 'safety'))
         messages.value.push({
           id: nextUiMessageId(),
           kind: 'safety',
@@ -632,7 +690,7 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
         })
         // 串口模式：回退参数必须同步下发设备——护栏 setPid 只写上位机内存，
         // 若不下发，设备仍跑越限参数，上位机/设备参数分裂（回退形同虚设）。
-        if (result.rollbackPid && testMode.value === 'serial') {
+        if (result.rollbackPid && ctx.mode === 'serial') {
           const cmd = buildPidCommand(result.rollbackPid, {
             isCascade: effectiveCascade.value
           })
@@ -646,26 +704,32 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
 
     // 串口阶跃窗口采集器：set_target(serial) 经 controller.onStepTriggered 触发开启，
     // onSerialData 流入期间按窗口收样，窗口满后自动对窗口样本做安全检测（即通知 LLM 与 UI）
-    serialCollector = createSerialStepCollector({
+    ctx.serialCollector = createSerialStepCollector({
       windowSec: SERIAL_STEP_WINDOW_SEC,
       onWindowComplete: (state) => notifySamplesCollected(state.samples)
     })
 
     const controller = {
-      isStopped: () => abortController?.signal.aborted === true,
+      isStopped: () => ctx.abortController.signal.aborted === true,
       getPid: getPidSnapshot,
       setPid: setPidHandler,
-      getFeedforward: () => ({ ...currentFf }),
+      getFeedforward: () => ({ ...ctx.feedforward }),
       setFeedforward: (newFf) => {
+        if (!ctx.alive()) return
         Object.entries(newFf ?? {}).forEach(([id, value]) => {
-          if (Number.isFinite(Number(value))) currentFf[id] = Number(value)
+          if (Number.isFinite(Number(value))) {
+            ctx.feedforward[id] = Number(value)
+            currentFf[id] = ctx.feedforward[id]
+          }
         })
       },
-      getTarget: () => currentTarget.value,
+      getTarget: () => ctx.target,
       setTarget: (value) => {
-        currentTarget.value = Number(value)
+        if (!ctx.alive()) return
+        ctx.target = Number(value)
+        currentTarget.value = ctx.target
       },
-      getMode: () => testMode.value,
+      getMode: () => ctx.mode,
       // 目标物理范围：仿真按策略 targetRange（倒立摆小角度线性区），串口回退用户安全范围
       getTargetRange: () => {
         if (testMode.value !== 'simulation') {
@@ -679,8 +743,8 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
         const overrides = buildSimOverrides({
           strategyId: strategyId.value,
           pid: getPidSnapshot(),
-          feedforward: { ...currentFf },
-          target: currentTarget.value,
+          feedforward: { ...ctx.feedforward },
+          target: ctx.target,
           baseConfig: {}
         })
         const result = simulatePidStrategy(strategyId.value, overrides)
@@ -692,13 +756,14 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
         return result.samples
       },
       sendSerialCommand: async (cmd) => {
-        await onSerialSend?.(cmd)
+        // 透传下发结果：面板侧返回 serial.send 的 promise，失败时抛出供工具层转成 ok:false
+        return await onSerialSend?.(cmd)
       },
-      getSessionClock: () => sessionClock,
+      getSessionClock: () => ctx.sessionClock,
       advanceSessionClock: (seconds) => {
-        sessionClock += Number(seconds) || 0
+        ctx.sessionClock += Number(seconds) || 0
       },
-      getDataBuffer: () => dataBuffer,
+      getDataBuffer: () => ctx.dataBuffer,
       getUserConfig: () => internalUserConfig,
       // 当前已完成调参轮次（工具层/编排层判定"达标"的门槛依据）
       getTurnCount: () => turnCount.value,
@@ -708,7 +773,7 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
       onSamplesCollected: notifySamplesCollected,
       // 串口阶跃已下发：开启/重置窗口采集（真实数据流入 onSerialData 后在此窗口内收样）
       onStepTriggered: () => {
-        serialCollector?.trigger()
+        ctx.serialCollector?.trigger()
       },
       /**
        * 达标收敛（get_channel_stats 返回 acceptanceCheck.passed=true 时由工具层调用）：
@@ -717,22 +782,22 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
        */
       onAcceptancePassed: (statsResult) => {
         const sm = statsResult?.stepMetrics
-        if (!sm || !running.value) return
+        if (!sm || !ctx.alive() || !running.value) return
         // 前 MIN_ACCEPTANCE_TURN 轮为观察/整定期：首轮即达标不视为"已完成任务"，
         // 不注入收敛提示、不启动停滞计数（防止 set_target 首轮达标就过早总结）
         if (turnCount.value < MIN_ACCEPTANCE_TURN) return
         const score = Number.isFinite(Number(sm.rmse)) ? scoreMetrics(sm) : null
-        if (!acceptanceNotified) {
-          acceptanceNotified = true
-          lastScore = score
-          stagnantTurns = 0
+        if (!ctx.acceptanceNotified) {
+          ctx.acceptanceNotified = true
+          ctx.lastScore = score
+          ctx.stagnantTurns = 0
           const limits = sm.limits ?? {}
           const text =
             `✅ 当前参数已满足全部验收线：超调 ${sm.overshoot}% ≤ ${limits.overshoot}%、` +
             `振荡 ${sm.oscillation} ≤ ${limits.oscillation}、已收敛（converged）、` +
             `稳态误差 |${sm.steadyError}| ≤ 5% 阶跃幅值。` +
             `调参目标已达成：请输出最终调参结论（含最终参数与指标表）并结束本轮调参；除非用户明确要求继续优化。`
-          steerQueue.push(createUserMessage(text, 'steer'))
+          ctx.steerQueue.push(createUserMessage(text, 'steer'))
           messages.value.push({
             id: nextUiMessageId(),
             kind: 'steerUser',
@@ -745,11 +810,11 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
           return
         }
         // 已提示过：仅更新停滞计数（确有改善则刷新基线）
-        if (Number.isFinite(score) && Number.isFinite(lastScore) && score < lastScore - 0.05) {
-          lastScore = score
-          stagnantTurns = 0
+        if (Number.isFinite(score) && Number.isFinite(ctx.lastScore) && score < ctx.lastScore - 0.05) {
+          ctx.lastScore = score
+          ctx.stagnantTurns = 0
         } else {
-          stagnantTurns += 1
+          ctx.stagnantTurns += 1
         }
       }
     }
@@ -781,27 +846,29 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
             systemPrompt: prompt,
             messages: llmMessages,
             tools: llmTools,
-            signal
+            signal,
+            fetchImpl: llmFetch
           }),
         systemPrompt,
         tools,
         initialMessages,
-        steerQueue,
-        followUpQueue,
-        signal: abortController.signal,
+        steerQueue: ctx.steerQueue,
+        followUpQueue: ctx.followUpQueue,
+        signal: ctx.abortController.signal,
         emit,
         maxTurns: 50,
         onBeforeLlm,
         // 达标自动收敛：已提示达标且 agent 仍持续微调无改善（连续 ≥2 轮）→ 以 'stop' 正常结束，
         // 不再依赖 LLM 自觉 / maxTurns 兜底（根治"达标后拉到 50 轮"）
         shouldStopAfterTurn: async () => {
-          if (!acceptanceNotified) return false
-          if (stagnantTurns >= 2) return { stop: true, reason: 'stop' }
+          if (!ctx.acceptanceNotified) return false
+          if (ctx.stagnantTurns >= 2) return { stop: true, reason: 'stop' }
           return false
         }
       })
     } finally {
-      running.value = false
+      // 只有当前活跃会话才能复位运行态：旧会话结束时不得改动新会话
+      if (ctx.alive()) running.value = false
     }
   }
 
@@ -809,9 +876,10 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
 
   /** 中途纠偏：运行中插入 steer 消息（主循环每个内层回合开始时 drain） */
   function steer(text) {
+    const ctx = activeCtx
     const value = String(text ?? '').trim()
-    if (!value || !running.value || !steerQueue) return
-    steerQueue.push(createUserMessage(value, 'steer'))
+    if (!value || !running.value || !ctx) return
+    ctx.steerQueue.push(createUserMessage(value, 'steer'))
     messages.value.push({
       id: nextUiMessageId(),
       kind: 'steerUser',
@@ -825,9 +893,10 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
 
   /** 追问：内层循环结束后由外层循环 drain 注入（视为新任务重启循环） */
   function followUp(text) {
+    const ctx = activeCtx
     const value = String(text ?? '').trim()
-    if (!value || !running.value || !followUpQueue) return
-    followUpQueue.push(createUserMessage(value, 'followUp'))
+    if (!value || !running.value || !ctx) return
+    ctx.followUpQueue.push(createUserMessage(value, 'followUp'))
     messages.value.push({
       id: nextUiMessageId(),
       kind: 'user',
@@ -851,32 +920,53 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
     return startAgent(value)
   }
 
-  /** 停止智能体（中止信号 → 主循环以 'aborted' 终止） */
+  /**
+   * 停止智能体（中止信号 → 主循环以 'aborted' 终止）。
+   * 同时复位串口窗口采集器与安全护栏：否则停止后窗口仍会收满并触发回退，
+   * 把回退参数重新下发到真实设备（用户以为已经停手了）。
+   */
   function stopAgent() {
-    abortController?.abort()
+    const ctx = activeCtx
+    if (!ctx) return
+    ctx.abortController.abort()
+    ctx.serialCollector?.reset?.()
+    ctx.safetyGuard?.reset?.()
   }
 
   /**
-   * 串口数据流入（面板 watch latestPayload 后调用）：
+   * 串口数据流入（App 按批下发后逐帧调用）：
    * FireWater 格式「标签:值」——冒号后正则提数，取前三个作为 [target, feedback, output]，
    * t 按首帧样本时间换算为相对秒，写入通道数据缓冲（供 get_channel_* 工具查询）。
+   *
+   * 只在「串口模式的进行中会话」采集：智能体未运行时不解析、不写缓冲——
+   * 既省掉空闲时的正则/写入开销，也保证停止后不会再积累数据去触发安全回退。
    */
   function onSerialData(payload) {
-    if (!payload || testMode.value !== 'serial' || !dataBuffer) return
+    const ctx = activeCtx
+    if (!payload || !ctx || !running.value || ctx.mode !== 'serial') return
     const rawText = String(payload.raw ?? '')
     if (!rawText) return
-    const colonIdx = rawText.indexOf(':')
-    const dataPart = colonIdx >= 0 ? rawText.slice(colonIdx + 1) : rawText
-    const nums = dataPart.match(/[-+]?\d*\.?\d+/g)
-    if (!nums || nums.length < 3) return
-    const [target, feedback, output] = nums.slice(0, 3).map(Number)
+    // 解析统一在 services/parseChannelValues（支持科学计数法）；通道顺序按行内顺序取前三个
+    const nums = parseChannelValues(rawText, { numeric: true, maxChannels: 3 })
+    if (nums.length < 3) return
+    const [target, feedback, output] = nums
+    if (!Number.isFinite(target) || !Number.isFinite(feedback) || !Number.isFinite(output)) return
     const timestamp = Number(payload.time) || Date.now()
-    if (serialStartTime === null) serialStartTime = timestamp
-    const t = Math.max(0, (timestamp - serialStartTime) / 1000)
+    if (ctx.serialStartTime === null) ctx.serialStartTime = timestamp
+    const t = Math.max(0, (timestamp - ctx.serialStartTime) / 1000)
     const sample = { t, target, feedback, output }
-    dataBuffer.push(sample)
+    ctx.dataBuffer.push(sample)
     // 若正处于 set_target(serial) 触发的阶跃窗口内，窗口满后自动触发安全检测
-    serialCollector?.push(sample)
+    ctx.serialCollector?.push(sample)
+  }
+
+  /**
+   * 批量串口数据入口（App 接管订阅后按批下发）。
+   * 逐帧写入通道缓冲；与原先 watch(latestPayload) 相比不再丢批内样本。
+   */
+  function pushSerialBatch(frames) {
+    if (!Array.isArray(frames) || !frames.length) return
+    for (const frame of frames) onSerialData(frame)
   }
 
   // ---------------- 派生状态 ----------------
@@ -911,6 +1001,7 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
     running,
     turnCount,
     ctxBytes,
+    usage,
     stopReason,
     currentPid,
     currentFf,
@@ -923,6 +1014,7 @@ export function usePidAgent({ getAiConfig, getConnected, onSimulationData, onSer
     sendChat,
     stopAgent,
     onSerialData,
+    pushSerialBatch,
     feedforwardSelectionForSim
   }
 }

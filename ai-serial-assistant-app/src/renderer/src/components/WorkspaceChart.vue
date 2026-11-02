@@ -1,7 +1,6 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-// 按需引入 ECharts 模块：全量 `import * as echarts from 'echarts'` 会把
-// 全部图表类型/组件打进 bundle（约 5.5MB 主 chunk），拖慢低配机启动与首屏；
+// 按需引入 ECharts 模块：全量 import 会把全部图表类型/组件打进 bundle，
 // 此处仅注册折线图 + 实际用到的组件，运行时行为不变。
 import * as echarts from 'echarts/core'
 import { LineChart } from 'echarts/charts'
@@ -9,6 +8,7 @@ import { AxisPointerComponent, DataZoomComponent, GridComponent, TitleComponent,
 import { CanvasRenderer } from 'echarts/renderers'
 import { ElMessageBox } from 'element-plus'
 import { Download, Hide, View } from '@element-plus/icons-vue'
+import { parseChannelValues } from '../services/parseChannelValues.mjs'
 
 echarts.use([
   LineChart,
@@ -22,11 +22,10 @@ echarts.use([
 
 const props = defineProps({
   connected: Boolean,
-  latestPayload: { type: Object, default: null },
   channelCount: { type: Number, default: 0 },
-  simulationSamples: { type: Array, default: () => [] },
-  visible: { type: Boolean, default: true }
+  simulationSamples: { type: Array, default: () => [] }
 })
+const emit = defineEmits(['clear'])
 
 const chartRef = ref(null)
 const seriesData = ref([])
@@ -42,13 +41,11 @@ const isDark = ref(document.documentElement.classList.contains('dark'))
 const MAX_POINTS = 2000
 // 数据刷新节流：高波特率下串口数据逐包到达，若每包都 setOption 全量重绘，
 // 渲染线程长期被占满，界面（含"关闭串口"按钮等交互）响应会明显变慢。
-// 将重绘频率限制在 ~30fps，串口数据流下的 UI 交互不再卡顿。
 const REFRESH_THROTTLE_MS = 33
 const hasExportData = computed(() => seriesData.value.some((series) => series.length > 0))
 let sampleIndex = 0
 let chart = null
 let refreshTimer = null
-// ResizeObserver：监听 echarts 容器尺寸变化（拖动分隔条、窗口缩放均可触发）
 let resizeObserver = null
 
 const channelCount = computed(() =>
@@ -73,18 +70,14 @@ function colors() {
   return palette.value
 }
 
-// 主题调色板缓存：主题切换时才重建。原先 buildSeries 每个系列调用两次
-// colors()（每次新分配 8 元素数组），30fps 重绘下是无谓的分配/GC 压力。
+// 主题调色板缓存：主题切换时才重建。
 const palette = computed(() =>
   themeChannelColors.map((color) => isDark.value ? color.dark : color.light)
 )
 
 function extractNumbers(text) {
-  const source = String(text)
-  const colonIndex = source.indexOf(':')
-  const dataPart = colonIndex >= 0 ? source.slice(colonIndex + 1) : source
-  const matches = dataPart.match(/[-+]?\d*\.?\d+/g)
-  return matches ? matches.slice(0, 8).map(Number) : []
+  // 解析实现统一在 services/parseChannelValues（支持科学计数法，最多 8 通道）
+  return parseChannelValues(text, { numeric: true })
 }
 
 function ensureChannels(count) {
@@ -94,9 +87,6 @@ function ensureChannels(count) {
     visibleChannels.value.push(true)
     added = true
   }
-  // 通道名只在「通道数量变化」或「名称不匹配」（如从仿真模式切回串口，
-  // seriesNames 仍是 目标值/反馈值/控制输出）时重建为 I0..In——既保持
-  // 与原实现一致，又不让每个数据包都 map 重建一遍数组。
   const needsRename = seriesNames.value.length !== seriesData.value.length
     || (seriesNames.value.length > 0 && seriesNames.value[0] !== 'I0')
   if (added || needsRename) {
@@ -106,9 +96,6 @@ function ensureChannels(count) {
 
 function plottedData(data) {
   // 未开启归一化（绝大多数场景）：直接返回原始数组引用，零对象分配。
-  // 原先逐点包成 {value, raw} 对象——8 通道 × 2000 点 × 30fps ≈ 48 万对象/秒的
-  // 分配与 GC 压力，低配机上表现为周期性卡顿。tooltip 读取 item.data?.raw
-  // 回退到 item.value，数值与 raw 相同，显示不变。
   if (!normalizeDrawing.value) {
     return data
   }
@@ -176,8 +163,7 @@ function chartOption() {
   return {
     animation: false,
     backgroundColor: 'transparent',
-    // title 恒定传入（show 控制显隐）：setOption merge 模式下传 undefined 不会移除已渲染组件，
-    // 会导致首批数据到达后空状态文字残留，与波形叠加显示
+    // title 恒定传入（show 控制显隐）：setOption merge 模式下传 undefined 不会移除已渲染组件
     title: {
       show: !hasData,
       text: '等待串口数据…',
@@ -199,7 +185,7 @@ function chartOption() {
       filterMode: 'none',
       zoomOnMouseWheel: true,
       // ECharts inside dataZoom 的 moveOnMouseMove 默认为 true（悬停移动即平移），
-      // 必须显式关闭，否则与「按住拖动平移」提示文案及 axis tooltip 悬停读值冲突
+      // 必须显式关闭，否则与提示文案及 axis tooltip 悬停读值冲突
       moveOnMouseMove: false,
       moveOnMouseWheel: false,
       preventDefaultMouseMove: true
@@ -221,23 +207,51 @@ function refreshChart(resetOption = false) {
   chart.setOption(chartOption(), { notMerge: resetOption, lazyUpdate: true })
 }
 
-function appendData(payload) {
-  const values = extractNumbers(payload.raw)
-  if (!values.length) return
-  simulationMode.value = false
+function resetSeries() {
+  seriesData.value = []
+  sampleLabels.value = []
+  visibleChannels.value = []
+  seriesNames.value = []
+  sampleIndex = 0
+}
+
+/** 追加一条样本（内部使用，批量入口见 appendBatch） */
+function appendValues(values) {
   ensureChannels(values.length)
   sampleLabels.value.push(sampleIndex++)
   for (let index = 0; index < seriesData.value.length; index += 1) {
     seriesData.value[index].push(Number.isFinite(values[index]) ? values[index] : null)
   }
+  // 摊还式裁剪：到达上限后整段 splice，而不是每来一个样本就 shift 8 次
   if (sampleLabels.value.length > MAX_POINTS) {
-    sampleLabels.value.shift()
-    seriesData.value.forEach((data) => data.shift())
+    const drop = sampleLabels.value.length - MAX_POINTS
+    sampleLabels.value.splice(0, drop)
+    seriesData.value.forEach((data) => data.splice(0, drop))
   }
-  scheduleRefresh()
 }
 
-// 节流重绘：高频数据包合并为最多 REFRESH_THROTTLE_MS 一次刷新（串口数据流下渲染不再满载）
+/**
+ * 接收一批串口/回放样本（App 统一下发，不再经由 latestPayload 单值属性）。
+ * 每批只触发一次重绘调度。
+ */
+function appendBatch(frames) {
+  if (!Array.isArray(frames) || !frames.length) return
+  // 从仿真切回真实数据：先清空仿真曲线，避免两段数据叠加
+  if (simulationMode.value) {
+    simulationMode.value = false
+    resetSeries()
+  }
+  let appended = false
+  for (const frame of frames) {
+    const values = extractNumbers(frame?.raw)
+    if (!values.length) continue
+    appendValues(values)
+    appended = true
+  }
+  if (appended) scheduleRefresh()
+}
+
+// 节流重绘：高频数据包合并为最多 REFRESH_THROTTLE_MS 一次刷新
 function scheduleRefresh() {
   if (refreshTimer) return
   refreshTimer = setTimeout(() => {
@@ -285,13 +299,10 @@ async function clear() {
   } catch {
     return // 用户取消
   }
-  seriesData.value = []
-  sampleLabels.value = []
-  visibleChannels.value = []
-  seriesNames.value = []
-  sampleIndex = 0
+  resetSeries()
   simulationMode.value = false
   refreshChart(true)
+  emit('clear')
 }
 
 function exportData(format) {
@@ -324,8 +335,11 @@ function exportData(format) {
   const anchor = document.createElement('a')
   anchor.href = url
   anchor.download = filename
+  document.body.appendChild(anchor)
   anchor.click()
-  URL.revokeObjectURL(url)
+  anchor.remove()
+  // 立即 revoke 在部分 Chromium 版本会中断下载，延迟释放
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
 function handleResize() {
@@ -347,16 +361,8 @@ onMounted(() => {
   document.addEventListener('visibilitychange', handleVisibilityChange)
 })
 
-watch(() => props.latestPayload, (payload) => {
-  if (payload) appendData(payload)
-})
-
 watch(() => props.simulationSamples, (samples) => {
   loadSimulationSamples(samples)
-})
-
-watch(() => props.visible, (visible) => {
-  if (visible) nextTick(handleResize)
 })
 
 watch([normalizeDrawing, yAuto, yMin, yMax], () => refreshChart())
@@ -367,11 +373,14 @@ onUnmounted(() => {
     refreshTimer = null
   }
   chart?.dispose()
+  chart = null
   resizeObserver?.disconnect()
   resizeObserver = null
   window.removeEventListener('theme-change', handleThemeChange)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
 })
+
+defineExpose({ appendBatch })
 </script>
 
 <template>
@@ -384,6 +393,7 @@ onUnmounted(() => {
           :key="index"
           class="channel-button"
           :class="{ muted: !visibleChannels[index - 1] }"
+          :aria-label="`切换通道 ${seriesNames[index - 1] || 'I' + (index - 1)} 显示`"
           @click="toggleChannel(index - 1)"
         >
           <el-icon><View v-if="visibleChannels[index - 1]" /><Hide v-else /></el-icon>

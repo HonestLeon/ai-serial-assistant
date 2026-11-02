@@ -507,4 +507,42 @@ const findTool = (tools, name) => {
   assert.ok(String(div.message).includes('|θ|>3'), '提示应含截断原因')
 }
 
+// BE-04 串口下发失败必须显式报错（回归：曾把 undefined 当成功，返回"已下发到设备"）
+{
+  const base = createStubController({ userConfig: createDefaultUserConfig(), mode: 'serial' })
+  const failing = {
+    ...base,
+    sendSerialCommand: async () => { throw new Error('串口未打开') }
+  }
+  const tools = createPidAgentTools({ controller: failing, enableStrategies: false })
+  const pidTool = findTool(tools, 'set_pid_params')
+  const pidResult = await pidTool.execute({ kp: 2 })
+  assert.equal(pidResult.ok, false, '下发失败时 set_pid_params 必须返回 ok:false')
+  assert.equal(pidResult.mode, 'serial')
+  assert.match(String(pidResult.error), /串口未打开/)
+  assert.ok(pidResult.applied, '上位机参数仍应保留在结果里便于排查')
+
+  const targetTool = findTool(tools, 'set_target')
+  const targetResult = await targetTool.execute({ value: 20 })
+  assert.equal(targetResult.ok, false, '下发失败时 set_target 必须返回 ok:false')
+  assert.match(String(targetResult.error), /串口未打开/)
+  assert.equal(failing.calls.onStepTriggered, 0, '下发失败不应开启采集窗口')
+}
+
+// BE-15 串口模式前馈：只写上位机，必须显式说明"未下发设备"
+{
+  const controller = createStubController({ userConfig: createDefaultUserConfig(), mode: 'serial' })
+  controller.getUserConfig = () => ({
+    ...createDefaultUserConfig(),
+    feedforward: [{ id: 'gravity', label: '重力', init: 0.5, min: 0, max: 5 }]
+  })
+  const tools = createPidAgentTools({ controller, enableStrategies: false })
+  const ffTool = findTool(tools, 'set_feedforward_params')
+  const result = await ffTool.execute({ gravity: 1.2 })
+  assert.deepEqual(result.applied, { gravity: 1.2 })
+  assert.equal(result.mode, 'serial')
+  assert.match(String(result.warning), /未下发/, '串口模式必须说明前馈未下发设备')
+  assert.equal(controller.calls.sendSerialCommand.length, 0, '前馈不应产生任何串口指令')
+}
+
 console.log('✅ tests/pid-agent-tools.mjs 全部通过')

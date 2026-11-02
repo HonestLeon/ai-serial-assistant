@@ -13,7 +13,7 @@ const mean = (values) => {
 // 峰峰值（最大值 - 最小值），用于振荡振幅估计
 const peak2peak = (values) => {
   const valid = values.filter(Number.isFinite)
-  return valid.length ? Math.max(...valid) - Math.min(...valid) : 0
+  return valid.length ? maxOf(valid) - minOf(valid) : 0
 }
 
 const rms = (values) => Math.sqrt(mean(values.map((value) => value * value)))
@@ -52,21 +52,49 @@ function crossingTime(samples, startIndex, threshold, direction) {
   return null
 }
 
-function settlingTime(samples, stepIndex, finalTarget, stepSize, bandRatio) {
+/**
+ * 调节时间：首个「此后所有采样都在稳态带内」的时刻。
+ *
+ * 原实现从 stepIndex 正向逐个 slice 尾部再 every()，最坏 O(n²)：
+ * 振荡未收敛（调参失败最常见形态）时每次都要扫到尾部，实测 30k 点 1.7s，
+ * 而该函数在渲染线程同步执行，会把波形与表格一起卡死。
+ *
+ * 等价 O(n) 写法：从尾部反向找到**最后一个越出稳态带的点**，其后第一个点即调节时刻。
+ *   - 全程在带内      → 返回 0（与原实现 i=stepIndex 的结果一致）
+ *   - 末 3 点内仍越界 → 返回 null（原实现要求 tail.length ≥ 3）
+ */
+export function settlingTime(samples, stepIndex, finalTarget, stepSize, bandRatio) {
   const band = Math.max(Math.abs(stepSize) * bandRatio, 1e-6)
-  for (let i = stepIndex; i < samples.length; i += 1) {
-    const tail = samples.slice(i)
-    if (tail.length < 3) continue
-    if (tail.every((sample) => Math.abs(sample.feedback - finalTarget) <= band)) {
-      return samples[i].t - samples[stepIndex].t
+  const lastStart = samples.length - 3
+  let lastOut = -1
+  for (let i = samples.length - 1; i >= stepIndex; i -= 1) {
+    if (Math.abs(samples[i].feedback - finalTarget) > band) {
+      lastOut = i
+      break
     }
   }
-  return null
+  if (lastOut < 0) return stepIndex <= lastStart ? 0 : null
+  if (lastOut >= lastStart) return null
+  return samples[lastOut + 1].t - samples[stepIndex].t
+}
+
+/** 显式求最大值：避免 Math.max(...arr) 在十万级样本上爆栈（RangeError） */
+function maxOf(values) {
+  let max = -Infinity
+  for (const value of values) if (value > max) max = value
+  return max
+}
+
+/** 显式求最小值（同上） */
+function minOf(values) {
+  let min = Infinity
+  for (const value of values) if (value < min) min = value
+  return min
 }
 
 function oscillationAmplitude(values) {
   if (values.length < 3) return 0
-  return Math.max(...values) - Math.min(...values)
+  return maxOf(values) - minOf(values)
 }
 
 /**
@@ -149,7 +177,7 @@ export function sliceLastTransition(samples) {
     return { segment: samples ?? [], transitionCount: 0 }
   }
   const targets = samples.map((s) => finite(s.target))
-  const span = Math.max(...targets) - Math.min(...targets)
+  const span = maxOf(targets) - minOf(targets)
   const eps = Math.max(1e-6, Math.abs(span) * 0.005)
   const moving = []
   for (let i = 1; i < samples.length; i += 1) {
@@ -287,15 +315,39 @@ export function analyzeControlSamples(inputSamples, options = {}) {
   const time90 = crossingTime(samples, stepIndex, threshold90, direction)
   const riseTime = time10 !== null && time90 !== null ? Math.max(0, time90 - time10) : null
 
+  // 阶跃后单遍统计：极值 / 输出峰值 / RMSE / 过零点。
+  // 这些量此前各自 map 出一个 3~6 万元素的中间数组，30k 点分析仅分配就占十几毫秒，
+  // 合并成一次遍历后不再产生中间数组（结果与逐项 map 完全一致）。
   const postStep = samples.slice(stepIndex)
-  const extreme = direction >= 0
-    ? Math.max(...postStep.map((sample) => sample.feedback))
-    : Math.min(...postStep.map((sample) => sample.feedback))
+  // 过零点判定需过滤噪声：仅在误差幅度超过 5% 阶跃幅值时才计入
+  const errThreshold = amplitude * 0.05
+  let extreme = direction >= 0 ? -Infinity : Infinity
+  let outputPeak = 0
+  let errorSquareSum = 0
+  let zeroCrossings = 0
+  let prevError = null
+  for (const sample of postStep) {
+    if (direction >= 0) {
+      if (sample.feedback > extreme) extreme = sample.feedback
+    } else if (sample.feedback < extreme) {
+      extreme = sample.feedback
+    }
+    const absOutput = Math.abs(sample.output)
+    if (absOutput > outputPeak) outputPeak = absOutput
+    const error = sample.target - sample.feedback
+    errorSquareSum += error * error
+    if (prevError !== null
+      && Math.abs(prevError) >= errThreshold
+      && Math.abs(error) >= errThreshold
+      && prevError * error < 0) {
+      zeroCrossings += 1
+    }
+    prevError = error
+  }
+  const rmse = postStep.length ? Math.sqrt(errorSquareSum / postStep.length) : 0
   const overshoot = Math.max(0, direction * (extreme - finalTarget) / amplitude * 100)
   const settling = settlingTime(samples, stepIndex, finalTarget, stepSize, bandRatio)
   const steadyError = finalTarget - finalFeedback
-  const errors = postStep.map((sample) => sample.target - sample.feedback)
-  const rmse = rms(errors)
   const tailFeedback = tail.map((sample) => sample.feedback)
   // 稳态振幅：直接计算末尾窗真实振幅（不滤波）
   // 验收标准"剔除噪声项影响"是指峰检测剔除高频噪声峰（findOscillationPeaks 已做滤波），
@@ -329,13 +381,21 @@ export function analyzeControlSamples(inputSamples, options = {}) {
   }
   // 最大峰振幅占阶跃幅值的百分比（用于展示与判定）
   const maxPeakAmplitudePct = oscPeaks.length
-    ? Math.max(...oscPeaks.map((p) => p.amplitude)) / amplitude * 100
+    ? maxOf(oscPeaks.map((p) => p.amplitude)) / amplitude * 100
     : 0
 
-  const deltas = samples.slice(1).map((sample, index) => sample.t - samples[index].t).filter((v) => v > 0)
-  const averageDt = mean(deltas)
+  // 采样率：只统计正的时间差（乱序/重复时间戳不计入均值）
+  let deltaSum = 0
+  let deltaCount = 0
+  for (let i = 1; i < samples.length; i += 1) {
+    const delta = samples[i].t - samples[i - 1].t
+    if (delta > 0) {
+      deltaSum += delta
+      deltaCount += 1
+    }
+  }
+  const averageDt = deltaCount ? deltaSum / deltaCount : 0
   const sampleRate = averageDt > 0 ? 1 / averageDt : null
-  const outputPeak = Math.max(...postStep.map((sample) => Math.abs(sample.output)))
 
   // —— 未收敛检测（核心）：窗口尾部 feedback 仍在明显变化（上升/下降）时，
   // finalFeedback / steadyError / RMSE / overshoot 等都是"非稳态中途值"，不能当稳态指标用。
@@ -384,18 +444,9 @@ export function analyzeControlSamples(inputSamples, options = {}) {
   if (settling === null) risks.push('采样窗口内未进入稳定带')
 
   // 状态判定（借鉴 llm-pid-tuner）：优先级 OSCILLATING > OVERSHOOTING > SLOW_RESPONSE > STABLE
-  // 用于 LLM 上下文与安全护栏的回退策略
-  // 过零点判定需过滤噪声：仅在误差幅度超过 5% 阶跃幅值时才计入
-  const errThreshold = amplitude * 0.05
-  let zeroCrossings = 0
-  for (let i = 1; i < errors.length; i += 1) {
-    const a = errors[i - 1]
-    const b = errors[i]
-    if (Math.abs(a) < errThreshold || Math.abs(b) < errThreshold) continue
-    if (a * b < 0) zeroCrossings += 1
-  }
+  // 用于 LLM 上下文与安全护栏的回退策略（zeroCrossings 已在上面的单遍统计里算好）
   let status = 'STABLE'
-  if (zeroCrossings > errors.length * 0.15) status = 'OSCILLATING'
+  if (zeroCrossings > postStep.length * 0.15) status = 'OSCILLATING'
   else if (overshoot > overshootLimit) status = 'OVERSHOOTING'
   else if (rmse > amplitude * 0.3 && Math.abs(steadyError) > amplitude * steadyErrorLimitRatio) status = 'SLOW_RESPONSE'
   // 未收敛细分：
@@ -495,7 +546,7 @@ export function analyzeMultiStepSamples(samples, options = {}) {
   }
   // 1. 找 target 跳变点（相邻样本 target 差值 > 阶跃阈值）
   const targets = samples.map((s) => finite(s.target, 0))
-  const targetRange = Math.max(...targets) - Math.min(...targets)
+  const targetRange = maxOf(targets) - minOf(targets)
   const stepThreshold = Math.max(targetRange * 0.1, 1e-6)
   const jumpPoints = []
   for (let i = 1; i < samples.length; i += 1) {
@@ -525,11 +576,11 @@ export function analyzeMultiStepSamples(samples, options = {}) {
   const worst = (key, isMax = true) => {
     const vals = segMetrics.map((s) => s.metrics[key]).filter((v) => v !== null && Number.isFinite(v))
     if (vals.length === 0) return null
-    return isMax ? Math.max(...vals) : Math.min(...vals)
+    return isMax ? maxOf(vals) : minOf(vals)
   }
 
   const overshoot = worst('overshoot', true)
-  const steadyErrorAbs = Math.max(...segMetrics.map((s) => Math.abs(finite(s.metrics.steadyError, 0))))
+  const steadyErrorAbs = maxOf(segMetrics.map((s) => Math.abs(finite(s.metrics.steadyError, 0))))
   const oscillation = worst('oscillation', true)
   const riseTime = worst('riseTime', true)
   const settlingTime = worst('settlingTime', true)
@@ -593,8 +644,8 @@ export function analyzeSineTracking(samples, options = {}) {
   const ts = steady.map((s) => finite(s.t, 0))
 
   // 振幅估算：target 的 (max-min)/2
-  const tMax = Math.max(...targets)
-  const tMin = Math.min(...targets)
+  const tMax = maxOf(targets)
+  const tMin = minOf(targets)
   const amplitude = Math.max(finite(options.amplitude, 0), (tMax - tMin) / 2, 1e-6)
 
   // 跟踪误差 RMS
@@ -603,8 +654,8 @@ export function analyzeSineTracking(samples, options = {}) {
   const trackingPct = trackingRms / amplitude * 100
 
   // 振幅比：feedback 振幅 / target 振幅
-  const fMax = Math.max(...feedbacks)
-  const fMin = Math.min(...feedbacks)
+  const fMax = maxOf(feedbacks)
+  const fMin = minOf(feedbacks)
   const fAmp = (fMax - fMin) / 2
   const amplitudeRatio = fAmp / amplitude
 

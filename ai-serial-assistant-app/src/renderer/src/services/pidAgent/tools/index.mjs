@@ -1,4 +1,5 @@
 import { applyPidGuardrails } from '../../pidSafety.mjs'
+import { MAX_QUERY_POINTS } from '../dataBuffer.mjs'
 import { buildPidCommand } from '../utils.mjs'
 import { createStrategyTools } from './strategies.mjs'
 
@@ -92,7 +93,7 @@ export function createPidAgentTools({ controller, enableStrategies = true } = {}
       + '（超调/稳定时间/稳态误差/RMSE/振荡/状态）。调参开始与每次修改参数后应先调用了解系统特性。'
       + '何时用：评估上一轮阶跃效果、判断超调/震荡/稳态误差。怎么传参：timeRange 传 [起始秒, 结束秒]'
       + '（相对调参开始的秒数，set_target 返回的 timeRange 可直接使用）；channels 可选，默认全部通道'
-      + '（串级仿真可用 speedTarget/speed 诊断外环饱和与内环跟踪）。'
+      + '（串级仿真可用 speedTarget/speed 诊断外环饱和与内环跟踪；整通道无数据时会在 unavailableChannels 中列出）。'
       + '注意：若状态为 STILL_RISING 或提示"窗口内响应尚未收敛"，说明查询窗口未覆盖响应完成段，'
       + '指标均为非稳态中途值，请延长查询区间或提高速度环增益后再查询。',
     parameters: {
@@ -136,13 +137,19 @@ export function createPidAgentTools({ controller, enableStrategies = true } = {}
     description:
       '获取指定时间段各通道原始数据（自动均匀下采样，默认 30 点，用于需要观察波形细节时）。数据量大时慎用，'
       + '优先用 get_channel_stats 获取统计摘要。怎么传参：timeRange 传 [起始秒, 结束秒]（相对调参开始）；'
-      + 'maxPoints 为下采样目标点数，默认 30；channels 可选，默认全部通道。',
+      + 'maxPoints 为下采样目标点数，默认 30（上限 500）；channels 可选，默认全部通道；'
+      + '整通道无数据时该通道不出现在 data 中，并列入 unavailableChannels。',
     parameters: {
       type: 'object',
       properties: {
         timeRange: TIME_RANGE_SCHEMA,
         channels: CHANNELS_SCHEMA,
-        maxPoints: { type: 'number', description: '下采样目标点数，默认 30' }
+        maxPoints: {
+          type: 'number',
+          minimum: 2,
+          maximum: MAX_QUERY_POINTS,
+          description: `下采样目标点数，默认 30，上限 ${MAX_QUERY_POINTS}`
+        }
       },
       required: ['timeRange']
     },
@@ -225,8 +232,22 @@ export function createPidAgentTools({ controller, enableStrategies = true } = {}
 
       // 串口模式：参数真实下发到设备（zhichuan 固件 PID 指令）。
       // 此前只写上位机内存，设备全程跑旧参数——实测"无论怎么调反馈都一样"的根因。
+      // 下发失败必须显式返回 ok:false：否则模型会按"参数已生效"的错误前提继续调参。
       if (controller.getMode() === 'serial') {
-        await controller.sendSerialCommand(buildPidCommand(controller.getPid(), { isCascade }))
+        try {
+          await controller.sendSerialCommand(buildPidCommand(controller.getPid(), { isCascade }))
+        } catch (error) {
+          const reason = error?.message || String(error)
+          return {
+            ok: false,
+            applied,
+            previous,
+            guardrailNotes: allNotes,
+            mode: 'serial',
+            error: reason,
+            message: `参数已写入上位机，但下发设备失败（${reason}）；设备仍在使用旧参数，请确认串口连接后重新下发`
+          }
+        }
         return {
           applied,
           previous,
@@ -245,7 +266,8 @@ export function createPidAgentTools({ controller, enableStrategies = true } = {}
     description:
       '修改前馈项系数（只传需要修改的项，键为前馈项 id，如 {"gravity": 1.2}）。系数经用户配置范围校验，'
       + '越界裁剪并在结果 guardrailNotes 中说明。何时用：需要前馈补偿（如重力/摩擦）改善跟踪速度或稳态误差时；'
-      + '修改后同样需调用 set_target 验证效果。',
+      + '修改后同样需调用 set_target 验证效果。注意：串口模式固件未定义前馈指令，系数只记录在上位机、不会下发设备'
+      + '（结果会带 mode=serial 与 warning 说明）。',
     parameters: {
       type: 'object',
       properties: {},
@@ -276,6 +298,16 @@ export function createPidAgentTools({ controller, enableStrategies = true } = {}
       }
 
       controller.setFeedforward(applied)
+      // 串口模式下前馈系数只写上位机：固件协议里没有前馈指令，必须显式告知模型，
+      // 否则模型会按"前馈已生效"的前提评估调参结果（实测会让后续判断全部失真）
+      if (controller.getMode() === 'serial') {
+        return {
+          applied,
+          guardrailNotes,
+          mode: 'serial',
+          warning: '固件未定义前馈指令：本次系数仅记录在上位机，未下发到设备；实机调参请以 PID 参数为主'
+        }
+      }
       return { applied, guardrailNotes }
     }
   }
@@ -325,7 +357,20 @@ export function createPidAgentTools({ controller, enableStrategies = true } = {}
       // 返回建议查询区间 suggestedQuery：设备 set_point 常为斜坡（实测 ~8-10s 才到稳态），
       // 盲查大窗口只会拿到旧数据/多阶跃混杂指标；按建议区间查「本次阶跃」最可靠。
       if (controller.getMode() === 'serial') {
-        await controller.sendSerialCommand(`SET_POINT ${value}`)
+        try {
+          await controller.sendSerialCommand(`SET_POINT ${value}`)
+        } catch (error) {
+          // 下发失败：不开启采集窗口（否则后续查询会读到上一次阶跃的旧数据）
+          const reason = error?.message || String(error)
+          return {
+            ok: false,
+            mode: 'serial',
+            target: value,
+            guardrailNotes,
+            error: reason,
+            message: `目标值下发失败（${reason}），本次未开始采集；请确认串口连接后重新调用 set_target`
+          }
+        }
         if (typeof controller.onStepTriggered === 'function') controller.onStepTriggered()
         const windowSec = controller.getStepWindowSec?.() ?? 12
         const rangeInfo = controller.getDataBuffer().getRange()

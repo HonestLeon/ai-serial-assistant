@@ -5,8 +5,7 @@ import { usePidAgent } from '../composables/usePidAgent.mjs'
 
 const props = defineProps({
   connected: Boolean,
-  aiConfig: { type: Object, default: null },
-  latestPayload: { type: Object, default: null }
+  aiConfig: { type: Object, default: null }
 })
 const emit = defineEmits(['send', 'simulation-data'])
 
@@ -19,8 +18,10 @@ const agent = usePidAgent({
     // 固件按行解析指令（'\n' 结尾才执行）：工具产出 "SET_POINT 20" 不带换行，
     // 必须补上——否则设备永远收不到完整行，表现为 target/feedback/output 全 0
     const line = String(cmd ?? '').endsWith('\n') ? String(cmd) : `${cmd}\n`
-    window.electronAPI?.serial?.send?.(line, 'utf8')
-    emit('send', line.length)
+    // 计数按真实字节数（UTF-8），与 RX 口径一致
+    emit('send', new TextEncoder().encode(line).length)
+    // 必须回传 promise：工具层要据此判断"下发失败"，否则会用假成功继续调参
+    return window.electronAPI?.serial?.send?.(line, 'utf8')
   }
 })
 
@@ -30,18 +31,13 @@ const {
   tuningStrategy, pidStructure,
   addFeedforwardItem, removeFeedforwardItem,
   // 运行状态
-  messages, running, turnCount, ctxBytes, stopReason, currentPid, currentFf, paramHighlight,
+  messages, running, turnCount, ctxBytes, usage, stopReason, currentPid, currentFf, paramHighlight,
   // 方法
   startAgent, sendChat, stopAgent
 } = agent
 
-// 串口数据流入（真实串口模式下由智能体写入通道数据缓冲）。
-// 注意：DataMonitor 已做 100ms 批处理（高频遥测防渲染饱和），本 watch 每批只触发
-// 一次（末条样本生效）→ 智能体缓冲以 ~10Hz 采样。对本项目目标系统（τ≈0.25s 电机/
-// 位置环）的阶跃指标分析而言采样密度充足，且缓冲不会随设备原始速率膨胀。
-watch(() => props.latestPayload, (payload) => {
-  if (payload) agent.onSerialData(payload)
-})
+// 串口数据由 App 统一订阅后按批下发（pushSerialBatch，见 defineExpose），
+// 不再经由 latestPayload 单值 watch——后者在同 tick 多帧时会被 Vue 去重。
 
 // ---------------- 左栏派生状态 ----------------
 
@@ -53,6 +49,14 @@ const ctxFillClass = computed(() => {
   if (ctxPercent.value >= 100) return 'full'
   if (ctxPercent.value >= 80) return 'warn'
   return ''
+})
+
+/** 本会话累计 token 用量（服务端未返回 usage 时为空串，不占位） */
+const usageText = computed(() => {
+  const total = Number(usage.value?.total_tokens) || 0
+  if (!total) return ''
+  const fmt = (value) => Number(value || 0).toLocaleString('en-US')
+  return `输入 ${fmt(usage.value.prompt_tokens)} · 输出 ${fmt(usage.value.completion_tokens)} · 共 ${fmt(total)} tokens`
 })
 
 /** 串级策略：总览展开位置环 + 速度环六项；单环仅 kp/ki/kd 三项（label 取自 pidConfig 定义表） */
@@ -153,7 +157,11 @@ function onSendChat() {
   const pending = sendChat(text)
   inputText.value = ''
   if (pending && typeof pending.catch === 'function') {
-    pending.catch((e) => ElMessage.error(e?.message || String(e)))
+    pending.catch((e) => {
+      // 启动失败（未配 Key / 串口未连接 / 策略未填）时把文本还回输入框，避免用户重打
+      if (!inputText.value) inputText.value = text
+      ElMessage.error(e?.message || String(e))
+    })
   }
 }
 
@@ -185,6 +193,9 @@ async function onStartAgent() {
 function clearConversation() {
   if (running.value) return
   messages.value = []
+  // 同步重置会话计数与结束原因，避免清空后仍显示"已停止 · xxx"
+  turnCount.value = 0
+  stopReason.value = ''
 }
 
 // ---------------- 打字机与自动滚底 ----------------
@@ -192,7 +203,7 @@ function clearConversation() {
 const msgFlowRef = ref(null)
 const typewriterTimers = new Map()
 
-/** 助手消息打字机：16ms 一帧、每帧 +2 字符，推进 shownLen 至 text.length 后自清理 */
+/** 助手消息打字机：16ms 一帧、每帧 +8 字符（约 500 字/秒），推进到末尾后自清理 */
 function startTypewriter(msg) {
   const timer = setInterval(() => {
     const alive = messages.value.some((m) => m.id === msg.id)
@@ -201,7 +212,8 @@ function startTypewriter(msg) {
       typewriterTimers.delete(msg.id)
       return
     }
-    msg.shownLen = Math.min(msg.text.length, msg.shownLen + 2)
+    msg.shownLen = Math.min(msg.text.length, msg.shownLen + 8)
+    scheduleScroll()
   }, 16)
   typewriterTimers.set(msg.id, timer)
 }
@@ -213,15 +225,33 @@ function scrollToBottom() {
   })
 }
 
-// 新 assistant 消息（shownLen===0）启动打字机；消息流任何变化（含打字推进）后自动滚底
-watch(messages, () => {
-  messages.value.forEach((msg) => {
-    if (msg.kind === 'assistant' && msg.text && msg.shownLen === 0 && !typewriterTimers.has(msg.id)) {
-      startTypewriter(msg)
-    }
+// 滚动用 rAF 合并：打字机每帧都会请求滚底，但不能每帧都强制一次布局
+let scrollScheduled = false
+function scheduleScroll() {
+  if (scrollScheduled) return
+  scrollScheduled = true
+  requestAnimationFrame(() => {
+    scrollScheduled = false
+    scrollToBottom()
   })
-  scrollToBottom()
-}, { deep: true })
+}
+
+// 只监听长度与最后一条状态（不再 deep 遍历消息数组）。
+// 打字机的 shownLen 推进由 startTypewriter 内部 scheduleScroll 处理。
+watch(
+  () => {
+    const last = messages.value[messages.value.length - 1]
+    return `${messages.value.length}:${last?.id ?? ''}:${last?.toolStatus ?? ''}`
+  },
+  () => {
+    messages.value.forEach((msg) => {
+      if (msg.kind === 'assistant' && msg.text && msg.shownLen === 0 && !typewriterTimers.has(msg.id)) {
+        startTypewriter(msg)
+      }
+    })
+    scheduleScroll()
+  }
+)
 
 function kb(bytes) {
   return (Number(bytes) / 1024).toFixed(1)
@@ -233,6 +263,13 @@ onUnmounted(() => {
   clearInterval(nowTimer)
   stopAgent()
 })
+
+/** App 按批下发的串口数据（替代原来的 latestPayload watch） */
+function pushSerialBatch(frames) {
+  agent.pushSerialBatch(frames)
+}
+
+defineExpose({ pushSerialBatch })
 </script>
 
 <template>
@@ -383,6 +420,7 @@ onUnmounted(() => {
             <div class="ctx-fill" :class="ctxFillClass" :style="{ width: ctxPercent + '%' }"></div>
           </div>
         </div>
+        <p v-if="usageText" class="usage-line">{{ usageText }}</p>
         <button v-if="!running" class="start-btn" type="button" @click="onStartAgent">开始调参</button>
         <button v-else class="stop-btn" type="button" @click="stopAgent">停止</button>
       </div>
@@ -900,6 +938,15 @@ onUnmounted(() => {
 
 .ctx-fill.full {
   background: var(--state-error);
+}
+
+/* 累计 token 用量（服务端返回 usage 时才显示） */
+.usage-line {
+  margin: 6px 0 0;
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
+  font-family: var(--font-family-mono);
+  line-height: 1.4;
 }
 
 .start-btn {

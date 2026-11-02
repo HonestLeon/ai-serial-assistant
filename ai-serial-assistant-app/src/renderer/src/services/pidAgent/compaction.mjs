@@ -7,12 +7,14 @@
  *   - 有损留底：只压缩「数据查询类 toolResult」（get_channel_* 的采样/统计结果），
  *     这类消息体积大且信息可再取，是最值得牺牲的部分；
  *   - 保留尾部：最近 retainedTail 条数据块原样保留（智能体通常正在围绕最新数据推理）；
- *   - 独立摘要请求：摘要由外部注入的 summarizeFn（一次独立的 LLM 请求）生成，
- *     本模块不关心摘要怎么来；summarizeFn 抛错时压缩失败但不影响主流程；
+ *   - 批量摘要：所有待压缩组拼成**一次**摘要请求（此前逐组请求，3 组就要 3 次串行 LLM
+ *     调用）；dump 超过 maxDumpChars 时本地首尾截断；summarizeFn 抛错则本次不压缩，
+ *     不影响主流程；
  *   - 成组替换：按 assistant 消息分组（一条 assistant 的多个 toolCalls 对应多条
  *     toolResult），组内全部 toolResult 均属待压缩才压缩该组（assistant + 其全部
- *     待压缩 toolResult 一起移除，原位置插入一条 compact 用户消息），否则整组保留，
- *     避免出现「assistant 还在、配对的 toolResult 却没了」的残缺对话。
+ *     待压缩 toolResult 一起移除），否则整组保留，避免出现「assistant 还在、
+ *     配对的 toolResult 却没了」的残缺对话；多组被压缩时在最早一组位置插入**一条**
+ *     合并摘要消息（避免同一段摘要重复多份占上下文）。
  *
  * 永不触碰：非数据查询的 toolResult（如 set_pid_params 结果）、所有 user/assistant
  * 文本消息（未入压缩组的）、safety/steer 等关键消息。
@@ -21,6 +23,21 @@ import { createUserMessage } from './types.mjs'
 
 const textEncoder = new TextEncoder()
 const byteLength = (str) => textEncoder.encode(String(str ?? '')).length
+
+/**
+ * 摘要输入截断：dump 本身可能有数 MB（一次大窗口查询），直接整段发给摘要模型
+ * 既慢又贵，还可能超上下文。保留首 60% + 尾 40%（尾部是最新数据，信息密度更高）。
+ * @param {string} dump
+ * @param {number} maxChars
+ */
+function truncateDump(dump, maxChars) {
+  const text = String(dump ?? '')
+  const limit = Math.max(200, Number(maxChars) || 200000)
+  if (text.length <= limit) return text
+  const headLength = Math.floor(limit * 0.6)
+  const tailLength = limit - headLength
+  return `${text.slice(0, headLength)}\n…（中间已截断，原始 ${text.length} 字符）…\n${text.slice(-tailLength)}`
+}
 
 /**
  * 统计消息数组中「数据查询类 toolResult」的 content 字节总数。
@@ -57,7 +74,8 @@ export async function compactIfNeeded({
   thresholdBytes = 50 * 1024,
   summarizeFn,
   retainedTail = 3,
-  emit = null
+  emit = null,
+  maxDumpChars = 200000
 } = {}) {
   // 1. 测量当前数据字节；低于阈值直接原样返回
   const beforeBytes = measureDataBytes(messages)
@@ -116,22 +134,23 @@ export async function compactIfNeeded({
     return { compacted: false, messages, beforeBytes, afterBytes: beforeBytes }
   }
 
-  // 5. 逐组生成 dumpText（toolCall 名 + 参数 + 结果 JSON 拼接）并请求摘要
-  //    任一组摘要失败则整体放弃压缩（原数组原样返回，不影响主流程）
-  const summaries = []
-  try {
-    for (const group of compressibleGroups) {
-      const assistant = messageList[group.assistantIndex]
-      const parts = group.toolResultIndices.map((index) => {
-        const toolResult = messageList[index]
-        const call = assistant.meta.toolCalls.find((c) => c && c.id === toolResult.meta?.toolCallId)
-        const name = call?.name ?? toolResult.meta?.toolName ?? ''
-        const args = JSON.stringify(call?.arguments ?? {})
-        return `工具调用 ${name}，参数 ${args}，结果 ${toolResult.content ?? ''}`
-      })
-      const summary = await summarizeFn(parts.join('\n'))
-      summaries.push(String(summary ?? ''))
+  // 5. 把所有待压缩组拼成一次摘要请求。
+  //    此前逐组调用 LLM：一次压缩 3 组就要 3 次请求，串行等待（几分钟级延迟），
+  //    且每组摘要各自膨胀上下文。批量后只花一次请求，摘要也更连贯。
+  const parts = []
+  for (const group of compressibleGroups) {
+    const assistant = messageList[group.assistantIndex]
+    for (const index of group.toolResultIndices) {
+      const toolResult = messageList[index]
+      const call = assistant.meta.toolCalls.find((c) => c && c.id === toolResult.meta?.toolCallId)
+      const name = call?.name ?? toolResult.meta?.toolName ?? ''
+      const args = JSON.stringify(call?.arguments ?? {})
+      parts.push(`工具调用 ${name}，参数 ${args}，结果 ${toolResult.content ?? ''}`)
     }
+  }
+  let summaryText
+  try {
+    summaryText = String(await summarizeFn(truncateDump(parts.join('\n'), maxDumpChars)) ?? '')
   } catch (error) {
     return {
       compacted: false,
@@ -142,34 +161,26 @@ export async function compactIfNeeded({
     }
   }
 
-  // 6. 组装新数组：移除各压缩组（assistant + 其全部待压缩 toolResult），
-  //    在原组起始位置（assistant 原位置）插入一条 compact 摘要消息
+  // 6. 组装新数组：移除所有压缩组（assistant + 其全部待压缩 toolResult），
+  //    在最早一组的位置插入一条 compact 摘要消息
   const removeIndices = new Set()
-  const insertOrderAt = new Map() // assistantIndex -> 摘要序号
-  compressibleGroups.forEach((group, order) => {
+  let insertAt = Infinity
+  for (const group of compressibleGroups) {
     removeIndices.add(group.assistantIndex)
     group.toolResultIndices.forEach((index) => removeIndices.add(index))
-    insertOrderAt.set(group.assistantIndex, order)
-  })
+    if (group.assistantIndex < insertAt) insertAt = group.assistantIndex
+  }
 
-  const compactMessages = summaries.map((text) => createUserMessage(`[历史数据摘要] ${text}`, 'compact'))
+  const compactMessage = createUserMessage(`[历史数据摘要] ${summaryText}`, 'compact')
   const newMessages = []
   messageList.forEach((message, index) => {
-    if (!removeIndices.has(index)) {
-      newMessages.push(message)
-      return
-    }
-    const order = insertOrderAt.get(index)
-    if (order !== undefined) {
-      newMessages.push(compactMessages[order])
-    }
+    if (index === insertAt) newMessages.push(compactMessage)
+    if (!removeIndices.has(index)) newMessages.push(message)
   })
 
   // 7. 重算压缩后字节，回填 compactInfo（含压缩前后字节数，供 UI 展示压缩收益）
   const afterBytes = measureDataBytes(newMessages)
-  compactMessages.forEach((message) => {
-    message.meta.compactInfo = { beforeBytes, afterBytes }
-  })
+  compactMessage.meta.compactInfo = { beforeBytes, afterBytes }
 
   const compactedCount = compressibleGroups.reduce(
     (sum, group) => sum + group.toolResultIndices.length,

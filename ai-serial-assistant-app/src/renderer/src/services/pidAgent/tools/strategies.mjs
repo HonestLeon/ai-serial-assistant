@@ -20,7 +20,7 @@ export function createStrategyTools({ controller, baseTools, getObservation }) {
     },
     {
       name: 'run_pid_strategy',
-      description: '执行一次单环确定性策略：读取最近一次 set_target 的完整实测指标→调整→同目标复测。先调用 set_target。自动读取证据，不接受模型编造指标；串口窗口未满返回 waiting，不修改参数。串级不支持，使用基础工具。返回依据、实际参数、验证指标和安全结果；不保证改善。',
+      description: '执行一次单环确定性策略：读取最近一次 set_target 的完整实测指标→调整→同目标复测。先调用 set_target。自动读取证据，不接受模型编造指标；串口窗口未满返回 waiting，不修改参数。串口下发失败返回 serial_send_failed（参数未在设备生效，先查连接）。串级不支持，使用基础工具。返回依据、实际参数、验证指标和安全结果；不保证改善。',
       parameters: {
         type: 'object', properties: { strategy: { type: 'string', enum: STRATEGIES.map(s => s.id) } },
         required: ['strategy'], additionalProperties: false
@@ -83,9 +83,16 @@ export function createStrategyTools({ controller, baseTools, getObservation }) {
         const applied = await call('set_pid_params', suggestion.params)
         audit.adjustments = 1
         const details = { basis: suggestion.reason, phase: suggestion.phase, before, proposed: suggestion.params, applied }
+        // 串口下发失败：参数只改了上位机内存，设备仍在跑旧参数，不能继续验证
+        if (applied?.ok === false) {
+          return finish('serial_send_failed', `参数下发设备失败（${applied.error ?? '串口发送失败'}）；请确认串口连接后重试，不要继续盲调。`, details)
+        }
         if (stopped()) return finish('stopped', '已调整参数，验证前会话停止。', details)
         try {
           const capture = await call('set_target', { value: observation.target })
+          if (capture?.ok === false) {
+            return finish('serial_send_failed', `目标下发失败（${capture.error ?? '串口发送失败'}），本次未采集到响应；请确认连接后重新采集。`, details)
+          }
           if (capture.mode === 'serial') return finish('pending_validation', '已下发一次调整，等待真实数据窗口；尚不能判断改善。', { ...details, capture })
           const after = await call('get_channel_stats', { timeRange: capture.timeRange })
           return finish(capture.safety?.triggered || capture.truncated ? 'safety_stop' : 'evaluated',

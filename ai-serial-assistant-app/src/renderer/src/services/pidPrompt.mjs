@@ -1,3 +1,11 @@
+/**
+ * @legacy 智能体化之前的「一次性给参」链路产物：构建 JSON Schema / 结构化输出格式、
+ * 解析模型返回的 PID 建议、打包历史与波形。
+ *
+ * 现状：**生产代码零引用**（当前 PID 调参走 services/pidAgent/* 的对话式工具链）。
+ * 保留原因：`tests/pid-prompt.mjs` 仍以此约束旧的响应协议，README 的架构表也把它列为
+ * 历史链路；若确认不再需要旧协议，可连同测试一起删除（见《后端问题排查与修复计划》BE-20）。
+ */
 const SINGLE_PID_KEYS = ['kp', 'ki', 'kd']
 const CASCADE_PID_KEYS = ['speedKp', 'speedKi', 'speedKd', 'positionKp', 'positionKi', 'positionKd']
 

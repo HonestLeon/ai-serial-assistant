@@ -340,6 +340,10 @@ export function shouldRollbackToBest(best, currentMetrics) {
  *  - status === STABLE
  *  - rmse / |steadyError| / overshoot 均在阈值内
  *
+ * 说明：当前生产链路的"达标"判定在 `pidAgent/tools`（acceptanceCheck）与
+ * `dataBuffer.stats` 内完成；本函数**仅被 tests/pid-safety.mjs 引用**，
+ * 作为对外可用的终止条件工具保留（阈值语义与工具层一致）。
+ *
  * @param {object} metrics
  * @param {object} opts  { rmseLimit, steadyErrorLimit, overshootLimit }
  * @returns {{ done: boolean, reason: string }}

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Download, MagicStick, Refresh, Setting } from '@element-plus/icons-vue'
 import {
@@ -7,12 +7,19 @@ import {
   buildStructuredAiContext,
   createSamplesFromChannels
 } from '../services/controlAnalysis.mjs'
+import { callLlm } from '../services/pidAgent/llm.mjs'
+import { createRendererFetch } from '../services/llmTransport.mjs'
 
 const props = defineProps({
   serialContext: { type: Object, required: true },
   aiConfig: { type: Object, required: true },
-  channelCount: { type: Number, default: 0 }
+  channelCount: { type: Number, default: 0 },
+  /** 页签是否可见：隐藏时停止统计快照，避免后台全量重算 */
+  active: { type: Boolean, default: true }
 })
+
+// LLM 统一走与 PID 智能体相同的客户端（含超时/重试，经主进程代理）
+const llmFetch = createRendererFetch()
 
 const mapping = reactive({ target: 0, feedback: 1 })
 const responseEnabled = ref(false)
@@ -31,19 +38,34 @@ const standards = reactive({
   minimumSamples: 8
 })
 
+/**
+ * 统计快照：每秒从通道历史复制一次，计算只依赖快照。
+ * 否则 @serialContext.channelHistory 是深层响应式，每 100ms 的 flush 都会让
+ * 9600 样本的全量统计与 1200 对象分配重跑一遍。
+ */
+const MAX_STATS_SAMPLES = 1500
+const statsSource = shallowRef([])
+let statsTimer = null
+
+function refreshSnapshot() {
+  if (!props.active) return
+  const history = props.serialContext?.channelHistory || []
+  statsSource.value = history.map((values) => values.slice(-MAX_STATS_SAMPLES))
+}
+
 const channelOptions = computed(() =>
   Array.from({ length: Math.max(1, props.channelCount || 0) }, (_, index) => index)
 )
 
 const channelFeatures = computed(() => {
+  const historyList = statsSource.value
   const count = Math.max(
     props.channelCount || 0,
-    props.serialContext.channelHistory.filter((values) => values.length > 0).length
+    historyList.filter((values) => values.length > 0).length
   )
   return Array.from({ length: count }, (_, index) => {
-    const history = props.serialContext.channelHistory[index] || []
-    // 单遍统计：原先 filter + min/max spread + 三次 reduce + map(Math.abs) 共 ~7 遍
-    // 遍历（8 通道 × 1200 样本），串口流下每批刷新都会重算，低配机开销可观
+    const history = historyList[index] || []
+    // 单遍统计
     let n = 0
     let min = Infinity
     let max = -Infinity
@@ -88,7 +110,7 @@ function featureValue(value) {
 }
 
 const samples = computed(() => createSamplesFromChannels(
-  props.serialContext.channelHistory,
+  statsSource.value,
   { ...mapping, output: mapping.target },
   sampleIntervalMs.value
 ))
@@ -114,6 +136,8 @@ function unit(value, suffix) {
 }
 
 function runAnalysis() {
+  // 分析前取最新快照，保证"点按钮"拿到的是当前数据
+  refreshSnapshot()
   metrics.value = analyzeControlSamples(samples.value, {
     settlingBand: standards.settlingBandPercent / 100,
     overshootLimit: standards.overshootLimit,
@@ -154,27 +178,15 @@ async function requestAiExplanation() {
     minimumSamples: standards.minimumSamples
   }
   try {
-    const response = await fetch(`${props.aiConfig.baseUrl.replace(/\/$/, '')}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${props.aiConfig.apiKey}`
-      },
-      body: JSON.stringify({
-        model: props.aiConfig.model,
-        temperature: 0.2,
-        messages: [
-          {
-            role: 'system',
-            content: '你是控制响应解释助手。只解释固定算法给出的指标、判定标准、风险和下一步实验，不生成或下发PID参数。'
-          },
-          { role: 'user', content: JSON.stringify(context, null, 2) }
-        ]
-      })
+    const result = await callLlm({
+      aiConfig: props.aiConfig,
+      systemPrompt: '你是控制响应解释助手。只解释固定算法给出的指标、判定标准、风险和下一步实验，不生成或下发PID参数。',
+      messages: [{ role: 'user', content: JSON.stringify(context, null, 2) }],
+      tools: [],
+      fetchImpl: llmFetch
     })
-    if (!response.ok) throw new Error(`API 请求失败：${response.status}`)
-    const result = await response.json()
-    aiExplanation.value = result.choices?.[0]?.message?.content || '模型未返回可用内容'
+    if (!result.ok) throw new Error(result.error || '请求失败')
+    aiExplanation.value = result.content || '模型未返回可用内容'
   } catch (error) {
     aiExplanation.value = `AI解释不可用：${error.message}。确定性指标不受影响。`
   } finally {
@@ -209,13 +221,31 @@ function exportReport() {
   const anchor = document.createElement('a')
   anchor.href = url
   anchor.download = `智串AI响应分析_${Date.now()}.html`
+  document.body.appendChild(anchor)
   anchor.click()
-  URL.revokeObjectURL(url)
+  anchor.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
+
+onMounted(() => {
+  refreshSnapshot()
+  statsTimer = setInterval(refreshSnapshot, 1000)
+})
+
+watch(() => props.active, (active) => {
+  if (active) refreshSnapshot()
+})
+
+onUnmounted(() => {
+  if (statsTimer) {
+    clearInterval(statsTimer)
+    statsTimer = null
+  }
+})
 </script>
 
 <template>
-  <div class="workspace-analysis">
+  <div v-if="active" class="workspace-analysis">
     <header class="analysis-header">
       <div>
         <strong>数据分析</strong>
@@ -223,10 +253,10 @@ function exportReport() {
       </div>
       <div class="header-actions">
         <el-tooltip content="设置稳定带宽、误差阈值和最少采样点" placement="bottom">
-          <el-button circle size="small" :icon="Setting" :disabled="!responseEnabled" @click="settingsVisible = true" />
+          <el-button circle size="small" :icon="Setting" aria-label="分析设置" :disabled="!responseEnabled" @click="settingsVisible = true" />
         </el-tooltip>
-        <el-button circle size="small" :icon="Refresh" :disabled="!responseEnabled" @click="runAnalysis" />
-        <el-button circle size="small" :icon="Download" :disabled="!responseEnabled" @click="exportReport" />
+        <el-button circle size="small" :icon="Refresh" aria-label="重新分析" :disabled="!responseEnabled" @click="runAnalysis" />
+        <el-button circle size="small" :icon="Download" aria-label="导出报告" :disabled="!responseEnabled" @click="exportReport" />
       </div>
     </header>
 
@@ -235,7 +265,7 @@ function exportReport() {
         <div class="section-title">
           <div>
             <strong>通道数据特征</strong>
-            <span>默认开启，基于当前本地缓存实时计算</span>
+            <span>默认开启，基于当前本地缓存每秒刷新</span>
           </div>
           <el-tag type="success" size="small">已开启</el-tag>
         </div>
@@ -243,8 +273,8 @@ function exportReport() {
           <table class="feature-table">
             <thead>
               <tr>
-                <th>通道</th><th>样本数</th><th>最新值</th><th>平均值</th>
-                <th>最小值</th><th>最大值</th><th>绝对峰值</th><th>均方根</th><th>标准差</th>
+                <th scope="col">通道</th><th scope="col">样本数</th><th scope="col">最新值</th><th scope="col">平均值</th>
+                <th scope="col">最小值</th><th scope="col">最大值</th><th scope="col">绝对峰值</th><th scope="col">均方根</th><th scope="col">标准差</th>
               </tr>
             </thead>
             <tbody>
@@ -271,7 +301,7 @@ function exportReport() {
             <strong>响应分析（可选）</strong>
             <span>适用于具有目标值与反馈值的阶跃响应数据</span>
           </div>
-          <el-switch v-model="responseEnabled" size="small" />
+          <el-switch v-model="responseEnabled" size="small" aria-label="启用响应分析" />
         </div>
 
         <template v-if="responseEnabled">
@@ -357,6 +387,7 @@ function exportReport() {
       </template>
     </el-dialog>
   </div>
+  <div v-else class="workspace-analysis workspace-analysis-idle" aria-hidden="true"></div>
 </template>
 
 <style scoped>

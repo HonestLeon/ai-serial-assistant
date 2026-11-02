@@ -338,4 +338,154 @@ const makeTool = (name, impl) => ({
   assert.equal(result.stopReason, 'aborted', '中止期间请求失败不应被当作错误')
 }
 
+// 12. 退出排空（BE-01）：纯文本收尾时入队的 steer 必须进入对话并再跑一圈
+//     回归：此前 steer 只在回合开始 drain，最后一轮入队的纠偏"UI 已显示、模型没见过"
+{
+  const steerQueue = createPendingMessageQueue()
+  let calls = 0
+  const result = await runAgentLoop({
+    llmFn: async () => {
+      calls += 1
+      if (calls === 1) steerQueue.push(createUserMessage('改方向：先降 Ki', 'steer'))
+      return { ok: true, content: `第 ${calls} 轮`, toolCalls: [], finishReason: 'stop' }
+    },
+    systemPrompt: 'sys',
+    tools: [],
+    initialMessages: [createUserMessage('开始')],
+    steerQueue
+  })
+  assert.equal(steerQueue.size(), 0, '退出后 steer 队列必须为空')
+  assert.ok(result.messages.some((m) => m.content === '改方向：先降 Ki'), 'steer 必须进入对话')
+  assert.equal(calls, 2, '有未消费 steer 时应再跑一圈让模型看到')
+  assert.equal(result.stopReason, 'stop')
+}
+
+// 13. 退出排空（BE-01）：max-turns 命中时也要消费排队消息，且只多跑一圈
+{
+  const steerQueue = createPendingMessageQueue()
+  let calls = 0
+  const result = await runAgentLoop({
+    llmFn: async () => {
+      calls += 1
+      steerQueue.push(createUserMessage('安全机制：参数已回退', 'safety'))
+      return {
+        ok: true,
+        content: '',
+        toolCalls: [{ id: `c${calls}`, name: 'noop', arguments: {} }],
+        finishReason: 'tool_calls'
+      }
+    },
+    systemPrompt: 'sys',
+    tools: [makeTool('noop')],
+    initialMessages: [createUserMessage('开始')],
+    steerQueue,
+    maxTurns: 1
+  })
+  assert.equal(result.stopReason, 'max-turns')
+  assert.equal(steerQueue.size(), 0, 'max-turns 退出后队列必须为空')
+  assert.ok(result.messages.some((m) => m.content === '安全机制：参数已回退'), '安全通知必须进入对话')
+  assert.equal(calls, 2, '最多为消费排队消息多跑一圈')
+}
+
+// 14. 退出排空（BE-01）：达标自动收敛（shouldStopAfterTurn）同样不丢 steer
+{
+  const steerQueue = createPendingMessageQueue()
+  let calls = 0
+  const result = await runAgentLoop({
+    llmFn: async () => {
+      calls += 1
+      steerQueue.push(createUserMessage('✅ 已达标，请总结', 'steer'))
+      return {
+        ok: true,
+        content: '',
+        toolCalls: [{ id: `s${calls}`, name: 'noop', arguments: {} }],
+        finishReason: 'tool_calls'
+      }
+    },
+    systemPrompt: 'sys',
+    tools: [makeTool('noop')],
+    initialMessages: [createUserMessage('开始')],
+    steerQueue,
+    shouldStopAfterTurn: async () => ({ stop: true, reason: 'stop' })
+  })
+  assert.equal(result.stopReason, 'stop')
+  assert.equal(steerQueue.size(), 0, '收敛退出后队列必须为空')
+  assert.ok(result.messages.some((m) => m.content === '✅ 已达标，请总结'))
+  assert.equal(calls, 2)
+}
+
+// 15. followUp 仍会在内层结束后重启外层（排空逻辑合并两类队列后的回归）
+{
+  const followUpQueue = createPendingMessageQueue()
+  let calls = 0
+  const result = await runAgentLoop({
+    llmFn: async () => {
+      calls += 1
+      if (calls === 1) followUpQueue.push(createUserMessage('再补一个阶跃', 'followUp'))
+      return { ok: true, content: 'ok', toolCalls: [], finishReason: 'stop' }
+    },
+    systemPrompt: 'sys',
+    tools: [],
+    initialMessages: [createUserMessage('开始')],
+    followUpQueue
+  })
+  assert.equal(calls, 2, '追问应触发新一圈')
+  assert.equal(followUpQueue.size(), 0)
+  assert.ok(result.messages.some((m) => m.content === '再补一个阶跃'))
+}
+
+// 16. agent_end 只发一次（BE-13）：失败/正常路径都走同一个收尾点，UI 不会收到两条结束事件
+{
+  const events = []
+  const result = await runAgentLoop({
+    llmFn: async () => ({ ok: false, error: 'HTTP 401：bad key' }),
+    systemPrompt: 'sys',
+    tools: [],
+    initialMessages: [createUserMessage('开始')],
+    emit: (event) => events.push(event)
+  })
+  const ends = events.filter((event) => event.type === 'agent_end')
+  assert.equal(ends.length, 1, `agent_end 应只发一次，实际 ${ends.length} 次`)
+  assert.equal(result.stopReason, 'error')
+  assert.equal(ends[0].error, 'HTTP 401：bad key')
+}
+
+// 17. llmFn 抛错（而非返回 ok:false）：也要以 error 收尾且只发一次 agent_end
+{
+  const events = []
+  const result = await runAgentLoop({
+    llmFn: async () => { throw new Error('连接被重置') },
+    systemPrompt: 'sys',
+    tools: [],
+    initialMessages: [createUserMessage('开始')],
+    emit: (event) => events.push(event)
+  })
+  assert.equal(result.stopReason, 'error')
+  assert.equal(result.error, '连接被重置')
+  assert.equal(events.filter((event) => event.type === 'agent_end').length, 1)
+}
+
+// 18. 压缩失败降级（BE-13）：onBeforeLlm 抛错只上报 compaction_error，不中断调参
+{
+  const events = []
+  const result = await runAgentLoop({
+    llmFn: async () => ({
+      ok: true,
+      content: '完成',
+      toolCalls: [],
+      usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 }
+    }),
+    systemPrompt: 'sys',
+    tools: [],
+    initialMessages: [createUserMessage('开始')],
+    onBeforeLlm: async () => { throw new Error('摘要服务不可用') },
+    emit: (event) => events.push(event)
+  })
+  assert.equal(result.stopReason, 'stop', '压缩失败不应结束会话')
+  assert.ok(events.some((event) => event.type === 'compaction_error' && /摘要服务不可用/.test(event.error)))
+  assert.equal(events.filter((event) => event.type === 'agent_end').length, 1)
+  // 用量累计（BE-19）
+  assert.deepEqual(result.usage, { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 })
+}
+
 console.log('✅ tests/pid-agent-loop.mjs 全部通过')

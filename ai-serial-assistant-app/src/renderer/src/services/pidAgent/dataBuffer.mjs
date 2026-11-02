@@ -63,17 +63,20 @@ const upperBound = (samples, time) => {
 }
 
 // 单通道统计：mean / std(总体标准差) / min / max / peak(绝对峰值) / rms
+// 只统计有限值：可选诊断通道（speedTarget/speed）在串口模式下不存在，
+// 此前会把 undefined 算进去得到 NaN（JSON 里一半是 null、peak 却是 0），
+// 现在整通道无有效值时统一返回 null + unavailable，调用方可明确区分"不可用"与"值很小"。
 const channelStats = (values) => {
-  const count = values.length
-  if (!count) {
-    return { mean: 0, std: 0, min: 0, max: 0, peak: 0, rms: 0, sampleCount: 0 }
-  }
+  let count = 0
   let sum = 0
   let squareSum = 0
   let min = Infinity
   let max = -Infinity
   let peak = 0
-  for (const value of values) {
+  for (const raw of values) {
+    const value = Number(raw)
+    if (!Number.isFinite(value)) continue
+    count += 1
     sum += value
     squareSum += value * value
     if (value < min) min = value
@@ -81,9 +84,16 @@ const channelStats = (values) => {
     const abs = Math.abs(value)
     if (abs > peak) peak = abs
   }
+  if (!count) {
+    return { mean: null, std: null, min: null, max: null, peak: null, rms: null, sampleCount: 0, unavailable: true }
+  }
   const mean = sum / count
   let varianceSum = 0
-  for (const value of values) varianceSum += (value - mean) * (value - mean)
+  for (const raw of values) {
+    const value = Number(raw)
+    if (!Number.isFinite(value)) continue
+    varianceSum += (value - mean) * (value - mean)
+  }
   return {
     mean: round6(mean),
     std: round6(Math.sqrt(varianceSum / count)),
@@ -94,6 +104,9 @@ const channelStats = (values) => {
     sampleCount: count
   }
 }
+
+/** 单次查询返回的最大点数：再大就只是把上下文撑爆，对判断没有帮助 */
+export const MAX_QUERY_POINTS = 500
 
 /**
  * 创建通道数据环形缓冲。
@@ -113,13 +126,25 @@ export function createDataBuffer({ capacitySec = 600, maxSamples = 60000, accept
   /** @type {Array<{t:number, target:number, feedback:number, output:number}>} */
   const samples = []
 
-  // 淘汰旧数据：先按时间容量，再按总量上限
-  const evict = () => {
-    if (samples.length) {
-      const cutoff = samples[samples.length - 1].t - capacity
-      const keepFrom = lowerBound(samples, cutoff)
-      if (keepFrom > 0) samples.splice(0, keepFrom)
-    }
+  // 淘汰旧数据（摊还）：先按时间容量，再按总量上限。
+  // 此前每次 push 都无条件 splice：饱和后单帧要搬动 6 万个指针，
+  // 实测 20k 次 push 从 20ms 退化到 2100~2900ms（串口 1kHz 下常驻约 10% 单核）。
+  // 现在只在「超出容量/条数 + 余量」时一次性清理，单帧成本回到常数级。
+  const EVICT_SLACK_RATIO = 0.05
+  // 条数上限是「软上限」：允许短暂超出 5%（至少 2 条）再一次性清理，
+  // 否则饱和后每帧都要 splice 掉最旧一条（O(n) 搬指针），单帧成本会放大 300 倍
+  const sampleSlack = Math.max(2, Math.round(sampleLimit * EVICT_SLACK_RATIO))
+  // 时间窗口余量：让淘汰从"每帧一次"变成"每余量秒一次"，同时窗口最多只超出 2%（0.2s~30s）
+  const timeSlack = Math.min(30, Math.max(0.2, capacity * 0.02))
+  const evict = (force = false) => {
+    if (!samples.length) return
+    const lastT = samples[samples.length - 1].t
+    const timeExceeded = lastT - samples[0].t > capacity + timeSlack
+    const countExceeded = samples.length > sampleLimit + sampleSlack
+    if (!force && !timeExceeded && !countExceeded) return
+    const cutoff = lastT - capacity
+    const keepFrom = lowerBound(samples, cutoff)
+    if (keepFrom > 0) samples.splice(0, keepFrom)
     if (samples.length > sampleLimit) samples.splice(0, samples.length - sampleLimit)
   }
 
@@ -199,9 +224,9 @@ export function createDataBuffer({ capacitySec = 600, maxSamples = 60000, accept
   /**
    * 按时间段查询通道数据（供 get_channel_data 工具使用）。
    * @param {{timeRange:[number,number], channels?:string[], maxPoints?:number}} [options]
-   * @returns {{timeRange:[number,number], sampleCount:number, downsampled:boolean, clipped:boolean, data:{t:number[], target?:number[], feedback?:number[], output?:number[]}}}
+   * @returns {{timeRange:[number,number], sampleCount:number, downsampled:boolean, clipped:boolean, data:{t:number[], target?:number[], feedback?:number[], output?:number[]}, unavailableChannels?:string[]}}
    *   - timeRange：实际返回的数据区间（首/末样本时刻）
-   *   - sampleCount：区间内原始样本数；超过 maxPoints 时索引法均匀下采样（首尾点必含）
+   *   - sampleCount：区间内原始样本数；超过 maxPoints（上限 500）时索引法均匀下采样（首尾点必含）
    *   - clipped：请求区间是否被截断到缓冲范围
    * @throws {Error} 区间无数据时抛错
    */
@@ -212,7 +237,8 @@ export function createDataBuffer({ capacitySec = 600, maxSamples = 60000, accept
       throw new Error(`时间段无数据：[${start}, ${end}] 内没有采样点`)
     }
     const count = rangeSamples.length
-    const limit = Math.max(2, Math.round(finite(maxPoints, 30)))
+    // 上限 500 点：模型传超大值只会把数 MB JSON 灌进上下文（实测 6 万点 ≈ 1.58MB）
+    const limit = Math.min(MAX_QUERY_POINTS, Math.max(2, Math.round(finite(maxPoints, 30))))
     let selected = rangeSamples
     let downsampled = false
     if (count > limit) {
@@ -225,15 +251,23 @@ export function createDataBuffer({ capacitySec = 600, maxSamples = 60000, accept
       }
     }
     const data = { t: selected.map((sample) => sample.t) }
+    const unavailableChannels = []
     for (const channel of sanitizeChannels(channels)) {
-      data[channel] = selected.map((sample) => sample[channel])
+      const values = selected.map((sample) => sample[channel])
+      // 整通道无有效值（如串口模式查 speed/speedTarget）→ 不返回全 null 数组，改列入 unavailable
+      if (!values.some((value) => Number.isFinite(value))) {
+        unavailableChannels.push(channel)
+        continue
+      }
+      data[channel] = values.map((value) => (Number.isFinite(value) ? value : null))
     }
     return {
       timeRange: [selected[0].t, selected[selected.length - 1].t],
       sampleCount: count,
       downsampled,
       clipped,
-      data
+      data,
+      ...(unavailableChannels.length ? { unavailableChannels } : {})
     }
   }
 
@@ -250,8 +284,11 @@ export function createDataBuffer({ capacitySec = 600, maxSamples = 60000, accept
       throw new Error(`时间段无数据：[${start}, ${end}] 内没有采样点`)
     }
     const channelResult = {}
+    const unavailableChannels = []
     for (const channel of sanitizeChannels(channels)) {
-      channelResult[channel] = channelStats(rangeSamples.map((sample) => sample[channel]))
+      const computed = channelStats(rangeSamples.map((sample) => sample[channel]))
+      channelResult[channel] = computed
+      if (computed.unavailable) unavailableChannels.push(channel)
     }
 
     // 阶跃响应指标只分析「窗口内最后一次目标变化段」（含阶跃前基线）：
@@ -312,7 +349,9 @@ export function createDataBuffer({ capacitySec = 600, maxSamples = 60000, accept
       stepCount: transitionCount,
       finalValues,
       sampleCount: rangeSamples.length,
-      clipped
+      clipped,
+      // 整通道无有效采样（如串口模式查 speed）：明确告知调用方，而不是给一串 null
+      ...(unavailableChannels.length ? { unavailableChannels } : {})
     }
   }
 

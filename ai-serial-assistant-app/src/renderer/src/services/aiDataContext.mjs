@@ -1,3 +1,11 @@
+/**
+ * @legacy 串口行解析 + 通道统计的"数据侧底座"（智能体化之前供一次性问答使用）。
+ *
+ * 现状：**生产代码零引用**。当前应用内的通道解析统一走
+ * `services/parseChannelValues.mjs`（支持科学计数法），实时统计走
+ * `services/pidAgent/dataBuffer.mjs` —— 新增代码请勿再复制本文件的解析逻辑。
+ * 保留原因：`tests/ai-data-context.mjs` 覆盖其纯函数契约（见 BE-20）。
+ */
 const NUMBER_PATTERN = /[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/g
 
 export function parseNumericLine(line) {

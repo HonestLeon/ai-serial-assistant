@@ -74,6 +74,62 @@ export function convertToLlm(agentMessages = []) {
 }
 
 /**
+ * 可被 AbortSignal 打断的退避等待。
+ * 中止时立即 resolve（由调用方在下一行检查 signal.aborted 后返回），
+ * 避免"停止"按钮在退避期间无响应（原实现用裸 setTimeout，最坏等满 16s）。
+ * @param {number} seconds 等待秒数（<=0 立即返回）
+ * @param {AbortSignal|null} signal 外部中止信号
+ */
+function waitBeforeRetry(seconds, signal) {
+  const ms = Number(seconds) * 1000
+  if (!(ms > 0) || signal?.aborted) return Promise.resolve()
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', done)
+      resolve()
+    }
+    const timer = setTimeout(done, ms)
+    signal?.addEventListener('abort', done, { once: true })
+  })
+}
+
+/** 可重试的 HTTP 状态：限流/超时/服务端错误；其余 4xx 立即失败（重试也不会变好） */
+const RETRYABLE_STATUS = new Set([408, 409, 425, 429])
+
+const isRetryableStatus = (status) => status >= 500 || RETRYABLE_STATUS.has(status)
+
+/**
+ * 把 HTTP 失败转成可操作的中文说明（直接展示给用户，不再原样抛英文/HTML）。
+ * @param {number} status
+ * @param {string} detail 响应体片段（已截断）
+ */
+function describeHttpFailure(status, detail) {
+  const suffix = detail ? `：${detail}` : ''
+  if (status === 401) return `API Key 无效或已过期（HTTP 401）${suffix}`
+  if (status === 403) return `无访问权限（HTTP 403），请确认 Key 的模型权限${suffix}`
+  if (status === 404) return `接口或模型不存在（HTTP 404），请检查 baseUrl 与 model${suffix}`
+  if (status === 413) return `请求体过大（HTTP 413）${suffix}`
+  if (status === 429) return `请求过于频繁或额度不足（HTTP 429）${suffix}`
+  if (status === 400 || status === 422) return `请求被服务端拒绝（HTTP ${status}）${suffix}`
+  return `HTTP ${status}${suffix}`
+}
+
+/**
+ * function calling 能力缓存：部分 OpenAI 兼容后端不支持 tools，会稳定返回 400/422。
+ * 缓存结论后，同一 baseUrl+model 不再每次先撞一次 400（每回合白费一个 RTT）。
+ * @type {Map<string, boolean>}
+ */
+const toolsSupportCache = new Map()
+
+const toolsCacheKey = (aiConfig) => `${aiConfig?.baseUrl ?? ''}|${aiConfig?.model ?? ''}`
+
+/** 清空 function calling 能力缓存（单测隔离 / 用户更换端点后重置） */
+export function resetToolsSupportCache() {
+  toolsSupportCache.clear()
+}
+
+/**
  * 调用 OpenAI 兼容 chat/completions（非流式），支持 tools/tool_calls 协议。
  *
  * @param {object} options
@@ -82,7 +138,8 @@ export function convertToLlm(agentMessages = []) {
  *   - messages: OpenAI 消息数组（convertToLlm 产物，不含 system）
  *   - tools: 调参工具定义 [{ name, description, parameters }]，默认 []
  *   - signal: 外部 AbortSignal（可为 null）；中止时中断 fetch 并停止重试
- *   - retryDelays: 重试退避秒数表，默认 [0,2,4,8,16]（测试可注入 [0,0,0,0,0] 绕过等待）
+ *   - retryDelays: 重试退避秒数表，默认 [0,2,4,8,16]（测试可注入 [0,0,0,0,0] 绕过等待）；
+ *     等待期间可被 signal 立即打断；仅 408/409/425/429/5xx 与网络异常会重试
  *   - timeoutMs: 单次请求超时（默认 120s）：服务端挂起不返回时按失败重试，
  *     避免 UI 长时间无反馈地"卡住"；外部 signal 中止不受此限立即返回
  * @returns {Promise<{ok:boolean, content?:string,
@@ -97,7 +154,9 @@ export async function callLlm({
   tools = [],
   signal = null,
   retryDelays = [0, 2, 4, 8, 16],
-  timeoutMs = 120000
+  timeoutMs = 120000,
+  /** 可注入的 fetch 实现：渲染进程传入走主进程代理的版本；默认用全局 fetch（单测可 stub） */
+  fetchImpl = null
 } = {}) {
   if (!aiConfig?.apiKey) {
     return { ok: false, error: '未配置 API Key' }
@@ -107,8 +166,11 @@ export async function callLlm({
     { role: 'system', content: systemPrompt ?? '' },
     ...(messages ?? [])
   ]
-  // 部分 OpenAI 兼容后端不支持 function calling：遇到 400/422 时去掉 tools 降级重试
-  let toolsEnabled = tools.length > 0
+  // 部分 OpenAI 兼容后端不支持 function calling：已知不支持就直接不带 tools，
+  // 未知时先带 tools，遇 400/422 再去掉并记住结论
+  const cacheKey = toolsCacheKey(aiConfig)
+  const toolsSupported = toolsSupportCache.get(cacheKey) !== false
+  let toolsEnabled = tools.length > 0 && toolsSupported
 
   /** 单次请求（每次尝试独立的 AbortController：外部中止 + 本尝试超时各自独立） */
   async function requestCompletion(includeTools, controller) {
@@ -125,22 +187,24 @@ export async function callLlm({
       }))
       body.tool_choice = 'auto'
     }
-    return fetch(`${aiConfig.baseUrl.replace(/\/$/, '')}/chat/completions`, {
+    const doFetch = fetchImpl || globalThis.fetch
+    return doFetch(`${aiConfig.baseUrl.replace(/\/$/, '')}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${aiConfig.apiKey}`
       },
       body: JSON.stringify(body),
-      signal: controller.signal
+      signal: controller.signal,
+      // 扩展字段：主进程代理据此设置自己的超时（原生 fetch 会忽略未知选项）
+      timeoutMs
     })
   }
 
   let lastError = ''
   for (let attempt = 0; attempt < retryDelays.length; attempt += 1) {
-    if (retryDelays[attempt] > 0) {
-      await new Promise((resolve) => setTimeout(resolve, retryDelays[attempt] * 1000))
-    }
+    // 退避必须可被外部中止：否则用户点"停止"要等满当前退避档（最坏 16s）才返回
+    await waitBeforeRetry(retryDelays[attempt], signal)
     if (signal?.aborted) {
       return { ok: false, error: '请求已中止' }
     }
@@ -155,15 +219,20 @@ export async function callLlm({
     try {
       let res = await requestCompletion(toolsEnabled, attemptController)
       if (!res.ok && toolsEnabled && (res.status === 400 || res.status === 422)) {
-        // 部分后端不支持 function calling：去掉 tools/tool_choice 立即重试一次
+        // 后端可能不支持 function calling：去掉 tools/tool_choice 立即重试一次，并记住结论
         toolsEnabled = false
+        toolsSupportCache.set(cacheKey, false)
         res = await requestCompletion(false, attemptController)
       }
       if (!res.ok) {
         const detail = (await res.text()).slice(0, 240)
-        lastError = `HTTP ${res.status}${detail ? `：${detail}` : ''}`
+        lastError = describeHttpFailure(res.status, detail)
+        // 4xx（除限流/超时类）重试也不会成功：立即失败，别让用户白等 30s 退避
+        if (!isRetryableStatus(res.status)) return { ok: false, error: lastError }
         continue
       }
+      // 带 tools 成功 → 记下"该端点支持 function calling"，后续直接带 tools
+      if (toolsEnabled) toolsSupportCache.set(cacheKey, true)
       const data = await res.json()
       const choice = data.choices?.[0]
       const finishReason = choice?.finish_reason ?? 'stop'
