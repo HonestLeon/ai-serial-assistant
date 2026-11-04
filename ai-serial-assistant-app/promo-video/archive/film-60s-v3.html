@@ -1,0 +1,2013 @@
+<!doctype html>
+<html lang="zh-CN" data-resolution="landscape">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>TUNER · Project Film</title>
+    <script src="./assets/gsap.min.js"></script>
+    <style>
+      @font-face {
+        font-family: "Microsoft YaHei";
+        src: local("Microsoft YaHei");
+      }
+      @font-face {
+        font-family: "PingFang SC";
+        src: local("PingFang SC");
+      }
+      @font-face {
+        font-family: "Noto Sans SC";
+        src: local("Noto Sans SC");
+      }
+
+      :root {
+        --bg: #050a14;
+        --panel: #07101e;
+        --ink: #f8fafc;
+        --muted: #94a3b8;
+        --cyan: #22d3ee;
+        --cyan-soft: #7dd3fc;
+        --green: #34d399;
+        --amber: #f59e0b;
+        --red: #f87171;
+        --line: rgba(34, 211, 238, 0.2);
+        --font-cn: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif;
+        --font-en: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+        --font-mono: "Consolas", "JetBrains Mono", monospace;
+      }
+
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: var(--bg);
+        font-family: var(--font-cn);
+        -webkit-font-smoothing: antialiased;
+      }
+
+      #root {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: var(--bg);
+      }
+
+      .frame {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+      }
+
+      .cyan { color: var(--cyan); }
+      .green { color: var(--green); }
+      .amber { color: var(--amber); }
+      .red { color: var(--red); }
+
+      /* ---------------- background ---------------- */
+
+      #bg {
+        position: absolute;
+        inset: 0;
+        background:
+          radial-gradient(1100px 680px at 50% 34%, rgba(20, 84, 122, 0.36), transparent 66%),
+          radial-gradient(900px 560px at 86% 82%, rgba(16, 185, 129, 0.09), transparent 62%),
+          linear-gradient(158deg, #050a14 0%, #07101e 56%, #03060c 100%);
+      }
+
+      #grid {
+        position: absolute;
+        left: -220px;
+        top: -220px;
+        width: 2360px;
+        height: 1520px;
+        background-image:
+          linear-gradient(rgba(34, 211, 238, 0.065) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(34, 211, 238, 0.065) 1px, transparent 1px);
+        background-size: 80px 80px;
+        -webkit-mask-image: radial-gradient(circle at 50% 45%, black 20%, transparent 74%);
+        mask-image: radial-gradient(circle at 50% 45%, black 20%, transparent 74%);
+        opacity: 0.75;
+      }
+
+      #scanlines {
+        position: absolute;
+        inset: 0;
+        background: repeating-linear-gradient(
+          to bottom,
+          rgba(255, 255, 255, 0.024) 0px,
+          rgba(255, 255, 255, 0.024) 1px,
+          transparent 1px,
+          transparent 4px
+        );
+        opacity: 0.5;
+      }
+
+      #flare {
+        position: absolute;
+        left: 360px;
+        top: 40px;
+        width: 1200px;
+        height: 800px;
+        background: radial-gradient(ellipse at 50% 50%, rgba(34, 211, 238, 0.2), transparent 64%);
+        opacity: 0.2;
+      }
+
+      #vignette {
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(circle at 50% 48%, transparent 52%, rgba(0, 0, 0, 0.68) 100%);
+      }
+
+      /* ---------------- hud ---------------- */
+
+      #hud {
+        position: absolute;
+        left: 72px;
+        right: 72px;
+        top: 30px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-family: var(--font-mono);
+        font-size: 15px;
+        letter-spacing: 2.4px;
+        color: rgba(226, 232, 240, 0.52);
+        z-index: 50;
+      }
+
+      .hud-left,
+      .hud-right {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .hud-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--cyan);
+        box-shadow: 0 0 12px rgba(34, 211, 238, 0.9);
+      }
+
+      #progress-track {
+        position: absolute;
+        left: 0;
+        bottom: 0;
+        width: 1920px;
+        height: 2px;
+        background: rgba(148, 163, 184, 0.14);
+        z-index: 55;
+      }
+
+      #progress-fill {
+        width: 0;
+        height: 2px;
+        background: linear-gradient(90deg, var(--cyan), var(--green));
+        box-shadow: 0 0 12px rgba(34, 211, 238, 0.55);
+      }
+
+      /* ---------------- caption ---------------- */
+
+      #caption {
+        position: absolute;
+        left: 0;
+        bottom: 22px;
+        width: 100%;
+        height: 84px;
+        z-index: 45;
+      }
+
+      .sub {
+        position: absolute;
+        left: 0;
+        right: 0;
+        text-align: center;
+        opacity: 0;
+      }
+
+      .sub span {
+        display: inline-block;
+        padding: 14px 34px;
+        border: 1px solid rgba(34, 211, 238, 0.2);
+        border-radius: 999px;
+        background: rgba(5, 10, 20, 0.82);
+        font-size: 36px;
+        letter-spacing: 0.4px;
+        color: #e2e8f0;
+        white-space: nowrap;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+      }
+
+      /* ---------------- shared scene text ---------------- */
+
+      .scene {
+        position: absolute;
+        inset: 0;
+      }
+
+      .scene-label {
+        font-family: var(--font-mono);
+        font-size: 17px;
+        letter-spacing: 4px;
+        color: var(--cyan);
+      }
+
+      .scene-title {
+        margin-top: 16px;
+        font-size: 64px;
+        line-height: 1.18;
+        font-weight: 700;
+        letter-spacing: -1.5px;
+        color: var(--ink);
+      }
+
+      .scene-title .thin {
+        color: var(--muted);
+      }
+
+      .card {
+        border: 1px solid rgba(34, 211, 238, 0.18);
+        border-radius: 16px;
+        background: rgba(7, 16, 30, 0.88);
+        box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
+      }
+
+      /* ---------------- intro ---------------- */
+
+      #scene-intro {
+        z-index: 10;
+      }
+
+      #intro {
+        position: absolute;
+        left: 150px;
+        top: 246px;
+        width: 1620px;
+      }
+
+      #intro-label {
+        font-family: var(--font-mono);
+        font-size: 22px;
+        letter-spacing: 4px;
+        color: var(--cyan);
+      }
+
+      #headline-1 {
+        margin-top: 28px;
+        font-size: 112px;
+        line-height: 1.12;
+        font-weight: 700;
+        letter-spacing: -3px;
+        color: var(--ink);
+      }
+
+      #headline-2 {
+        position: absolute;
+        left: 0;
+        top: 92px;
+        font-size: 112px;
+        line-height: 1.12;
+        font-weight: 700;
+        letter-spacing: -3px;
+        color: var(--ink);
+      }
+
+      #accent-bar {
+        position: absolute;
+        left: 2px;
+        top: 248px;
+        width: 0;
+        height: 6px;
+        border-radius: 3px;
+        background: linear-gradient(90deg, var(--cyan), rgba(34, 211, 238, 0.1));
+        box-shadow: 0 0 24px rgba(34, 211, 238, 0.5);
+      }
+
+      #spike {
+        position: absolute;
+        left: 150px;
+        top: 610px;
+        width: 1620px;
+        height: 170px;
+      }
+
+      #spike-reveal {
+        width: 0;
+        height: 170px;
+        overflow: hidden;
+      }
+
+      #spike svg {
+        display: block;
+        width: 1620px;
+        height: 170px;
+      }
+
+      #stat-line {
+        position: absolute;
+        left: 150px;
+        top: 812px;
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        font-size: 27px;
+        color: var(--muted);
+        letter-spacing: 0.5px;
+      }
+
+      #stat-line .num {
+        font-family: var(--font-mono);
+        font-size: 34px;
+        color: var(--red);
+        letter-spacing: 0;
+      }
+
+      .stat-rule {
+        width: 3px;
+        height: 28px;
+        background: var(--red);
+        box-shadow: 0 0 14px rgba(248, 113, 113, 0.6);
+      }
+
+      #intro-foot {
+        position: absolute;
+        left: 150px;
+        bottom: 76px;
+        font-family: var(--font-mono);
+        font-size: 17px;
+        letter-spacing: 2px;
+        color: rgba(203, 213, 225, 0.86);
+      }
+
+      /* ---------------- demand ---------------- */
+
+      #scene-demand {
+        z-index: 11;
+      }
+
+      #demand-head {
+        position: absolute;
+        left: 150px;
+        top: 118px;
+        width: 900px;
+      }
+
+      #demand-title {
+        font-size: 74px;
+        line-height: 1.16;
+        font-weight: 700;
+        letter-spacing: -2px;
+        color: var(--ink);
+      }
+
+      #demand-title .red {
+        color: var(--red);
+      }
+
+      .pain-list {
+        position: absolute;
+        left: 150px;
+        top: 380px;
+        width: 660px;
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+      }
+
+      .pain-card {
+        display: flex;
+        align-items: center;
+        gap: 20px;
+        height: 108px;
+        padding: 0 26px;
+        border: 1px solid rgba(248, 113, 113, 0.18);
+        border-left: 3px solid rgba(248, 113, 113, 0.65);
+        border-radius: 14px;
+        background: rgba(12, 16, 26, 0.82);
+      }
+
+      .pain-num {
+        font-family: var(--font-mono);
+        font-size: 18px;
+        color: rgba(248, 113, 113, 0.8);
+        letter-spacing: 2px;
+      }
+
+      .pain-text {
+        font-size: 27px;
+        color: #dbe4f0;
+        letter-spacing: 0.2px;
+      }
+
+      .pain-card .pain-mark {
+        margin-left: auto;
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: var(--red);
+        box-shadow: 0 0 14px rgba(248, 113, 113, 0.75);
+        flex: 0 0 auto;
+      }
+
+      #loop-panel {
+        position: absolute;
+        left: 900px;
+        top: 330px;
+        width: 820px;
+        height: 420px;
+        border: 1px dashed rgba(248, 113, 113, 0.32);
+        border-radius: 20px;
+        background: radial-gradient(circle at 50% 50%, rgba(248, 113, 113, 0.06), rgba(7, 16, 30, 0.72) 70%);
+      }
+
+      #loop-panel svg {
+        position: absolute;
+        inset: 0;
+        width: 820px;
+        height: 420px;
+      }
+
+      .loop-chip {
+        position: absolute;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 220px;
+        height: 72px;
+        border: 1px solid rgba(248, 113, 113, 0.28);
+        border-radius: 12px;
+        background: rgba(12, 16, 26, 0.9);
+        font-size: 23px;
+        color: #e2e8f0;
+      }
+
+      #loop-a { left: 56px; top: 92px; }
+      #loop-b { left: 544px; top: 92px; }
+      #loop-c { left: 544px; top: 258px; }
+      #loop-d { left: 56px; top: 258px; }
+
+      #loop-center {
+        position: absolute;
+        left: 250px;
+        top: 156px;
+        width: 320px;
+        text-align: center;
+      }
+
+      #loop-center .big {
+        font-size: 40px;
+        font-weight: 700;
+        color: var(--red);
+        letter-spacing: 2px;
+      }
+
+      #loop-center .small {
+        margin-top: 8px;
+        font-size: 17px;
+        color: rgba(226, 232, 240, 0.6);
+        letter-spacing: 1px;
+      }
+
+      #demand-stats {
+        position: absolute;
+        left: 150px;
+        top: 824px;
+        display: flex;
+        gap: 18px;
+        width: 1620px;
+      }
+
+      .demand-stat {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        width: 306px;
+        height: 92px;
+        padding: 0 22px;
+        border: 1px solid rgba(34, 211, 238, 0.14);
+        border-radius: 12px;
+        background: rgba(7, 16, 30, 0.8);
+      }
+
+      .demand-stat .v {
+        font-family: var(--font-mono);
+        font-size: 30px;
+        color: var(--ink);
+        letter-spacing: 0.5px;
+      }
+
+      .demand-stat .k {
+        margin-top: 4px;
+        font-size: 15px;
+        color: var(--muted);
+        letter-spacing: 0.6px;
+      }
+
+      .demand-stat.hot .v {
+        color: var(--amber);
+      }
+
+      /* ---------------- product ---------------- */
+
+      #scene-product {
+        z-index: 12;
+      }
+
+      #product {
+        position: absolute;
+        left: 240px;
+        top: 150px;
+        width: 1440px;
+        height: 862px;
+        transform-origin: 50% 50%;
+        z-index: 10;
+      }
+
+      #product-title {
+        position: absolute;
+        left: 240px;
+        top: 62px;
+        font-size: 29px;
+        letter-spacing: 1px;
+        color: #dbe4f0;
+        z-index: 12;
+      }
+
+      #device {
+        position: relative;
+        width: 1440px;
+        height: 862px;
+        border-radius: 18px;
+        overflow: hidden;
+        background: #0b1220;
+        transform: perspective(2200px) rotateY(-8deg) rotateX(2.5deg) rotateZ(-1deg);
+        box-shadow:
+          0 60px 130px rgba(0, 0, 0, 0.68),
+          0 0 0 1px rgba(34, 211, 238, 0.22),
+          0 0 90px rgba(34, 211, 238, 0.08);
+      }
+
+      #device img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        object-position: center top;
+      }
+
+      #device::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(
+          118deg,
+          rgba(255, 255, 255, 0.07) 0%,
+          rgba(255, 255, 255, 0) 28%,
+          rgba(255, 255, 255, 0) 72%,
+          rgba(34, 211, 238, 0.07) 100%
+        );
+        pointer-events: none;
+      }
+
+      .callout {
+        position: absolute;
+        left: 24px;
+        display: flex;
+        align-items: center;
+        width: 216px;
+        height: 48px;
+        z-index: 14;
+      }
+
+      .callout .pill {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        width: 170px;
+        height: 44px;
+        padding: 0 16px;
+        border: 1px solid rgba(34, 211, 238, 0.26);
+        border-radius: 22px;
+        background: rgba(5, 12, 22, 0.88);
+        font-size: 18px;
+        letter-spacing: 0.5px;
+        color: #dbe4f0;
+        white-space: nowrap;
+      }
+
+      .callout .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        flex: 0 0 auto;
+        background: var(--cyan);
+        box-shadow: 0 0 10px rgba(34, 211, 238, 0.9);
+      }
+
+      .callout .line {
+        width: 46px;
+        height: 1px;
+        background: linear-gradient(90deg, rgba(34, 211, 238, 0.65), rgba(34, 211, 238, 0.08));
+      }
+
+      #callout-wave { top: 236px; }
+      #callout-metrics { top: 386px; }
+      #callout-agent { top: 536px; }
+      #callout-safety { top: 686px; }
+      #callout-safety .dot {
+        background: var(--green);
+        box-shadow: 0 0 10px rgba(52, 211, 153, 0.9);
+      }
+
+      #agent-card {
+        position: absolute;
+        right: 50px;
+        bottom: 122px;
+        width: 820px;
+        height: 410px;
+        border: 1px solid rgba(34, 211, 238, 0.34);
+        border-radius: 18px;
+        background: #07101e;
+        background-image: linear-gradient(180deg, rgba(34, 211, 238, 0.05), transparent 42%);
+        box-shadow:
+          0 40px 90px rgba(0, 0, 0, 0.7),
+          0 0 50px rgba(34, 211, 238, 0.1);
+        overflow: hidden;
+        z-index: 20;
+      }
+
+      #agent-recording {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        transform: scale(1.035);
+        transform-origin: 50% 50%;
+      }
+
+      .agent-head {
+        display: flex;
+        align-items: center;
+        height: 56px;
+        padding: 0 24px;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+      }
+
+      .agent-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--green);
+        box-shadow: 0 0 12px rgba(52, 211, 153, 0.9);
+        margin-right: 12px;
+      }
+
+      .agent-title {
+        font-family: var(--font-mono);
+        font-size: 16px;
+        letter-spacing: 2.6px;
+        color: var(--cyan);
+      }
+
+      .agent-live {
+        margin-left: auto;
+        padding: 5px 12px;
+        border: 1px solid rgba(52, 211, 153, 0.3);
+        border-radius: 999px;
+        font-size: 13px;
+        letter-spacing: 1px;
+        color: var(--green);
+      }
+
+      .agent-query {
+        margin: 20px 24px 0;
+        font-family: var(--font-mono);
+        font-size: 16px;
+        color: rgba(226, 232, 240, 0.9);
+      }
+
+      .agent-query .prompt {
+        color: var(--cyan);
+        margin-right: 8px;
+      }
+
+      .agent-flow {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 18px 24px 0;
+      }
+
+      .agent-chip {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 138px;
+        height: 38px;
+        border: 1px solid rgba(34, 211, 238, 0.22);
+        border-radius: 10px;
+        background: rgba(34, 211, 238, 0.06);
+        font-size: 15px;
+        letter-spacing: 0.5px;
+        color: #dbe4f0;
+      }
+
+      .agent-arrow {
+        font-family: var(--font-mono);
+        font-size: 16px;
+        color: var(--cyan-soft);
+      }
+
+      #agent-chart-reveal {
+        width: 0;
+        height: 86px;
+        margin: 16px 24px 0;
+        overflow: hidden;
+      }
+
+      #agent-chart-reveal svg {
+        display: block;
+        width: 640px;
+        height: 86px;
+      }
+
+      #agent-result {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 12px 24px 0;
+        font-size: 15px;
+        letter-spacing: 0.3px;
+        color: #dbe4f0;
+      }
+
+      .agent-check {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 19px;
+        height: 19px;
+        flex: 0 0 auto;
+        border: 1px solid rgba(52, 211, 153, 0.5);
+        border-radius: 50%;
+        background: rgba(52, 211, 153, 0.14);
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: var(--green);
+      }
+
+      .agent-badge {
+        margin-left: auto;
+        padding: 4px 10px;
+        border: 1px solid rgba(34, 211, 238, 0.28);
+        border-radius: 999px;
+        font-size: 12px;
+        letter-spacing: 0.5px;
+        color: var(--cyan-soft);
+      }
+
+      #agent-footer {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 10px 24px 0;
+        font-size: 13px;
+        letter-spacing: 0.4px;
+        color: rgba(148, 163, 184, 0.82);
+      }
+
+      #agent-footer .sep {
+        color: rgba(148, 163, 184, 0.28);
+        margin: 0 4px;
+      }
+
+      .shield-icon {
+        width: 14px;
+        height: 16px;
+        flex: 0 0 auto;
+      }
+
+      /* ---------------- innovation ---------------- */
+
+      #scene-innovation {
+        z-index: 13;
+      }
+
+      #inno-head {
+        position: absolute;
+        left: 150px;
+        top: 108px;
+        width: 1300px;
+      }
+
+      #inno-orbit {
+        position: absolute;
+        left: 660px;
+        top: 180px;
+        width: 760px;
+        height: 760px;
+        border: 1px dashed rgba(34, 211, 238, 0.13);
+        border-radius: 50%;
+        z-index: 0;
+      }
+
+      .inno-grid {
+        position: absolute;
+        left: 150px;
+        top: 282px;
+        display: grid;
+        grid-template-columns: 780px 780px;
+        grid-template-rows: 270px 270px;
+        gap: 30px;
+        z-index: 2;
+      }
+
+      .inno-card {
+        position: relative;
+        padding: 30px 34px;
+        border: 1px solid rgba(34, 211, 238, 0.18);
+        border-radius: 16px;
+        background: rgba(7, 16, 30, 0.9);
+        overflow: hidden;
+      }
+
+      .inno-card .num {
+        font-family: var(--font-mono);
+        font-size: 17px;
+        letter-spacing: 3px;
+        color: rgba(34, 211, 238, 0.7);
+      }
+
+      .inno-card .title {
+        margin-top: 12px;
+        font-size: 36px;
+        font-weight: 700;
+        letter-spacing: -0.5px;
+        color: var(--ink);
+      }
+
+      .inno-card .desc {
+        margin-top: 12px;
+        font-size: 21px;
+        line-height: 1.5;
+        color: var(--muted);
+        letter-spacing: 0.3px;
+      }
+
+      .inno-card .desc .cyan {
+        color: var(--cyan-soft);
+      }
+
+      .inno-icon {
+        position: absolute;
+        right: 30px;
+        top: 28px;
+        width: 64px;
+        height: 64px;
+        opacity: 0.9;
+      }
+
+      .inno-card::after {
+        content: "";
+        position: absolute;
+        left: 0;
+        bottom: 0;
+        width: 100%;
+        height: 2px;
+        background: linear-gradient(90deg, rgba(34, 211, 238, 0.6), transparent);
+        opacity: 0.5;
+      }
+
+      /* ---------------- proof ---------------- */
+
+      #scene-proof {
+        z-index: 14;
+      }
+
+      #proof-head {
+        position: absolute;
+        left: 164px;
+        top: 108px;
+        width: 1400px;
+      }
+
+      .proof-cards {
+        position: absolute;
+        left: 164px;
+        top: 272px;
+        display: flex;
+        gap: 24px;
+      }
+
+      .proof-card {
+        width: 380px;
+        height: 224px;
+        padding: 24px 28px;
+        border: 1px solid rgba(34, 211, 238, 0.16);
+        border-radius: 16px;
+        background: rgba(7, 16, 30, 0.88);
+      }
+
+      .proof-card .big {
+        font-family: var(--font-mono);
+        font-size: 64px;
+        line-height: 1;
+        color: var(--ink);
+        letter-spacing: -2px;
+      }
+
+      .proof-card .big.cyan { color: var(--cyan); }
+      .proof-card .big.green { color: var(--green); }
+      .proof-card .big.amber { color: var(--amber); }
+      .proof-card .big.small { font-size: 50px; letter-spacing: -1.5px; }
+
+      .proof-card .label {
+        margin-top: 14px;
+        font-size: 22px;
+        color: #dbe4f0;
+      }
+
+      .proof-card .foot {
+        margin-top: 6px;
+        font-family: var(--font-mono);
+        font-size: 13px;
+        letter-spacing: 0.6px;
+        color: rgba(148, 163, 184, 0.75);
+      }
+
+      #case-card {
+        position: absolute;
+        left: 164px;
+        top: 520px;
+        width: 1592px;
+        height: 336px;
+        display: flex;
+        align-items: center;
+        gap: 30px;
+        padding: 30px 36px;
+        border: 1px solid rgba(34, 211, 238, 0.18);
+        border-radius: 18px;
+        background: rgba(7, 16, 30, 0.9);
+        overflow: hidden;
+      }
+
+      #case-copy {
+        width: 610px;
+        flex: 0 0 auto;
+      }
+
+      #case-copy .label {
+        font-family: var(--font-mono);
+        font-size: 15px;
+        letter-spacing: 3px;
+        color: var(--cyan);
+      }
+
+      #case-copy .title {
+        margin-top: 12px;
+        font-size: 44px;
+        font-weight: 700;
+        letter-spacing: -1px;
+        color: var(--ink);
+      }
+
+      #case-copy .title .green {
+        color: var(--green);
+      }
+
+      #case-copy .body {
+        margin-top: 12px;
+        font-size: 19px;
+        line-height: 1.5;
+        color: var(--muted);
+      }
+
+      #case-copy .note {
+        margin-top: 14px;
+        font-family: var(--font-mono);
+        font-size: 13px;
+        letter-spacing: 0.8px;
+        color: rgba(245, 158, 11, 0.8);
+      }
+
+      #case-chart {
+        flex: 1;
+        height: 260px;
+        position: relative;
+      }
+
+      #case-chart .legend {
+        position: absolute;
+        right: 0;
+        top: 0;
+        display: flex;
+        gap: 18px;
+        font-family: var(--font-mono);
+        font-size: 13px;
+        letter-spacing: 1px;
+        color: rgba(148, 163, 184, 0.8);
+      }
+
+      #case-chart .legend .red-dot,
+      #case-chart .legend .green-dot {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        margin-right: 6px;
+        border-radius: 50%;
+      }
+
+      #case-chart .legend .red-dot {
+        background: var(--red);
+        box-shadow: 0 0 10px rgba(248, 113, 113, 0.7);
+      }
+
+      #case-chart .legend .green-dot {
+        background: var(--green);
+        box-shadow: 0 0 10px rgba(52, 211, 153, 0.7);
+      }
+
+      #case-curve-reveal {
+        position: absolute;
+        left: 0;
+        bottom: 10px;
+        width: 0;
+        height: 220px;
+        overflow: hidden;
+      }
+
+      #case-curve-reveal svg {
+        display: block;
+        width: 900px;
+        height: 220px;
+      }
+
+      /* ---------------- business ---------------- */
+
+      #scene-business {
+        z-index: 15;
+      }
+
+      #biz-head {
+        position: absolute;
+        left: 150px;
+        top: 108px;
+        width: 1500px;
+      }
+
+      .price-row {
+        position: absolute;
+        left: 150px;
+        top: 264px;
+        display: flex;
+        gap: 30px;
+      }
+
+      .price-card {
+        position: relative;
+        width: 520px;
+        height: 250px;
+        padding: 26px 30px;
+        border: 1px solid rgba(34, 211, 238, 0.16);
+        border-radius: 16px;
+        background: rgba(7, 16, 30, 0.9);
+      }
+
+      .price-card.featured {
+        border-color: rgba(34, 211, 238, 0.55);
+        background: linear-gradient(180deg, rgba(34, 211, 238, 0.1), rgba(7, 16, 30, 0.94));
+        box-shadow: 0 0 50px rgba(34, 211, 238, 0.08);
+      }
+
+      .price-card .plan {
+        font-size: 19px;
+        letter-spacing: 1px;
+        color: var(--muted);
+      }
+
+      .price-card .price {
+        margin-top: 8px;
+        font-family: var(--font-mono);
+        font-size: 58px;
+        line-height: 1;
+        color: var(--ink);
+        letter-spacing: -2px;
+      }
+
+      .price-card.featured .price {
+        color: var(--cyan);
+      }
+
+      .price-card .price .unit {
+        margin-left: 6px;
+        font-family: var(--font-cn);
+        font-size: 20px;
+        color: var(--muted);
+        letter-spacing: 0;
+      }
+
+      .price-card .desc {
+        margin-top: 16px;
+        font-size: 17px;
+        line-height: 1.6;
+        color: #cbd5e1;
+      }
+
+      .price-card .badge {
+        position: absolute;
+        right: 22px;
+        top: 22px;
+        padding: 5px 10px;
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        border-radius: 999px;
+        font-size: 12px;
+        letter-spacing: 0.8px;
+        color: var(--muted);
+      }
+
+      .price-card.featured .badge {
+        border-color: rgba(34, 211, 238, 0.35);
+        color: var(--cyan);
+      }
+
+      #gtm {
+        position: absolute;
+        left: 150px;
+        top: 548px;
+        display: flex;
+        gap: 30px;
+      }
+
+      .gtm-card {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        width: 520px;
+        height: 68px;
+        padding: 0 24px;
+        border: 1px solid rgba(34, 211, 238, 0.12);
+        border-radius: 12px;
+        background: rgba(7, 16, 30, 0.75);
+      }
+
+      .gtm-card .icon {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 34px;
+        height: 34px;
+        border-radius: 8px;
+        background: rgba(34, 211, 238, 0.1);
+        font-family: var(--font-mono);
+        font-size: 14px;
+        color: var(--cyan);
+      }
+
+      .gtm-card .name {
+        font-size: 20px;
+        color: #dbe4f0;
+      }
+
+      .gtm-card .kpi {
+        margin-left: auto;
+        font-family: var(--font-mono);
+        font-size: 14px;
+        color: var(--muted);
+      }
+
+      #rev-panel {
+        position: absolute;
+        left: 150px;
+        top: 650px;
+        width: 1620px;
+        height: 272px;
+        display: flex;
+        gap: 44px;
+        padding: 26px 32px;
+        border: 1px solid rgba(34, 211, 238, 0.16);
+        border-radius: 16px;
+        background: rgba(7, 16, 30, 0.88);
+      }
+
+      #rev-left {
+        width: 440px;
+        flex: 0 0 auto;
+      }
+
+      #rev-left .label {
+        font-family: var(--font-mono);
+        font-size: 14px;
+        letter-spacing: 2.5px;
+        color: var(--cyan);
+      }
+
+      #rev-left .big {
+        margin-top: 10px;
+        font-family: var(--font-mono);
+        font-size: 62px;
+        line-height: 1;
+        color: var(--green);
+        letter-spacing: -2px;
+      }
+
+      #rev-left .note {
+        margin-top: 10px;
+        font-size: 16px;
+        line-height: 1.5;
+        color: var(--muted);
+      }
+
+      #rev-bars {
+        flex: 1;
+        padding-top: 4px;
+      }
+
+      #rev-bars .head {
+        display: flex;
+        justify-content: space-between;
+        font-family: var(--font-mono);
+        font-size: 13px;
+        letter-spacing: 1px;
+        color: rgba(148, 163, 184, 0.8);
+      }
+
+      .rev-row {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        margin-top: 16px;
+      }
+
+      .rev-row .pct {
+        width: 54px;
+        font-family: var(--font-mono);
+        font-size: 16px;
+        color: var(--muted);
+      }
+
+      .rev-track {
+        width: 720px;
+        height: 18px;
+        border-radius: 9px;
+        background: rgba(148, 163, 184, 0.12);
+        overflow: hidden;
+      }
+
+      .rev-fill {
+        width: 0;
+        height: 18px;
+        border-radius: 9px;
+        background: linear-gradient(90deg, rgba(34, 211, 238, 0.8), rgba(52, 211, 153, 0.8));
+      }
+
+      .rev-row .amt {
+        font-family: var(--font-mono);
+        font-size: 18px;
+        color: var(--ink);
+      }
+
+      #rev-note {
+        margin-top: 10px;
+        text-align: right;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        letter-spacing: 1px;
+        color: rgba(148, 163, 184, 0.6);
+      }
+
+      /* ---------------- end ---------------- */
+
+      #scene-end {
+        z-index: 30;
+      }
+
+      #end-glow {
+        position: absolute;
+        left: 360px;
+        top: 110px;
+        width: 1200px;
+        height: 760px;
+        background: radial-gradient(ellipse at 50% 45%, rgba(34, 211, 238, 0.19), transparent 64%);
+        opacity: 0;
+      }
+
+      #end-wordmark {
+        position: absolute;
+        left: 0;
+        top: 270px;
+        width: 100%;
+        text-align: center;
+        font-family: var(--font-en);
+        font-size: 178px;
+        line-height: 1;
+        font-weight: 700;
+        letter-spacing: 26px;
+        color: var(--ink);
+        text-shadow: 0 0 60px rgba(34, 211, 238, 0.18);
+      }
+
+      #end-wordmark .end-mark {
+        display: inline-block;
+        width: 18px;
+        height: 18px;
+        margin-left: 8px;
+        border-radius: 3px;
+        background: var(--cyan);
+        box-shadow: 0 0 22px rgba(34, 211, 238, 0.8);
+        vertical-align: 24px;
+      }
+
+      #end-sub {
+        position: absolute;
+        left: 0;
+        top: 492px;
+        width: 100%;
+        text-align: center;
+        font-size: 32px;
+        letter-spacing: 10px;
+        color: rgba(148, 163, 184, 0.9);
+      }
+
+      #end-tagline {
+        position: absolute;
+        left: 0;
+        top: 576px;
+        width: 100%;
+        text-align: center;
+        font-size: 54px;
+        font-weight: 600;
+        letter-spacing: -1px;
+        color: #e2e8f0;
+      }
+
+      #end-meta {
+        position: absolute;
+        left: 0;
+        top: 674px;
+        width: 100%;
+        text-align: center;
+        font-family: var(--font-mono);
+        font-size: 17px;
+        letter-spacing: 3px;
+        color: rgba(34, 211, 238, 0.78);
+      }
+
+      #end-cta {
+        position: absolute;
+        left: 0;
+        top: 736px;
+        width: 100%;
+        text-align: center;
+        font-family: var(--font-mono);
+        font-size: 17px;
+        line-height: 1.8;
+        letter-spacing: 0.4px;
+        color: rgba(203, 213, 225, 0.8);
+      }
+
+      #end-cta .link-label {
+        display: inline-block;
+        width: 58px;
+        text-align: right;
+        margin-right: 10px;
+        color: var(--cyan);
+        letter-spacing: 1px;
+      }
+
+      /* ---------------- transition ---------------- */
+
+      #dip {
+        position: absolute;
+        inset: 0;
+        background: #02050b;
+        opacity: 0;
+        z-index: 60;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="main"
+      data-start="0"
+      data-duration="60"
+      data-width="1920"
+      data-height="1080"
+    >
+      <div id="film" class="frame">
+        <div id="bg"></div>
+        <div id="grid" data-layout-allow-overflow></div>
+        <div id="flare"></div>
+        <div id="scanlines"></div>
+        <div id="vignette"></div>
+
+        <div id="hud">
+          <div class="hud-left">
+            <span class="hud-dot"></span>
+            <span>TUNER / AI SERIAL ASSISTANT</span>
+          </div>
+          <div class="hud-right">
+            <span>PROJECT FILM / 60s</span>
+          </div>
+        </div>
+
+        <div id="progress-track"><div id="progress-fill"></div></div>
+
+        <!-- 01 intro -->
+        <div id="scene-intro" class="scene">
+          <div id="intro">
+            <div id="intro-label">为电赛 / 智能车 / RC / RM 而做</div>
+            <div id="headline-1" data-layout-allow-overlap>调 PID，<br />你还在盲试吗？</div>
+            <div id="headline-2" data-layout-allow-overlap>让 <span class="cyan">AI</span> 接管试错。</div>
+            <div id="accent-bar"></div>
+          </div>
+          <div id="spike">
+            <div id="spike-reveal" data-layout-allow-overflow>
+              <svg viewBox="0 0 1620 170" xmlns="http://www.w3.org/2000/svg" data-layout-allow-overflow>
+                <path
+                  d="M0,140 L520,140 L560,95 L590,150 L620,26 L650,164 L690,108 L740,146 L1200,146 L1620,146"
+                  fill="none"
+                  stroke="rgba(248,113,113,0.18)"
+                  stroke-width="12"
+                />
+                <path
+                  d="M0,140 L520,140 L560,95 L590,150 L620,26 L650,164 L690,108 L740,146 L1200,146 L1620,146"
+                  fill="none"
+                  stroke="#f87171"
+                  stroke-width="3.2"
+                />
+              </svg>
+            </div>
+          </div>
+          <div id="stat-line">
+            <span class="stat-rule"></span>
+            <span class="num">100%</span>
+            <span>（7/7）受访者：反复试错最耗时</span>
+          </div>
+          <div id="intro-foot">TUNER · AI 串口调试助手</div>
+        </div>
+
+        <!-- 02 demand -->
+        <div id="scene-demand" class="scene">
+          <div id="demand-head">
+            <div class="scene-label">THE PROBLEM</div>
+            <div id="demand-title">看得见数据，<br />看不见<span class="red">下一步</span>。</div>
+          </div>
+
+          <div class="pain-list">
+            <div class="pain-card">
+              <span class="pain-num">01</span>
+              <span class="pain-text">只看得到数据，看不懂问题</span>
+              <span class="pain-mark"></span>
+            </div>
+            <div class="pain-card">
+              <span class="pain-num">02</span>
+              <span class="pain-text">参数和效果对不上</span>
+              <span class="pain-mark"></span>
+            </div>
+            <div class="pain-card">
+              <span class="pain-num">03</span>
+              <span class="pain-text">怕乱调，损坏机械</span>
+              <span class="pain-mark"></span>
+            </div>
+          </div>
+
+          <div id="loop-panel">
+            <svg viewBox="0 0 820 420" xmlns="http://www.w3.org/2000/svg" data-layout-allow-overflow>
+              <path
+                d="M120 120 C400 40, 700 120, 700 220 C700 330, 400 390, 120 300"
+                fill="none"
+                stroke="rgba(248,113,113,0.28)"
+                stroke-width="2"
+                stroke-dasharray="8 10"
+              />
+              <path d="M700 220 L688 202 M700 220 L714 204" fill="none" stroke="rgba(248,113,113,0.5)" stroke-width="2" />
+              <path d="M120 300 L106 282 M120 300 L134 284" fill="none" stroke="rgba(248,113,113,0.5)" stroke-width="2" />
+            </svg>
+            <div class="loop-chip" id="loop-a">改参数</div>
+            <div class="loop-chip" id="loop-b">看波形</div>
+            <div class="loop-chip" id="loop-c">不满意</div>
+            <div class="loop-chip" id="loop-d">再改</div>
+            <div id="loop-center">
+              <div class="big">反复试错</div>
+              <div class="small">最贵的成本：时间</div>
+            </div>
+          </div>
+
+          <div id="demand-stats">
+            <div class="demand-stat">
+              <span class="v">7 + 12 + 25</span>
+              <span class="k">问卷 / 访谈 / 扩测样本</span>
+            </div>
+            <div class="demand-stat">
+              <span class="v">85.7%</span>
+              <span class="k">愿意赛前试用</span>
+            </div>
+            <div class="demand-stat">
+              <span class="v">57.1%</span>
+              <span class="k">认为赛场离线是刚需</span>
+            </div>
+            <div class="demand-stat hot">
+              <span class="v">100%</span>
+              <span class="k">认为反复试错最耗时</span>
+            </div>
+            <div class="demand-stat">
+              <span class="v">40% → 85%</span>
+              <span class="k">诊断有效率（内部测评）</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 03 product -->
+        <div id="scene-product" class="scene">
+          <div id="product">
+            <div id="device">
+              <img src="./assets/ui-dark.png" alt="TUNER dark workspace" />
+            </div>
+          </div>
+
+          <div id="product-title">波形 · 分析 · 调参，<span class="cyan">一体</span></div>
+
+          <div id="callout-wave" class="callout">
+            <div class="pill"><span class="dot"></span><span>实时波形</span></div>
+            <div class="line"></div>
+          </div>
+          <div id="callout-metrics" class="callout">
+            <div class="pill"><span class="dot"></span><span>本地指标</span></div>
+            <div class="line"></div>
+          </div>
+          <div id="callout-agent" class="callout">
+            <div class="pill"><span class="dot"></span><span>AI 自动闭环</span></div>
+            <div class="line"></div>
+          </div>
+          <div id="callout-safety" class="callout">
+            <div class="pill"><span class="dot"></span><span>三重安全护栏</span></div>
+            <div class="line"></div>
+          </div>
+
+          <div id="agent-card">
+            <video
+              id="agent-recording"
+              data-start="16.8"
+              data-duration="10.6"
+              data-media-start="0"
+              src="./assets/agent/agent-session.mp4"
+              muted
+              playsinline
+            ></video>
+          </div>
+        </div>
+
+        <!-- 04 innovation -->
+        <div id="scene-innovation" class="scene">
+          <div id="inno-head">
+            <div class="scene-label">CORE INNOVATION</div>
+            <div class="scene-title">核心不是模型，是<span class="cyan">闭环</span>。</div>
+          </div>
+
+          <div id="inno-orbit"></div>
+
+          <div class="inno-grid">
+            <div class="inno-card">
+              <div class="num">01</div>
+              <div class="title">会动手的 AI</div>
+              <div class="desc">
+                查数据 → 改参数 → 设目标 → 看响应<br />
+                不是聊天给建议，而是<span class="cyan">自己完成闭环</span>
+              </div>
+              <svg class="inno-icon" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+                <path d="M16 32a16 16 0 1 1 6 12" fill="none" stroke="#22d3ee" stroke-width="2.4" />
+                <path d="M10 38l6 10 10-5" fill="none" stroke="#22d3ee" stroke-width="2.4" />
+              </svg>
+            </div>
+
+            <div class="inno-card">
+              <div class="num">02</div>
+              <div class="title">安全笼头</div>
+              <div class="desc">
+                用户范围 / 系统上限 / 单步增幅<br />
+                超调或振荡越限，<span class="green">自动回退</span>到最佳稳定参数
+              </div>
+              <svg class="inno-icon" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+                <path d="M32 6l22 8v16c0 14-9 22-22 28C19 52 10 44 10 30V14z" fill="none" stroke="#34d399" stroke-width="2.2" />
+                <path d="M22 31l7 7 14-15" fill="none" stroke="#34d399" stroke-width="2.4" />
+              </svg>
+            </div>
+
+            <div class="inno-card">
+              <div class="num">03</div>
+              <div class="title">仿真先练，实机再用</div>
+              <div class="desc">
+                电机速度环 / 串级 / 倒立摆<br />
+                没有硬件，也能跑完整闭环
+              </div>
+              <svg class="inno-icon" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+                <rect x="10" y="12" width="44" height="40" rx="5" fill="none" stroke="#22d3ee" stroke-width="2.2" />
+                <path d="M27 24l14 8-14 8z" fill="#22d3ee" opacity="0.8" />
+              </svg>
+            </div>
+
+            <div class="inno-card">
+              <div class="num">04</div>
+              <div class="title">波形-分析-调参同源</div>
+              <div class="desc">
+                同一份确定性指标，波形分析直接复用<br />
+                不依赖 AI，断网也能算
+              </div>
+              <svg class="inno-icon" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+                <path d="M8 46h48M8 46V10" fill="none" stroke="#22d3ee" stroke-width="2.2" />
+                <path d="M12 40l10-12 8 7 10-15 12 9" fill="none" stroke="#34d399" stroke-width="2.4" />
+              </svg>
+            </div>
+          </div>
+        </div>
+
+        <!-- 05 proof -->
+        <div id="scene-proof" class="scene">
+          <div id="proof-head">
+            <div class="scene-label">PROOF, NOT PROMISES</div>
+            <div class="scene-title">不是 PPT，是能跑的东西。</div>
+          </div>
+
+          <div class="proof-cards">
+            <div class="proof-card">
+              <div class="big cyan">12</div>
+              <div class="label">项自测全绿</div>
+              <div class="foot">npm run test:analysis</div>
+            </div>
+            <div class="proof-card">
+              <div class="big">51</div>
+              <div class="label">张验证波形</div>
+              <div class="foot">3 策略 × 3 参数 × 3 信号</div>
+            </div>
+            <div class="proof-card">
+              <div class="big green">v1.1.0</div>
+              <div class="label">安装包已发布</div>
+              <div class="foot">Windows NSIS</div>
+            </div>
+            <div class="proof-card">
+              <div class="big amber small">40% → 85%</div>
+              <div class="label">诊断有效率</div>
+              <div class="foot">内部测评</div>
+            </div>
+          </div>
+
+          <div id="case-card">
+            <div id="case-copy">
+              <div class="label">SIMULATION CASE</div>
+              <div class="title">倒立摆：超调 <span class="red">102%</span> → <span class="green">0.24%</span></div>
+              <div class="body">
+                安全回退先兜底，再收敛到稳定参数。<br />
+                从“敢不敢让 AI 试”，到“可控地让它试”。
+              </div>
+              <div class="note">仿真案例 · 非实机承诺</div>
+            </div>
+            <div id="case-chart">
+              <div class="legend">
+                <span><span class="red-dot"></span>调整前</span>
+                <span><span class="green-dot"></span>调整后</span>
+              </div>
+              <div id="case-curve-reveal" data-layout-allow-overflow>
+                <svg viewBox="0 0 900 220" xmlns="http://www.w3.org/2000/svg" data-layout-allow-overflow>
+                  <line x1="0" y1="150" x2="900" y2="150" stroke="rgba(148,163,184,0.22)" stroke-dasharray="5 7" />
+                  <path
+                    d="M0 150 L120 150 L170 120 L210 20 L250 176 L300 110 L340 150 L900 150"
+                    fill="none"
+                    stroke="#f87171"
+                    stroke-width="3"
+                  />
+                  <path
+                    d="M0 150 L120 150 L170 120 L200 42 L230 118 L270 146 L320 150 L900 150"
+                    fill="none"
+                    stroke="#34d399"
+                    stroke-width="3"
+                  />
+                </svg>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 06 business -->
+        <div id="scene-business" class="scene">
+          <div id="biz-head">
+            <div class="scene-label">BUSINESS MODEL</div>
+            <div class="scene-title">开源获客，<span class="cyan">分层变现</span>。</div>
+          </div>
+
+          <div class="price-row">
+            <div class="price-card">
+              <div class="plan">免费版</div>
+              <div class="price">¥0</div>
+              <div class="desc">完整基础功能<br />开源可定制<br />社区支持</div>
+              <div class="badge">MIT 开源</div>
+            </div>
+            <div class="price-card featured">
+              <div class="plan">高级版</div>
+              <div class="price">¥10<span class="unit">/ 月</span></div>
+              <div class="desc">云端报告 / 团队协作<br />高级策略模板<br />优先支持</div>
+              <div class="badge">规划中</div>
+            </div>
+            <div class="price-card">
+              <div class="plan">按次 API</div>
+              <div class="price">按需</div>
+              <div class="desc">赛事 / 教育 / 企业<br />按调用次数计费<br />可私有化部署</div>
+              <div class="badge">规划中</div>
+            </div>
+          </div>
+
+          <div id="gtm">
+            <div class="gtm-card">
+              <div class="icon">B</div>
+              <div class="name">B 站教程</div>
+              <div class="kpi">57.1% 获客渠道</div>
+            </div>
+            <div class="gtm-card">
+              <div class="icon">&lt;/&gt;</div>
+              <div class="name">GitHub 开源</div>
+              <div class="kpi">57.1% 获客渠道</div>
+            </div>
+            <div class="gtm-card">
+              <div class="icon">◎</div>
+              <div class="name">竞赛社群</div>
+              <div class="kpi">42.9% 获客渠道</div>
+            </div>
+          </div>
+
+          <div id="rev-panel">
+            <div id="rev-left">
+              <div class="label">PAID INTENT</div>
+              <div class="big">66.7%</div>
+              <div class="note">12 人访谈 · 待真实转化验证<br />先让 500 支队伍用起来，再谈收入。</div>
+            </div>
+            <div id="rev-bars">
+              <div class="head">
+                <span>年收入测算 · 转化率敏感性</span>
+                <span>单位：万元 / 年</span>
+              </div>
+              <div class="rev-row">
+                <span class="pct">5%</span>
+                <div class="rev-track"><div id="rev-fill-1" class="rev-fill"></div></div>
+                <span class="amt">¥0.6 万</span>
+              </div>
+              <div class="rev-row">
+                <span class="pct">15%</span>
+                <div class="rev-track"><div id="rev-fill-2" class="rev-fill"></div></div>
+                <span class="amt">¥1.8 万</span>
+              </div>
+              <div class="rev-row">
+                <span class="pct">25%</span>
+                <div class="rev-track"><div id="rev-fill-3" class="rev-fill"></div></div>
+                <span class="amt">¥3.0 万</span>
+              </div>
+              <div id="rev-note">测算 · 非承诺</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 07 end -->
+        <div id="scene-end" class="scene">
+          <div id="end-glow"></div>
+          <div id="end-wordmark">TUNER<span class="end-mark"></span></div>
+          <div id="end-sub">AI 串口调试助手</div>
+          <div id="end-tagline">把最耗时的试错环节，用 <span class="cyan">AI</span> 压掉。</div>
+          <div id="end-meta">开源 · 仿真 / 真机双模式 · 三重安全护栏</div>
+          <div id="end-cta">
+            <div><span class="link-label">GitHub</span> github.com/HonestLeon/ai-serial-assistant</div>
+            <div><span class="link-label">Gitee</span> gitee.com/Honest_Leon/ai-serial-assistant</div>
+          </div>
+        </div>
+
+        <!-- captions -->
+        <div id="caption">
+          <div class="sub" id="sub-1"><span>竞赛现场，最贵的是反复试错的时间。</span></div>
+          <div class="sub" id="sub-2"><span>串口助手只看数据，AI 助手只会聊天。</span></div>
+          <div class="sub" id="sub-3"><span>于是，我们把调参闭环交给 AI。</span></div>
+          <div class="sub" id="sub-4"><span>TUNER：波形、分析、调参，在一个工作台完成。</span></div>
+          <div class="sub" id="sub-5"><span>一句目标，AI 自主完成查数据、改参数、设目标、看响应。</span></div>
+          <div class="sub" id="sub-6"><span>每一步都在安全护栏里，越界自动回退。</span></div>
+          <div class="sub" id="sub-7"><span>把调参从经验，变成可复现的闭环。</span></div>
+          <div class="sub" id="sub-8"><span>模型决策，确定性算法执行，安全机制兜底。</span></div>
+          <div class="sub" id="sub-9"><span>12 项自测、51 张波形、v1.1.0 安装包，全部可验证。</span></div>
+          <div class="sub" id="sub-10"><span>仿真案例：超调 102% → 0.24%。</span></div>
+          <div class="sub" id="sub-11"><span>开源免费，¥10/月高级版，按次 API。</span></div>
+          <div class="sub" id="sub-12"><span>付费意向 66.7%，收入按 5–25% 转化测算。</span></div>
+          <div class="sub" id="sub-13"><span>开源免费，欢迎试用。</span></div>
+        </div>
+
+        <div id="dip"></div>
+
+        <audio
+          id="bgm"
+          data-start="0"
+          data-duration="60"
+          data-media-start="0"
+          data-volume="0.62"
+          data-fade-in="1.5"
+          data-fade-out="2.5"
+          src="./assets/music/minimal-emotion.mp3"
+        ></audio>
+      </div>
+    </div>
+
+    <script>
+      const tl = gsap.timeline({ paused: true });
+
+      /* ---------- initial states ---------- */
+      gsap.set("#hud", { opacity: 0 });
+      gsap.set("#progress-fill", { width: 0 });
+      gsap.set(".sub", { opacity: 0, y: 12 });
+
+      gsap.set("#scene-demand", { opacity: 0 });
+      gsap.set("#scene-product", { opacity: 0 });
+      gsap.set("#scene-innovation", { opacity: 0 });
+      gsap.set("#scene-proof", { opacity: 0 });
+      gsap.set("#scene-business", { opacity: 0 });
+      gsap.set("#scene-end", { opacity: 0 });
+
+      gsap.set("#intro-label", { opacity: 0 });
+      gsap.set("#headline-1", { opacity: 0, y: 60 });
+      gsap.set("#headline-2", { opacity: 0, y: 60 });
+      gsap.set("#spike-reveal", { width: 0 });
+      gsap.set("#stat-line", { opacity: 0, y: 20 });
+      gsap.set("#intro-foot", { opacity: 0 });
+
+      gsap.set("#demand-head", { opacity: 0, y: 24 });
+      gsap.set(".pain-card", { opacity: 0, x: -24 });
+      gsap.set("#loop-panel", { opacity: 0, scale: 0.96 });
+      gsap.set(".loop-chip", { opacity: 0, scale: 0.9 });
+      gsap.set("#demand-stats", { opacity: 0, y: 18 });
+
+      gsap.set("#product", { opacity: 0, y: 150, scale: 0.9 });
+      gsap.set("#product-title", { opacity: 0, y: 18 });
+      gsap.set(".callout", { opacity: 0, x: -24 });
+      gsap.set("#agent-card", { opacity: 0, x: 80, y: 40, scale: 0.94 });
+
+      gsap.set("#inno-head", { opacity: 0, y: 24 });
+      gsap.set(".inno-card", { opacity: 0, y: 28 });
+      gsap.set("#inno-orbit", { rotation: 0, opacity: 0 });
+
+      gsap.set("#proof-head", { opacity: 0, y: 24 });
+      gsap.set(".proof-card", { opacity: 0, y: 28 });
+      gsap.set("#case-card", { opacity: 0, y: 28 });
+      gsap.set("#case-curve-reveal", { width: 0 });
+
+      gsap.set("#biz-head", { opacity: 0, y: 24 });
+      gsap.set(".price-card", { opacity: 0, y: 28 });
+      gsap.set("#gtm", { opacity: 0, y: 18 });
+      gsap.set("#rev-panel", { opacity: 0, y: 18 });
+      gsap.set(".rev-fill", { width: 0 });
+
+      gsap.set("#end-glow", { opacity: 0 });
+      gsap.set("#end-wordmark", { opacity: 0, y: 40 });
+      gsap.set("#end-sub", { opacity: 0, y: 20 });
+      gsap.set("#end-tagline", { opacity: 0, y: 24 });
+      gsap.set("#end-meta", { opacity: 0 });
+      gsap.set("#end-cta", { opacity: 0 });
+      gsap.set("#dip", { opacity: 0 });
+
+      /* ---------- global ---------- */
+      tl.to("#hud", { opacity: 1, duration: 0.6 }, 0.2);
+      tl.to("#progress-fill", { width: 1920, duration: 60, ease: "none" }, 0);
+      tl.to("#grid", { x: -60, y: -40, duration: 60, ease: "none" }, 0);
+      tl.to("#flare", { opacity: 0.38, duration: 18, ease: "sine.inOut" }, 1);
+
+      /* ---------- 01 intro ---------- */
+      tl.to("#intro-label", { opacity: 1, duration: 0.55 }, 0.35);
+      tl.to("#headline-1", { opacity: 1, y: 0, duration: 0.8, ease: "power4.out" }, 0.65);
+      tl.to("#spike-reveal", { width: 1620, duration: 1.0, ease: "power2.inOut" }, 1.35);
+      tl.to("#stat-line", { opacity: 1, y: 0, duration: 0.5, ease: "power2.out" }, 1.9);
+      tl.to("#intro-foot", { opacity: 1, duration: 0.45 }, 1.6);
+
+      tl.to("#headline-1", { opacity: 0, y: -35, duration: 0.32, ease: "power2.in" }, 2.95);
+      tl.to("#headline-2", { opacity: 1, y: 0, duration: 0.55, ease: "power3.out" }, 3.12);
+      tl.to("#accent-bar", { width: 520, duration: 0.5, ease: "power2.out" }, 3.36);
+
+      tl.to("#sub-1", { opacity: 1, y: 0, duration: 0.35 }, 3.4);
+      tl.to("#sub-1", { opacity: 0, y: -8, duration: 0.3 }, 5.25);
+
+      tl.to(
+        ["#headline-2", "#stat-line", "#intro-label", "#intro-foot", "#spike", "#accent-bar"],
+        { opacity: 0, duration: 0.28, ease: "power2.in" },
+        5.5
+      );
+      tl.to("#scene-intro", { opacity: 0, duration: 0.3 }, 5.6);
+      tl.to("#dip", { opacity: 0.92, duration: 0.1 }, 5.66);
+      tl.to("#dip", { opacity: 0, duration: 0.32 }, 5.8);
+
+      /* ---------- 02 demand ---------- */
+      tl.to("#scene-demand", { opacity: 1, duration: 0.45 }, 6.0);
+      tl.to("#demand-head", { opacity: 1, y: 0, duration: 0.55, ease: "power3.out" }, 6.15);
+      tl.to(".pain-card", { opacity: 1, x: 0, duration: 0.42, stagger: 0.14, ease: "power2.out" }, 6.8);
+      tl.to("#loop-panel", { opacity: 1, scale: 1, duration: 0.6, ease: "power3.out" }, 7.4);
+      tl.to(".loop-chip", { opacity: 1, scale: 1, duration: 0.3, stagger: 0.1, ease: "back.out(1.6)" }, 7.8);
+      tl.to("#demand-stats", { opacity: 1, y: 0, duration: 0.5, ease: "power2.out" }, 9.8);
+
+      tl.to("#sub-2", { opacity: 1, y: 0, duration: 0.35 }, 6.6);
+      tl.to("#sub-2", { opacity: 0, y: -8, duration: 0.3 }, 9.5);
+      tl.to("#sub-3", { opacity: 1, y: 0, duration: 0.35 }, 10.0);
+      tl.to("#sub-3", { opacity: 0, y: -8, duration: 0.3 }, 13.2);
+
+      tl.to("#scene-demand", { opacity: 0, duration: 0.3 }, 13.45);
+      tl.to("#dip", { opacity: 0.92, duration: 0.1 }, 13.55);
+      tl.to("#dip", { opacity: 0, duration: 0.32 }, 13.68);
+
+      /* ---------- 03 product ---------- */
+      tl.to("#scene-product", { opacity: 1, duration: 0.45 }, 13.95);
+      tl.to("#product", { opacity: 1, y: 0, scale: 1, duration: 0.85, ease: "power3.out" }, 14.05);
+      tl.to("#product-title", { opacity: 1, y: 0, duration: 0.5 }, 14.45);
+      tl.to(".callout", { opacity: 1, x: 0, duration: 0.4, stagger: 0.15, ease: "power2.out" }, 15.0);
+
+      tl.to("#agent-card", { opacity: 1, x: 0, y: 0, scale: 1, duration: 0.55, ease: "power3.out" }, 16.8);
+      tl.to("#product", { scale: 1.05, x: -50, y: 10, duration: 2.5, ease: "power2.inOut" }, 20.0);
+
+      tl.to("#sub-4", { opacity: 1, y: 0, duration: 0.35 }, 15.2);
+      tl.to("#sub-4", { opacity: 0, y: -8, duration: 0.3 }, 18.5);
+      tl.to("#sub-5", { opacity: 1, y: 0, duration: 0.35 }, 19.0);
+      tl.to("#sub-5", { opacity: 0, y: -8, duration: 0.3 }, 22.4);
+      tl.to("#sub-6", { opacity: 1, y: 0, duration: 0.35 }, 23.0);
+      tl.to("#sub-6", { opacity: 0, y: -8, duration: 0.3 }, 26.8);
+
+      tl.to("#scene-product", { opacity: 0, duration: 0.3 }, 27.4);
+      tl.to("#dip", { opacity: 0.92, duration: 0.1 }, 27.55);
+      tl.to("#dip", { opacity: 0, duration: 0.32 }, 27.68);
+
+      /* ---------- 04 innovation ---------- */
+      tl.to("#scene-innovation", { opacity: 1, duration: 0.45 }, 27.95);
+      tl.to("#inno-head", { opacity: 1, y: 0, duration: 0.55, ease: "power3.out" }, 28.1);
+      tl.to("#inno-orbit", { opacity: 1, duration: 0.8 }, 28.4);
+      tl.to("#inno-orbit", { rotation: 26, duration: 9.2, ease: "none" }, 28.4);
+      tl.to(".inno-card", { opacity: 1, y: 0, duration: 0.45, stagger: 0.13, ease: "power2.out" }, 28.8);
+
+      tl.to("#sub-7", { opacity: 1, y: 0, duration: 0.35 }, 29.2);
+      tl.to("#sub-7", { opacity: 0, y: -8, duration: 0.3 }, 33.1);
+      tl.to("#sub-8", { opacity: 1, y: 0, duration: 0.35 }, 34.0);
+      tl.to("#sub-8", { opacity: 0, y: -8, duration: 0.3 }, 37.2);
+
+      tl.to("#scene-innovation", { opacity: 0, duration: 0.3 }, 37.35);
+      tl.to("#dip", { opacity: 0.92, duration: 0.1 }, 37.5);
+      tl.to("#dip", { opacity: 0, duration: 0.32 }, 37.62);
+
+      /* ---------- 05 proof ---------- */
+      tl.to("#scene-proof", { opacity: 1, duration: 0.45 }, 37.9);
+      tl.to("#proof-head", { opacity: 1, y: 0, duration: 0.55, ease: "power3.out" }, 38.05);
+      tl.to(".proof-card", { opacity: 1, y: 0, duration: 0.42, stagger: 0.12, ease: "power2.out" }, 38.7);
+      tl.to("#case-card", { opacity: 1, y: 0, duration: 0.55, ease: "power3.out" }, 40.0);
+      tl.to("#case-curve-reveal", { width: 900, duration: 1.0, ease: "power2.inOut" }, 40.5);
+
+      tl.to("#sub-9", { opacity: 1, y: 0, duration: 0.35 }, 39.2);
+      tl.to("#sub-9", { opacity: 0, y: -8, duration: 0.3 }, 43.0);
+      tl.to("#sub-10", { opacity: 1, y: 0, duration: 0.35 }, 43.8);
+      tl.to("#sub-10", { opacity: 0, y: -8, duration: 0.3 }, 46.6);
+
+      tl.to("#scene-proof", { opacity: 0, duration: 0.3 }, 46.45);
+      tl.to("#dip", { opacity: 0.92, duration: 0.1 }, 46.55);
+      tl.to("#dip", { opacity: 0, duration: 0.32 }, 46.68);
+
+      /* ---------- 06 business ---------- */
+      tl.to("#scene-business", { opacity: 1, duration: 0.45 }, 46.95);
+      tl.to("#biz-head", { opacity: 1, y: 0, duration: 0.55, ease: "power3.out" }, 47.1);
+      tl.to(".price-card", { opacity: 1, y: 0, duration: 0.42, stagger: 0.14, ease: "power2.out" }, 47.7);
+      tl.to("#gtm", { opacity: 1, y: 0, duration: 0.5, ease: "power2.out" }, 49.2);
+      tl.to("#rev-panel", { opacity: 1, y: 0, duration: 0.5, ease: "power2.out" }, 50.0);
+      tl.to("#rev-fill-1", { width: 140, duration: 0.6, ease: "power2.out" }, 50.5);
+      tl.to("#rev-fill-2", { width: 420, duration: 0.6, ease: "power2.out" }, 50.68);
+      tl.to("#rev-fill-3", { width: 700, duration: 0.6, ease: "power2.out" }, 50.86);
+
+      tl.to("#sub-11", { opacity: 1, y: 0, duration: 0.35 }, 48.2);
+      tl.to("#sub-11", { opacity: 0, y: -8, duration: 0.3 }, 51.6);
+      tl.to("#sub-12", { opacity: 1, y: 0, duration: 0.35 }, 52.2);
+      tl.to("#sub-12", { opacity: 0, y: -8, duration: 0.3 }, 55.3);
+
+      tl.to("#scene-business", { opacity: 0, duration: 0.3 }, 55.35);
+      tl.to("#dip", { opacity: 0.94, duration: 0.1 }, 55.45);
+      tl.to("#dip", { opacity: 0, duration: 0.35 }, 55.6);
+
+      /* ---------- 07 end ---------- */
+      tl.to("#hud", { opacity: 0, duration: 0.35 }, 55.3);
+      tl.to("#scene-end", { opacity: 1, duration: 0.6 }, 56.0);
+      tl.to("#end-glow", { opacity: 1, duration: 0.9 }, 56.05);
+      tl.to("#end-wordmark", { opacity: 1, y: 0, duration: 0.6, ease: "power3.out" }, 56.1);
+      tl.to("#end-sub", { opacity: 1, y: 0, duration: 0.5 }, 56.32);
+      tl.to("#end-tagline", { opacity: 1, y: 0, duration: 0.55 }, 56.5);
+      tl.to("#end-meta", { opacity: 1, duration: 0.45 }, 56.72);
+      tl.to("#end-cta", { opacity: 1, duration: 0.45 }, 56.9);
+
+      tl.to("#sub-13", { opacity: 1, y: 0, duration: 0.35 }, 56.7);
+      tl.to("#sub-13", { opacity: 0, y: -8, duration: 0.3 }, 59.8);
+
+      window.__timelines = window.__timelines || {};
+      window.__timelines["main"] = tl;
+      tl.seek(0);
+    </script>
+  </body>
+</html>

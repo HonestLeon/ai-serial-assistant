@@ -1,0 +1,950 @@
+<!doctype html>
+<html lang="zh-CN" data-resolution="landscape">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>TUNER · Style Teaser</title>
+    <script src="./assets/gsap.min.js"></script>
+    <style>
+      @font-face {
+        font-family: "Microsoft YaHei";
+        src: local("Microsoft YaHei");
+      }
+
+      @font-face {
+        font-family: "PingFang SC";
+        src: local("PingFang SC");
+      }
+
+      @font-face {
+        font-family: "Noto Sans SC";
+        src: local("Noto Sans SC");
+      }
+
+      :root {
+        --bg: #050a14;
+        --panel: #07101e;
+        --ink: #f8fafc;
+        --muted: #94a3b8;
+        --cyan: #22d3ee;
+        --green: #34d399;
+        --amber: #f59e0b;
+        --red: #f87171;
+        --font-cn: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif;
+        --font-en: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+        --font-mono: "Consolas", "JetBrains Mono", monospace;
+      }
+
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: var(--bg);
+        font-family: var(--font-cn);
+        -webkit-font-smoothing: antialiased;
+      }
+
+      #root {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: var(--bg);
+      }
+
+      .frame {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+      }
+
+      .cyan {
+        color: var(--cyan);
+      }
+
+      .green {
+        color: var(--green);
+      }
+
+      /* ---------- background ---------- */
+
+      #bg {
+        position: absolute;
+        inset: 0;
+        background:
+          radial-gradient(1100px 680px at 50% 36%, rgba(20, 84, 122, 0.36), transparent 66%),
+          radial-gradient(900px 560px at 86% 82%, rgba(16, 185, 129, 0.1), transparent 62%),
+          linear-gradient(158deg, #050a14 0%, #07101e 56%, #03060c 100%);
+      }
+
+      #grid {
+        position: absolute;
+        left: -220px;
+        top: -220px;
+        width: 2360px;
+        height: 1520px;
+        background-image:
+          linear-gradient(rgba(34, 211, 238, 0.07) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(34, 211, 238, 0.07) 1px, transparent 1px);
+        background-size: 80px 80px;
+        -webkit-mask-image: radial-gradient(circle at 50% 45%, black 20%, transparent 74%);
+        mask-image: radial-gradient(circle at 50% 45%, black 20%, transparent 74%);
+        opacity: 0.75;
+      }
+
+      #scanlines {
+        position: absolute;
+        inset: 0;
+        background: repeating-linear-gradient(
+          to bottom,
+          rgba(255, 255, 255, 0.026) 0px,
+          rgba(255, 255, 255, 0.026) 1px,
+          transparent 1px,
+          transparent 4px
+        );
+        opacity: 0.5;
+      }
+
+      #flare {
+        position: absolute;
+        left: 360px;
+        top: 60px;
+        width: 1200px;
+        height: 760px;
+        background: radial-gradient(ellipse at 50% 50%, rgba(34, 211, 238, 0.2), transparent 64%);
+        opacity: 0.22;
+      }
+
+      #vignette {
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(circle at 50% 48%, transparent 52%, rgba(0, 0, 0, 0.68) 100%);
+      }
+
+      /* ---------- hud ---------- */
+
+      #hud {
+        position: absolute;
+        left: 72px;
+        right: 72px;
+        top: 30px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-family: var(--font-mono);
+        font-size: 16px;
+        letter-spacing: 2.4px;
+        color: rgba(226, 232, 240, 0.52);
+        z-index: 30;
+      }
+
+      .hud-left,
+      .hud-right {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .hud-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--cyan);
+        box-shadow: 0 0 12px rgba(34, 211, 238, 0.9);
+      }
+
+      /* ---------- intro ---------- */
+
+      #intro {
+        position: absolute;
+        left: 150px;
+        top: 246px;
+        width: 1620px;
+      }
+
+      #intro-label {
+        font-family: var(--font-mono);
+        font-size: 22px;
+        letter-spacing: 4px;
+        color: var(--cyan);
+      }
+
+      #headline-1 {
+        margin-top: 28px;
+        font-size: 112px;
+        line-height: 1.12;
+        font-weight: 700;
+        letter-spacing: -3px;
+        color: var(--ink);
+      }
+
+      #headline-2 {
+        position: absolute;
+        left: 0;
+        top: 92px;
+        font-size: 112px;
+        line-height: 1.12;
+        font-weight: 700;
+        letter-spacing: -3px;
+        color: var(--ink);
+      }
+
+      #accent-bar {
+        position: absolute;
+        left: 2px;
+        top: 248px;
+        width: 0;
+        height: 6px;
+        border-radius: 3px;
+        background: linear-gradient(90deg, var(--cyan), rgba(34, 211, 238, 0.1));
+        box-shadow: 0 0 24px rgba(34, 211, 238, 0.5);
+      }
+
+      #spike {
+        position: absolute;
+        left: 150px;
+        top: 610px;
+        width: 1620px;
+        height: 170px;
+      }
+
+      #spike-reveal {
+        width: 0;
+        height: 170px;
+        overflow: hidden;
+      }
+
+      #spike svg {
+        display: block;
+        width: 1620px;
+        height: 170px;
+      }
+
+      #stat-line {
+        position: absolute;
+        left: 150px;
+        top: 812px;
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        font-size: 27px;
+        color: var(--muted);
+        letter-spacing: 0.5px;
+      }
+
+      #stat-line .num {
+        font-family: var(--font-mono);
+        font-size: 34px;
+        color: var(--red);
+        letter-spacing: 0;
+      }
+
+      .stat-rule {
+        width: 3px;
+        height: 28px;
+        background: var(--red);
+        box-shadow: 0 0 14px rgba(248, 113, 113, 0.6);
+      }
+
+      #intro-foot {
+        position: absolute;
+        left: 150px;
+        bottom: 76px;
+        font-family: var(--font-mono);
+        font-size: 17px;
+        letter-spacing: 2px;
+        color: rgba(203, 213, 225, 0.86);
+      }
+
+      /* ---------- product ---------- */
+
+      #product {
+        position: absolute;
+        left: 240px;
+        top: 150px;
+        width: 1440px;
+        height: 862px;
+        transform-origin: 50% 50%;
+        z-index: 10;
+      }
+
+      #product-title {
+        position: absolute;
+        left: 240px;
+        top: 62px;
+        font-size: 29px;
+        letter-spacing: 1px;
+        color: #dbe4f0;
+        z-index: 12;
+      }
+
+      #product-title .thin {
+        color: var(--muted);
+      }
+
+      #device {
+        position: relative;
+        width: 1440px;
+        height: 862px;
+        border-radius: 18px;
+        overflow: hidden;
+        background: #0b1220;
+        transform: perspective(2200px) rotateY(-8deg) rotateX(2.5deg) rotateZ(-1deg);
+        box-shadow:
+          0 60px 130px rgba(0, 0, 0, 0.68),
+          0 0 0 1px rgba(34, 211, 238, 0.22),
+          0 0 90px rgba(34, 211, 238, 0.08);
+      }
+
+      #device img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        object-position: center top;
+      }
+
+      #device::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(
+          118deg,
+          rgba(255, 255, 255, 0.07) 0%,
+          rgba(255, 255, 255, 0) 28%,
+          rgba(255, 255, 255, 0) 72%,
+          rgba(34, 211, 238, 0.07) 100%
+        );
+        pointer-events: none;
+      }
+
+      .callout {
+        position: absolute;
+        left: 24px;
+        display: flex;
+        align-items: center;
+        width: 216px;
+        height: 48px;
+        z-index: 14;
+      }
+
+      .callout .pill {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        width: 170px;
+        height: 44px;
+        padding: 0 16px;
+        border: 1px solid rgba(34, 211, 238, 0.26);
+        border-radius: 22px;
+        background: rgba(5, 12, 22, 0.86);
+        font-size: 18px;
+        letter-spacing: 0.5px;
+        color: #dbe4f0;
+        white-space: nowrap;
+      }
+
+      .callout .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        flex: 0 0 auto;
+        background: var(--cyan);
+        box-shadow: 0 0 10px rgba(34, 211, 238, 0.9);
+      }
+
+      .callout .line {
+        width: 46px;
+        height: 1px;
+        background: linear-gradient(90deg, rgba(34, 211, 238, 0.65), rgba(34, 211, 238, 0.08));
+      }
+
+      #callout-wave {
+        top: 236px;
+      }
+
+      #callout-metrics {
+        top: 386px;
+      }
+
+      #callout-agent {
+        top: 536px;
+      }
+
+      #callout-safety {
+        top: 686px;
+      }
+
+      #callout-safety .dot {
+        background: var(--green);
+        box-shadow: 0 0 10px rgba(52, 211, 153, 0.9);
+      }
+
+      #evidence {
+        position: absolute;
+        left: 240px;
+        bottom: 22px;
+        z-index: 14;
+        display: flex;
+        align-items: center;
+        gap: 26px;
+        font-size: 20px;
+        color: var(--muted);
+      }
+
+      #evidence .big {
+        font-family: var(--font-mono);
+        font-size: 25px;
+        color: var(--ink);
+      }
+
+      #evidence .big .green {
+        color: var(--green);
+      }
+
+      #evidence .small {
+        font-size: 16px;
+        color: rgba(148, 163, 184, 0.78);
+        letter-spacing: 0.5px;
+      }
+
+      #evidence .vline {
+        width: 1px;
+        height: 22px;
+        background: rgba(148, 163, 184, 0.25);
+      }
+
+      /* ---------- agent card ---------- */
+
+      #agent-card {
+        position: absolute;
+        right: 60px;
+        bottom: 70px;
+        width: 760px;
+        height: 380px;
+        border: 1px solid rgba(34, 211, 238, 0.34);
+        border-radius: 18px;
+        background: #07101e;
+        background-image: linear-gradient(180deg, rgba(34, 211, 238, 0.05), transparent 42%);
+        box-shadow:
+          0 40px 90px rgba(0, 0, 0, 0.7),
+          0 0 50px rgba(34, 211, 238, 0.1);
+        overflow: hidden;
+        z-index: 20;
+      }
+
+      #agent-card::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 4px;
+        height: 100%;
+        background: linear-gradient(180deg, var(--cyan), rgba(34, 211, 238, 0.08));
+      }
+
+      .agent-head {
+        display: flex;
+        align-items: center;
+        height: 56px;
+        padding: 0 24px;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+      }
+
+      .agent-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--green);
+        box-shadow: 0 0 12px rgba(52, 211, 153, 0.9);
+        margin-right: 12px;
+      }
+
+      .agent-title {
+        font-family: var(--font-mono);
+        font-size: 16px;
+        letter-spacing: 2.6px;
+        color: var(--cyan);
+      }
+
+      .agent-live {
+        margin-left: auto;
+        padding: 5px 12px;
+        border: 1px solid rgba(52, 211, 153, 0.3);
+        border-radius: 999px;
+        font-size: 13px;
+        letter-spacing: 1px;
+        color: var(--green);
+      }
+
+      .agent-query {
+        margin: 20px 24px 0;
+        font-family: var(--font-mono);
+        font-size: 16px;
+        color: rgba(226, 232, 240, 0.86);
+      }
+
+      .agent-query .prompt {
+        color: var(--cyan);
+        margin-right: 8px;
+      }
+
+      .agent-flow {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 18px 24px 0;
+      }
+
+      .agent-chip {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 138px;
+        height: 38px;
+        border: 1px solid rgba(34, 211, 238, 0.22);
+        border-radius: 10px;
+        background: rgba(34, 211, 238, 0.06);
+        font-size: 15px;
+        letter-spacing: 0.5px;
+        color: #dbe4f0;
+      }
+
+      .agent-arrow {
+        font-family: var(--font-mono);
+        font-size: 16px;
+        color: #7dd3fc;
+      }
+
+      #agent-chart-reveal {
+        width: 0;
+        height: 86px;
+        margin: 16px 24px 0;
+        overflow: hidden;
+      }
+
+      #agent-chart-reveal svg {
+        display: block;
+        width: 640px;
+        height: 86px;
+      }
+
+      #agent-result {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 12px 24px 0;
+        font-size: 15px;
+        letter-spacing: 0.3px;
+        color: #dbe4f0;
+      }
+
+      .agent-check {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 19px;
+        height: 19px;
+        flex: 0 0 auto;
+        border: 1px solid rgba(52, 211, 153, 0.5);
+        border-radius: 50%;
+        background: rgba(52, 211, 153, 0.14);
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: var(--green);
+      }
+
+      .agent-badge {
+        margin-left: auto;
+        padding: 4px 10px;
+        border: 1px solid rgba(34, 211, 238, 0.28);
+        border-radius: 999px;
+        font-size: 12px;
+        letter-spacing: 0.5px;
+        color: #7dd3fc;
+      }
+
+      #agent-footer {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 10px 24px 0;
+        font-size: 13px;
+        letter-spacing: 0.4px;
+        color: rgba(148, 163, 184, 0.82);
+      }
+
+      #agent-footer .sep {
+        color: rgba(148, 163, 184, 0.28);
+        margin: 0 4px;
+      }
+
+      .shield-icon {
+        width: 14px;
+        height: 16px;
+        flex: 0 0 auto;
+      }
+
+      /* ---------- end card ---------- */
+
+      #end {
+        position: absolute;
+        inset: 0;
+        z-index: 25;
+      }
+
+      #end-glow {
+        position: absolute;
+        left: 360px;
+        top: 110px;
+        width: 1200px;
+        height: 760px;
+        background: radial-gradient(ellipse at 50% 45%, rgba(34, 211, 238, 0.19), transparent 64%);
+        opacity: 0;
+      }
+
+      #end-wordmark {
+        position: absolute;
+        left: 0;
+        top: 288px;
+        width: 100%;
+        text-align: center;
+        font-family: var(--font-en);
+        font-size: 178px;
+        line-height: 1;
+        font-weight: 700;
+        letter-spacing: 26px;
+        color: var(--ink);
+        text-shadow: 0 0 60px rgba(34, 211, 238, 0.18);
+      }
+
+      #end-wordmark .end-mark {
+        display: inline-block;
+        width: 18px;
+        height: 18px;
+        margin-left: 8px;
+        border-radius: 3px;
+        background: var(--cyan);
+        box-shadow: 0 0 22px rgba(34, 211, 238, 0.8);
+        vertical-align: 24px;
+      }
+
+      #end-sub {
+        position: absolute;
+        left: 0;
+        top: 508px;
+        width: 100%;
+        text-align: center;
+        font-size: 32px;
+        letter-spacing: 10px;
+        color: rgba(148, 163, 184, 0.9);
+      }
+
+      #end-tagline {
+        position: absolute;
+        left: 0;
+        top: 592px;
+        width: 100%;
+        text-align: center;
+        font-size: 54px;
+        font-weight: 600;
+        letter-spacing: -1px;
+        color: #e2e8f0;
+      }
+
+      #end-meta {
+        position: absolute;
+        left: 0;
+        top: 690px;
+        width: 100%;
+        text-align: center;
+        font-family: var(--font-mono);
+        font-size: 17px;
+        letter-spacing: 3px;
+        color: rgba(34, 211, 238, 0.78);
+      }
+
+      /* ---------- transition ---------- */
+
+      #flash {
+        position: absolute;
+        inset: 0;
+        background: #03060c;
+        opacity: 0;
+        z-index: 40;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="main"
+      data-start="0"
+      data-duration="10"
+      data-width="1920"
+      data-height="1080"
+    >
+      <div id="teaser-frame" class="clip frame" data-start="0" data-duration="10">
+        <div id="bg"></div>
+        <div id="grid" data-layout-allow-overflow></div>
+        <div id="flare"></div>
+        <div id="scanlines"></div>
+        <div id="vignette"></div>
+
+        <div id="hud">
+          <div class="hud-left">
+            <span class="hud-dot"></span>
+            <span>TUNER / AI SERIAL ASSISTANT</span>
+          </div>
+          <div class="hud-right">
+            <span>PID · WAVEFORM · AGENT</span>
+          </div>
+        </div>
+
+        <!-- intro -->
+        <div id="intro">
+          <div id="intro-label">为电赛 / 智能车 / RC / RM 而做</div>
+          <div id="headline-1" data-layout-allow-overlap>调 PID，<br />你还在盲试吗？</div>
+          <div id="headline-2" data-layout-allow-overlap>让 <span class="cyan">AI</span> 接管试错。</div>
+          <div id="accent-bar"></div>
+        </div>
+
+        <div id="spike">
+          <div id="spike-reveal" data-layout-allow-overflow>
+            <svg viewBox="0 0 1620 170" xmlns="http://www.w3.org/2000/svg" data-layout-allow-overflow>
+              <path
+                d="M0,140 L520,140 L560,95 L590,150 L620,26 L650,164 L690,108 L740,146 L1200,146 L1620,146"
+                fill="none"
+                stroke="rgba(248,113,113,0.18)"
+                stroke-width="12"
+              />
+              <path
+                d="M0,140 L520,140 L560,95 L590,150 L620,26 L650,164 L690,108 L740,146 L1200,146 L1620,146"
+                fill="none"
+                stroke="#f87171"
+                stroke-width="3.2"
+              />
+            </svg>
+          </div>
+        </div>
+
+        <div id="stat-line">
+          <span class="stat-rule"></span>
+          <span class="num">100%</span>
+          <span>（7/7）受访者：反复试错最耗时</span>
+        </div>
+
+        <div id="intro-foot">TUNER · AI 串口调试助手</div>
+
+        <!-- product -->
+        <div id="product">
+          <div id="device">
+            <img src="./assets/ui-dark.png" alt="TUNER 暗色主题工作台" />
+          </div>
+        </div>
+
+        <div id="product-title">
+          波形 · 分析 · 调参，<span class="cyan">一体</span>
+          <span class="thin"></span>
+        </div>
+
+        <div id="callout-wave" class="callout">
+          <div class="pill"><span class="dot"></span><span>实时波形</span></div>
+          <div class="line"></div>
+        </div>
+        <div id="callout-metrics" class="callout">
+          <div class="pill"><span class="dot"></span><span>本地指标</span></div>
+          <div class="line"></div>
+        </div>
+        <div id="callout-agent" class="callout">
+          <div class="pill"><span class="dot"></span><span>AI 自动闭环</span></div>
+          <div class="line"></div>
+        </div>
+        <div id="callout-safety" class="callout">
+          <div class="pill"><span class="dot"></span><span>三重安全护栏</span></div>
+          <div class="line"></div>
+        </div>
+
+        <div id="evidence">
+          <span class="big">诊断有效率 <span class="green">40% → 85%</span></span>
+          <span class="vline"></span>
+          <span class="small">12 项自测全绿 · 51 张验证波形</span>
+        </div>
+
+        <!-- agent card -->
+        <div id="agent-card">
+          <div class="agent-head">
+            <span class="agent-dot"></span>
+            <span class="agent-title">AI PID AGENT</span>
+            <span class="agent-live">闭环执行中</span>
+          </div>
+          <div class="agent-query"><span class="prompt">&gt;</span>开始整定，优先压超调。</div>
+          <div class="agent-flow">
+            <div class="agent-chip">查数据</div>
+            <div class="agent-arrow">→</div>
+            <div class="agent-chip">改参数</div>
+            <div class="agent-arrow">→</div>
+            <div class="agent-chip">设目标</div>
+            <div class="agent-arrow">→</div>
+            <div class="agent-chip">看响应</div>
+          </div>
+          <div id="agent-chart-reveal" data-layout-allow-overflow>
+            <svg viewBox="0 0 640 86" xmlns="http://www.w3.org/2000/svg" data-layout-allow-overflow>
+              <line
+                x1="0"
+                y1="62"
+                x2="640"
+                y2="62"
+                stroke="rgba(148,163,184,0.28)"
+                stroke-width="1"
+                stroke-dasharray="5 7"
+              />
+              <path
+                d="M0,76 L110,74 L160,64 L196,34 L228,16 L262,22 L300,52 L340,64 L640,64"
+                fill="none"
+                stroke="rgba(52,211,153,0.2)"
+                stroke-width="12"
+              />
+              <path
+                d="M0,76 L110,74 L160,64 L196,34 L228,16 L262,22 L300,52 L340,64 L640,64"
+                fill="none"
+                stroke="#34d399"
+                stroke-width="3"
+              />
+            </svg>
+          </div>
+          <div id="agent-result">
+            <span class="agent-check">✓</span>
+            <span>达标自动收敛 · 参数实时回写</span>
+            <span class="agent-badge">安全回退就绪</span>
+          </div>
+          <div id="agent-footer">
+            <svg class="shield-icon" viewBox="0 0 14 16" xmlns="http://www.w3.org/2000/svg">
+              <path
+                d="M7 1 L13 3.4 V7.2 C13 11.2 10.4 13.8 7 15 C3.6 13.8 1 11.2 1 7.2 V3.4 Z"
+                fill="rgba(52,211,153,0.1)"
+                stroke="#34d399"
+                stroke-width="1"
+              />
+              <path d="M4.4 7.6 L6.2 9.4 L9.8 5.6" fill="none" stroke="#34d399" stroke-width="1.2" />
+            </svg>
+            <span>三重护栏 · 越界自动回退</span>
+            <span class="sep">|</span>
+            <span>运行中可随时插话纠偏</span>
+          </div>
+        </div>
+
+        <!-- end card -->
+        <div id="end">
+          <div id="end-glow"></div>
+          <div id="end-wordmark">TUNER<span class="end-mark"></span></div>
+          <div id="end-sub">AI 串口调试助手</div>
+          <div id="end-tagline">把最耗时的试错环节，用 <span class="cyan">AI</span> 压掉。</div>
+          <div id="end-meta">开源 · 仿真 / 真机双模式 · 三重安全护栏</div>
+        </div>
+
+        <div id="flash"></div>
+      </div>
+    </div>
+
+    <script>
+      const tl = gsap.timeline({ paused: true });
+
+      // initial states: outside the timeline so frame 0 is already hidden
+      gsap.set("#hud", { opacity: 0 });
+      gsap.set("#intro-label", { opacity: 0 });
+      gsap.set("#headline-1", { opacity: 0, y: 60 });
+      gsap.set("#headline-2", { opacity: 0, y: 60 });
+      gsap.set("#spike-reveal", { width: 0 });
+      gsap.set("#stat-line", { opacity: 0, y: 20 });
+      gsap.set("#intro-foot", { opacity: 0 });
+      gsap.set("#product", { opacity: 0, y: 150, scale: 0.9 });
+      gsap.set("#product-title", { opacity: 0, y: 18 });
+      gsap.set(".callout", { opacity: 0, x: -24 });
+      gsap.set("#evidence", { opacity: 0, y: 16 });
+      gsap.set("#agent-card", { opacity: 0, x: 80, y: 40, scale: 0.94 });
+      gsap.set(".agent-chip", { opacity: 0, x: 20 });
+      gsap.set("#agent-chart-reveal", { width: 0 });
+      gsap.set("#agent-result", { opacity: 0 });
+      gsap.set("#agent-footer", { opacity: 0 });
+      gsap.set("#end", { opacity: 0, scale: 0.96 });
+      gsap.set("#end-glow", { opacity: 0 });
+      gsap.set("#end-wordmark", { opacity: 0, y: 40 });
+      gsap.set("#end-sub", { opacity: 0, y: 20 });
+      gsap.set("#end-tagline", { opacity: 0, y: 24 });
+      gsap.set("#end-meta", { opacity: 0 });
+      gsap.set("#flash", { opacity: 0 });
+
+      // ambient
+      tl.to("#grid", { x: -60, y: -40, duration: 10, ease: "none" }, 0);
+      tl.to("#flare", { opacity: 0.38, duration: 6, ease: "sine.inOut" }, 1);
+      tl.to("#hud", { opacity: 1, duration: 0.6 }, 0.2);
+
+      // intro
+      tl.to("#intro-label", { opacity: 1, duration: 0.6 }, 0.25);
+      tl.to("#headline-1", { opacity: 1, y: 0, duration: 0.9, ease: "power4.out" }, 0.55);
+      tl.to("#spike-reveal", { width: 1620, duration: 1.15, ease: "power2.inOut" }, 1.0);
+      tl.to("#stat-line", { opacity: 1, y: 0, duration: 0.55, ease: "power2.out" }, 1.45);
+      tl.to("#intro-foot", { opacity: 1, duration: 0.5 }, 1.35);
+
+      tl.to("#headline-1", { opacity: 0, y: -40, duration: 0.32, ease: "power2.in" }, 2.35);
+      tl.to("#headline-2", { opacity: 1, y: 0, duration: 0.6, ease: "power3.out" }, 2.72);
+      tl.to("#accent-bar", { width: 520, duration: 0.55, ease: "power2.out" }, 3.0);
+      tl.to(
+        ["#headline-2", "#stat-line", "#intro-label", "#intro-foot", "#spike", "#accent-bar"],
+        { opacity: 0, duration: 0.18, ease: "power2.in" },
+        3.78
+      );
+
+      // transition to product
+      tl.to("#flash", { opacity: 0.96, duration: 0.05 }, 3.82);
+      tl.to("#flash", { opacity: 0, duration: 0.2 }, 3.9);
+      tl.to("#product", { opacity: 1, y: 0, scale: 1, duration: 0.85, ease: "power3.out" }, 3.96);
+      tl.to("#product-title", { opacity: 1, y: 0, duration: 0.5 }, 4.3);
+      tl.to(
+        ".callout",
+        { opacity: 1, x: 0, duration: 0.42, stagger: 0.17, ease: "power2.out" },
+        4.85
+      );
+      tl.to("#evidence", { opacity: 1, y: 0, duration: 0.5 }, 5.45);
+
+      // agent loop
+      tl.to("#product", { scale: 1.05, x: -50, y: 10, duration: 1.8, ease: "power2.inOut" }, 6.3);
+      tl.to("#agent-card", { opacity: 1, x: 0, y: 0, scale: 1, duration: 0.45, ease: "power3.out" }, 6.05);
+      tl.to(
+        ".agent-chip",
+        { opacity: 1, x: 0, duration: 0.32, stagger: 0.11, ease: "power2.out" },
+        6.35
+      );
+      tl.to("#agent-chart-reveal", { width: 640, duration: 0.75, ease: "power2.inOut" }, 6.95);
+      tl.to("#agent-result", { opacity: 1, duration: 0.4 }, 7.35);
+      tl.to("#agent-footer", { opacity: 1, duration: 0.4 }, 7.5);
+
+      // end card
+      tl.to(
+        ["#product", "#agent-card", "#product-title", ".callout", "#evidence"],
+        { opacity: 0, duration: 0.4, ease: "power2.in" },
+        8.0
+      );
+      tl.to("#hud", { opacity: 0, duration: 0.35 }, 4.05);
+      tl.to("#end", { opacity: 1, scale: 1, duration: 0.55, ease: "power3.out" }, 8.1);
+      tl.to("#end-glow", { opacity: 1, duration: 0.9 }, 8.15);
+      tl.to("#end-wordmark", { opacity: 1, y: 0, duration: 0.55, ease: "power3.out" }, 8.15);
+      tl.to("#end-sub", { opacity: 1, y: 0, duration: 0.45 }, 8.35);
+      tl.to("#end-tagline", { opacity: 1, y: 0, duration: 0.5 }, 8.5);
+      tl.to("#end-meta", { opacity: 1, duration: 0.4 }, 8.7);
+
+      window.__timelines = window.__timelines || {};
+      window.__timelines["main"] = tl;
+      tl.seek(0);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,16 @@
+Music used in the 60s film
+=========================
+
+Track: "Minimal Emotion"
+Source: Mixkit — https://mixkit.co/free-stock-music/tag/technology/
+Direct asset: https://assets.mixkit.co/music/160/160.mp3
+License: Mixkit Free License. Free for commercial use in videos, no attribution required.
+Restriction: not for standalone redistribution or resale as a music asset.
+Downloaded: 2026-10-27
+
+Alternate tracks downloaded for comparison (not used in the final cut):
+- "Cyberpunk City" — https://assets.mixkit.co/music/140/140.mp3
+- "Sci-Fi Score" — https://assets.mixkit.co/music/464/464.mp3
+
+All tracks are embedded in the rendered video; the MP3 files are kept in this
+project only as source assets and are not redistributed separately.

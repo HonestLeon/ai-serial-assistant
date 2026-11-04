@@ -47,3 +47,12 @@ Thumbs.db
 
 # 参考开源
 /**/llm-pid-tuner
+
+# ---------- 应用运行 / 缓存产物 ----------
+*.db
+/**/.electron-builder-cache
+/**/waveform_results
+
+# ---------- 宣传片工程：忽略渲染输出与 HyperFrames 工具状态（生成物）----------
+/ai-serial-assistant-app/promo-video/renders/
+/ai-serial-assistant-app/promo-video/.hyperframes/
