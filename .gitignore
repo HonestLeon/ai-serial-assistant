@@ -56,3 +56,20 @@ Thumbs.db
 # ---------- 宣传片工程：忽略渲染输出与 HyperFrames 工具状态（生成物）----------
 /ai-serial-assistant-app/promo-video/renders/
 /ai-serial-assistant-app/promo-video/.hyperframes/
+# edge-tts 生成的配音分片与混音轨，可由 prepare-audio.py 复现
+/ai-serial-assistant-app/promo-video/assets/voice/
+# 输入法（搜狗）在本目录运行时写下的垃圾文件，与工程无关
+/ai-serial-assistant-app/promo-video/*.config
+/ai-serial-assistant-app/promo-video/*.bin
+/ai-serial-assistant-app/promo-video/*.ini
+/ai-serial-assistant-app/promo-video/*.dat
+/ai-serial-assistant-app/promo-video/*.stat
+/ai-serial-assistant-app/promo-video/Backup/
+# 配音 / 配乐试听样片（本地选型用）
+/音乐试听/
+# 构建终端原始输出
+/视频构建执行终端输出.txt
+
+# ---------- Python 缓存 ----------
+__pycache__/
+*.pyc
