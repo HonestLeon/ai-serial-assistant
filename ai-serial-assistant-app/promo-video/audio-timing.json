@@ -1,0 +1,624 @@
+{
+  "total": 274.854,
+  "sample_rate": 24000,
+  "speed": 1.05,
+  "engine": "edge",
+  "voice": "assets/voice/voiceover-v2.wav",
+  "bgm": "assets/music/defense-v2.mp3",
+  "lines": [
+    {
+      "i": 1,
+      "scene": "s0",
+      "beat": "b-title",
+      "text": "参赛作品：智串AI · TUNER，\nAI 串口调试助手。",
+      "wav": "assets/voice/seg-001.wav",
+      "dur": 5.328,
+      "start": 0.6,
+      "end": 6.178
+    },
+    {
+      "i": 2,
+      "scene": "s0",
+      "beat": "b-title",
+      "text": "面向电赛、智能车、RC 与 RM 的\n赛前调参加速器。",
+      "wav": "assets/voice/seg-002.wav",
+      "dur": 5.544,
+      "start": 6.528,
+      "end": 12.322
+    },
+    {
+      "i": 3,
+      "scene": "s0",
+      "beat": "b-team",
+      "text": "团队「咕电子队」，三名本科生协作完成。",
+      "wav": "assets/voice/seg-003.wav",
+      "dur": 4.008,
+      "start": 12.672,
+      "end": 16.93
+    },
+    {
+      "i": 4,
+      "scene": "s0",
+      "beat": "b-team",
+      "text": "刘双瑞：队长、路演负责人，\n负责后端算法。",
+      "wav": "assets/voice/seg-004.wav",
+      "dur": 4.584,
+      "start": 17.28,
+      "end": 22.114
+    },
+    {
+      "i": 5,
+      "scene": "s0",
+      "beat": "b-team",
+      "text": "吴程龙秀：技术主管、前端；\n胡雨杨：产品经理、调研与 PPT。",
+      "wav": "assets/voice/seg-005.wav",
+      "dur": 6.696,
+      "start": 22.464,
+      "end": 29.41
+    },
+    {
+      "i": 6,
+      "scene": "s1",
+      "beat": "b-origin",
+      "text": "创意始于调研：20 多款串口调试工具，\n没有一款支持 AI。",
+      "wav": "assets/voice/seg-006.wav",
+      "dur": 5.712,
+      "start": 30.26,
+      "end": 36.222
+    },
+    {
+      "i": 7,
+      "scene": "s1",
+      "beat": "b-quotes",
+      "text": "有队员说：手动调参只能调个大概，\n经常被压力，变成背锅侠。",
+      "wav": "assets/voice/seg-007.wav",
+      "dur": 6.216,
+      "start": 36.572,
+      "end": 43.038
+    },
+    {
+      "i": 8,
+      "scene": "s1",
+      "beat": "b-quotes",
+      "text": "也有人说：怕没用，\n更怕 AI 乱调把机械弄坏。",
+      "wav": "assets/voice/seg-008.wav",
+      "dur": 4.752,
+      "start": 43.388,
+      "end": 48.39
+    },
+    {
+      "i": 9,
+      "scene": "s1",
+      "beat": "b-quotes",
+      "text": "还有人希望，告诉我现象\n对应什么参数问题、该怎么调。",
+      "wav": "assets/voice/seg-009.wav",
+      "dur": 5.208,
+      "start": 48.74,
+      "end": 54.198
+    },
+    {
+      "i": 10,
+      "scene": "s1",
+      "beat": "b-survey",
+      "text": "7 份问卷：100% 说试错最耗时，\n42.9% 单次调参超过三天。",
+      "wav": "assets/voice/seg-010.wav",
+      "dur": 7.488,
+      "start": 54.548,
+      "end": 62.286
+    },
+    {
+      "i": 11,
+      "scene": "s1",
+      "beat": "b-survey",
+      "text": "57.1% 赛场离线刚需，85.7% 愿赛前试用，\n71.4% 要 AI 建议加人工确认。",
+      "wav": "assets/voice/seg-011.wav",
+      "dur": 9.864,
+      "start": 62.636,
+      "end": 72.75
+    },
+    {
+      "i": 12,
+      "scene": "s1",
+      "beat": "b-origin",
+      "text": "所以先打通数据链路，\n再让 AI 在护栏内动手。",
+      "wav": "assets/voice/seg-012.wav",
+      "dur": 4.968,
+      "start": 73.1,
+      "end": 78.318
+    },
+    {
+      "i": 13,
+      "scene": "s2",
+      "beat": "b-timeline",
+      "text": "6 月 29 日技术选型，7 月底波形、\n分析与仿真护栏陆续跑通。",
+      "wav": "assets/voice/seg-013.wav",
+      "dur": 6.192,
+      "start": 79.168,
+      "end": 85.61
+    },
+    {
+      "i": 14,
+      "scene": "s2",
+      "beat": "b-review",
+      "text": "8 月 1 日中期评审：\n要真实测评，要想清怎么推广。",
+      "wav": "assets/voice/seg-014.wav",
+      "dur": 5.112,
+      "start": 85.96,
+      "end": 91.322
+    },
+    {
+      "i": 15,
+      "scene": "s2",
+      "beat": "b-review",
+      "text": "回应：7 问卷扩到 12 深访、25 人扩测，\n5 条反馈全部闭环。",
+      "wav": "assets/voice/seg-015.wav",
+      "dur": 6.384,
+      "start": 91.672,
+      "end": 98.306
+    },
+    {
+      "i": 16,
+      "scene": "s2",
+      "beat": "b-timeline",
+      "text": "8 月 7 日调研 AI Harness 后，\n决定重构为对话式智能体。",
+      "wav": "assets/voice/seg-016.wav",
+      "dur": 5.208,
+      "start": 98.656,
+      "end": 104.114
+    },
+    {
+      "i": 17,
+      "scene": "s2",
+      "beat": "b-timeline",
+      "text": "8 月 25 日 Agent 上线，\nv1.1.0 安装包发布。",
+      "wav": "assets/voice/seg-017.wav",
+      "dur": 5.088,
+      "start": 104.464,
+      "end": 109.802
+    },
+    {
+      "i": 18,
+      "scene": "s2",
+      "beat": "b-deliver",
+      "text": "四阶段可运行交付：28 个源文件、\n8422 行代码、51 张验证波形。",
+      "wav": "assets/voice/seg-018.wav",
+      "dur": 7.584,
+      "start": 110.152,
+      "end": 117.986
+    },
+    {
+      "i": 19,
+      "scene": "s3",
+      "beat": "b-panorama",
+      "text": "一个工作台：波形、分析、数据、\n调参都在一处。",
+      "wav": "assets/voice/seg-019.wav",
+      "dur": 5.328,
+      "start": 118.836,
+      "end": 124.414
+    },
+    {
+      "i": 20,
+      "scene": "s3",
+      "beat": "b-panorama",
+      "text": "实时多通道波形可缩放平移，\n数据表支持录制回放。",
+      "wav": "assets/voice/seg-020.wav",
+      "dur": 5.328,
+      "start": 124.764,
+      "end": 130.342
+    },
+    {
+      "i": 21,
+      "scene": "s3",
+      "beat": "b-capability",
+      "text": "上升时间、超调、稳态误差与 RMSE，\n全部本地算，离线可用。",
+      "wav": "assets/voice/seg-021.wav",
+      "dur": 6.528,
+      "start": 130.692,
+      "end": 137.47
+    },
+    {
+      "i": 22,
+      "scene": "s3",
+      "beat": "b-capability",
+      "text": "AI 解释只解释现象、不下发参数；\n三种仿真策略无需硬件。",
+      "wav": "assets/voice/seg-022.wav",
+      "dur": 6.264,
+      "start": 137.82,
+      "end": 144.334
+    },
+    {
+      "i": 23,
+      "scene": "s3",
+      "beat": "b-agent",
+      "text": "对话式 Agent 自主完成五步闭环，\n运行中可随时插话纠偏。",
+      "wav": "assets/voice/seg-023.wav",
+      "dur": 5.832,
+      "start": 144.684,
+      "end": 150.766
+    },
+    {
+      "i": 24,
+      "scene": "s3",
+      "beat": "b-guard",
+      "text": "三重护栏：用户范围、\nKp 不超过 20、单步增幅限制。",
+      "wav": "assets/voice/seg-024.wav",
+      "dur": 5.664,
+      "start": 151.116,
+      "end": 157.03
+    },
+    {
+      "i": 25,
+      "scene": "s3",
+      "beat": "b-guard",
+      "text": "超调或振荡越限，\n自动回退到最佳稳定参数。",
+      "wav": "assets/voice/seg-025.wav",
+      "dur": 4.608,
+      "start": 157.38,
+      "end": 162.238
+    },
+    {
+      "i": 26,
+      "scene": "s4",
+      "beat": "b-demo",
+      "text": "实机演示：倒立摆仿真，\n输入目标，优先压超调。",
+      "wav": "assets/voice/seg-026.wav",
+      "dur": 5.112,
+      "start": 163.088,
+      "end": 168.45
+    },
+    {
+      "i": 27,
+      "scene": "s4",
+      "beat": "b-demo",
+      "text": "Agent 查数据、改参数、设目标，\n再采集响应曲线。",
+      "wav": "assets/voice/seg-027.wav",
+      "dur": 5.208,
+      "start": 168.8,
+      "end": 174.258
+    },
+    {
+      "i": 28,
+      "scene": "s4",
+      "beat": "b-demo",
+      "text": "第一次超调 102% 触发安全网，\n参数自动回退。",
+      "wav": "assets/voice/seg-028.wav",
+      "dur": 5.376,
+      "start": 174.608,
+      "end": 180.234
+    },
+    {
+      "i": 29,
+      "scene": "s4",
+      "beat": "b-case",
+      "text": "再决策后收敛到 0.24%，\n全程无需人工逐次试凑。",
+      "wav": "assets/voice/seg-029.wav",
+      "dur": 5.832,
+      "start": 180.584,
+      "end": 186.666
+    },
+    {
+      "i": 30,
+      "scene": "s5",
+      "beat": "b-usage",
+      "text": "第一步，选协议、刷新端口，打开串口。",
+      "wav": "assets/voice/seg-030.wav",
+      "dur": 4.296,
+      "start": 187.516,
+      "end": 192.062
+    },
+    {
+      "i": 31,
+      "scene": "s5",
+      "beat": "b-usage",
+      "text": "第二步看波形和数据表，也能录制回放。",
+      "wav": "assets/voice/seg-031.wav",
+      "dur": 3.864,
+      "start": 192.412,
+      "end": 196.526
+    },
+    {
+      "i": 32,
+      "scene": "s5",
+      "beat": "b-usage",
+      "text": "第三步填模型、Base URL 与 API Key，\nKey 只存当前会话。",
+      "wav": "assets/voice/seg-032.wav",
+      "dur": 5.832,
+      "start": 196.876,
+      "end": 202.958
+    },
+    {
+      "i": 33,
+      "scene": "s5",
+      "beat": "b-usage",
+      "text": "第四步切到 PID 调参，\n选仿真测试或真实串口。",
+      "wav": "assets/voice/seg-033.wav",
+      "dur": 5.04,
+      "start": 203.308,
+      "end": 208.598
+    },
+    {
+      "i": 34,
+      "scene": "s5",
+      "beat": "b-usage",
+      "text": "选策略、填 PID 初值与安全范围，\n再写场景提示词。",
+      "wav": "assets/voice/seg-034.wav",
+      "dur": 5.496,
+      "start": 208.948,
+      "end": 214.694
+    },
+    {
+      "i": 35,
+      "scene": "s5",
+      "beat": "b-usage",
+      "text": "输入「开始整定，优先压超调」，\nAgent 开始闭环。",
+      "wav": "assets/voice/seg-035.wav",
+      "dur": 4.68,
+      "start": 215.044,
+      "end": 219.974
+    },
+    {
+      "i": 36,
+      "scene": "s5",
+      "beat": "b-usage",
+      "text": "第五步看闭环：实机下发\nPID 与 SET_POINT，可随时插话。",
+      "wav": "assets/voice/seg-036.wav",
+      "dur": 6.24,
+      "start": 220.324,
+      "end": 226.814
+    },
+    {
+      "i": 37,
+      "scene": "s5",
+      "beat": "b-zero",
+      "text": "没有硬件也能体验：\n点控制响应模拟，本地看指标。",
+      "wav": "assets/voice/seg-037.wav",
+      "dur": 4.848,
+      "start": 227.164,
+      "end": 232.262
+    },
+    {
+      "i": 38,
+      "scene": "s6",
+      "beat": "b-roadmap",
+      "text": "未来三个月：接通参数写回闭环，\n完成真实硬件实测。",
+      "wav": "assets/voice/seg-038.wav",
+      "dur": 5.328,
+      "start": 233.112,
+      "end": 238.69
+    },
+    {
+      "i": 39,
+      "scene": "s6",
+      "beat": "b-roadmap",
+      "text": "GitHub 开源、B 站上手视频，\n进竞赛社群招募实测。",
+      "wav": "assets/voice/seg-039.wav",
+      "dur": 5.208,
+      "start": 239.04,
+      "end": 244.498
+    },
+    {
+      "i": 40,
+      "scene": "s6",
+      "beat": "b-roadmap",
+      "text": "中期 v1.2：直立环、舵机环\n与离线整定，误差 ≤15%。",
+      "wav": "assets/voice/seg-040.wav",
+      "dur": 6.936,
+      "start": 244.848,
+      "end": 252.034
+    },
+    {
+      "i": 41,
+      "scene": "s6",
+      "beat": "b-model",
+      "text": "免费开源加 ¥10 每月高级版，\n先服务校内 500 支队伍。",
+      "wav": "assets/voice/seg-041.wav",
+      "dur": 5.328,
+      "start": 252.384,
+      "end": 257.962
+    },
+    {
+      "i": 42,
+      "scene": "s7",
+      "beat": "b-close",
+      "text": "把调参靠经验，\n变成调参靠数据加 AI。",
+      "wav": "assets/voice/seg-042.wav",
+      "dur": 4.176,
+      "start": 258.812,
+      "end": 263.238
+    },
+    {
+      "i": 43,
+      "scene": "s7",
+      "beat": "b-close",
+      "text": "咕电子队 · 智串AI TUNER，\n开源免费，欢迎试用。",
+      "wav": "assets/voice/seg-043.wav",
+      "dur": 5.016,
+      "start": 263.588,
+      "end": 268.854
+    }
+  ],
+  "beats": {
+    "b-title": {
+      "scene": "s0",
+      "start": 0.3,
+      "end": 12.372
+    },
+    "b-team": {
+      "scene": "s0",
+      "start": 12.372,
+      "end": 29.46
+    },
+    "b-origin": {
+      "scene": "s1",
+      "start": 29.96,
+      "end": 36.272
+    },
+    "b-quotes": {
+      "scene": "s1",
+      "start": 36.272,
+      "end": 54.248
+    },
+    "b-survey": {
+      "scene": "s1",
+      "start": 54.248,
+      "end": 78.368
+    },
+    "b-timeline": {
+      "scene": "s2",
+      "start": 78.868,
+      "end": 85.66
+    },
+    "b-review": {
+      "scene": "s2",
+      "start": 85.66,
+      "end": 109.852
+    },
+    "b-deliver": {
+      "scene": "s2",
+      "start": 109.852,
+      "end": 118.036
+    },
+    "b-panorama": {
+      "scene": "s3",
+      "start": 118.536,
+      "end": 130.392
+    },
+    "b-capability": {
+      "scene": "s3",
+      "start": 130.392,
+      "end": 144.384
+    },
+    "b-agent": {
+      "scene": "s3",
+      "start": 144.384,
+      "end": 150.816
+    },
+    "b-guard": {
+      "scene": "s3",
+      "start": 150.816,
+      "end": 162.288
+    },
+    "b-demo": {
+      "scene": "s4",
+      "start": 162.788,
+      "end": 180.284
+    },
+    "b-case": {
+      "scene": "s4",
+      "start": 180.284,
+      "end": 186.716
+    },
+    "b-usage": {
+      "scene": "s5",
+      "start": 187.216,
+      "end": 226.864
+    },
+    "b-zero": {
+      "scene": "s5",
+      "start": 226.864,
+      "end": 232.312
+    },
+    "b-roadmap": {
+      "scene": "s6",
+      "start": 232.812,
+      "end": 252.084
+    },
+    "b-model": {
+      "scene": "s6",
+      "start": 252.084,
+      "end": 258.012
+    },
+    "b-close": {
+      "scene": "s7",
+      "start": 258.512,
+      "end": 274.854
+    }
+  },
+  "scenes": {
+    "s0": {
+      "start": 0.0,
+      "end": 29.46,
+      "label": "00 / 作品与团队",
+      "beats": [
+        "b-title",
+        "b-team"
+      ]
+    },
+    "s1": {
+      "start": 29.46,
+      "end": 78.368,
+      "label": "01 / 创意的产生",
+      "beats": [
+        "b-origin",
+        "b-quotes",
+        "b-survey"
+      ]
+    },
+    "s2": {
+      "start": 78.368,
+      "end": 118.036,
+      "label": "02 / 创造的过程",
+      "beats": [
+        "b-timeline",
+        "b-review",
+        "b-deliver"
+      ]
+    },
+    "s3": {
+      "start": 118.036,
+      "end": 162.288,
+      "label": "03 / 作品功能",
+      "beats": [
+        "b-panorama",
+        "b-capability",
+        "b-agent",
+        "b-guard"
+      ]
+    },
+    "s4": {
+      "start": 162.288,
+      "end": 186.716,
+      "label": "04 / 作品演示",
+      "beats": [
+        "b-demo",
+        "b-case"
+      ]
+    },
+    "s5": {
+      "start": 186.716,
+      "end": 232.312,
+      "label": "05 / 使用说明",
+      "beats": [
+        "b-usage",
+        "b-zero"
+      ]
+    },
+    "s6": {
+      "start": 232.312,
+      "end": 258.012,
+      "label": "06 / 未来规划",
+      "beats": [
+        "b-roadmap",
+        "b-model"
+      ]
+    },
+    "s7": {
+      "start": 258.012,
+      "end": 274.854,
+      "label": "07 / 收束",
+      "beats": [
+        "b-close"
+      ]
+    }
+  },
+  "scene_order": [
+    "s0",
+    "s1",
+    "s2",
+    "s3",
+    "s4",
+    "s5",
+    "s6",
+    "s7"
+  ]
+}
